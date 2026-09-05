@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -12,6 +13,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = REPO_ROOT / "skills" / "fastapi-templates-xtn"
 ASSET_ROOT = SKILL_ROOT / "assets" / "postgresql-rbac"
 EXPECTED_NAME = "fastapi-templates-xtn"
+RELEASE_VERSION = "0.1.0"
+RELEASE_DATE = "2026-09-05"
+RELEASE_TAG = f"v{RELEASE_VERSION}"
+RELEASE_INSTALL_URL = (
+    f"https://github.com/xtnkking/fastapi-templates-xtn/tree/{RELEASE_TAG}/"
+    "skills/fastapi-templates-xtn"
+)
 UPSTREAM_COMMIT = "47a5dbc3f9c2661c6afb13638f80d4a4d4449040"
 
 REQUIRED_REPO_FILES = (
@@ -173,6 +181,39 @@ def validate_legal_mirrors(errors: list[str]) -> None:
             fail(errors, "SKILL.md does not pin the upstream attribution commit")
 
 
+def validate_release_metadata(errors: list[str]) -> None:
+    readme_path = REPO_ROOT / "README.md"
+    changelog_path = REPO_ROOT / "CHANGELOG.md"
+    pyproject_path = ASSET_ROOT / "pyproject.toml"
+
+    if readme_path.is_file():
+        readme = readme_path.read_text(encoding="utf-8")
+        if RELEASE_INSTALL_URL not in readme:
+            fail(errors, f"README.md is missing the {RELEASE_TAG} installation URL")
+        for stale_phrase in (
+            "preparing its first preview release",
+            "after its tag is published",
+        ):
+            if stale_phrase in readme:
+                fail(errors, f"README.md contains pre-release wording: {stale_phrase!r}")
+
+    if changelog_path.is_file():
+        changelog = changelog_path.read_text(encoding="utf-8")
+        release_heading = f"## [{RELEASE_VERSION}] - {RELEASE_DATE}"
+        if release_heading not in changelog:
+            fail(errors, f"CHANGELOG.md is missing release heading: {release_heading}")
+
+    if pyproject_path.is_file():
+        pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        asset_version = pyproject.get("project", {}).get("version")
+        if asset_version != RELEASE_VERSION:
+            fail(
+                errors,
+                "asset pyproject.toml version must match release version "
+                f"{RELEASE_VERSION!r}, got {asset_version!r}",
+            )
+
+
 def validate_tree_hygiene(errors: list[str]) -> None:
     for path in REPO_ROOT.rglob("*"):
         if ".git" in path.parts:
@@ -223,6 +264,7 @@ def main() -> int:
     validate_frontmatter(errors)
     validate_links(errors)
     validate_legal_mirrors(errors)
+    validate_release_metadata(errors)
     validate_tree_hygiene(errors)
 
     if errors:

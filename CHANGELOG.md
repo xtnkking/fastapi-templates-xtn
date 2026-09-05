@@ -2,7 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## [Unreleased]
+
+## [0.1.0] - 2026-09-05
 
 - Prepared the standalone Skill for public preview distribution.
 - Added XTN ownership, upstream attribution, third-party notices, repository

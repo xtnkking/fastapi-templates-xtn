@@ -54,18 +54,27 @@ def migrated_database() -> None:
 
 @pytest_asyncio.fixture(autouse=True)
 async def clean_database(migrated_database: None) -> AsyncIterator[None]:
-    async with engine.begin() as connection:
-        database_name = await connection.scalar(text("SELECT current_database()"))
-        if not isinstance(database_name, str) or not database_name.endswith("_test"):
-            raise RuntimeError("refusing to truncate a non-test PostgreSQL database")
-        await connection.execute(
-            text(
-                "TRUNCATE TABLE authorization_audit_events, membership_roles, "
-                "role_permissions, roles, memberships, "
-                "tenant_authorization_state, tenants, users CASCADE"
+    try:
+        async with engine.begin() as connection:
+            database_name = await connection.scalar(text("SELECT current_database()"))
+            if not isinstance(database_name, str) or not database_name.endswith(
+                "_test"
+            ):
+                raise RuntimeError(
+                    "refusing to truncate a non-test PostgreSQL database"
+                )
+            await connection.execute(
+                text(
+                    "TRUNCATE TABLE authorization_audit_events, membership_roles, "
+                    "role_permissions, roles, memberships, "
+                    "tenant_authorization_state, tenants, users CASCADE"
+                )
             )
-        )
-    yield
+        yield
+    finally:
+        # The application engine is module-scoped while pytest uses one event loop
+        # per test. Dispose pooled asyncpg connections before that loop closes.
+        await engine.dispose()
 
 
 @pytest_asyncio.fixture

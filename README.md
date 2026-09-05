@@ -7,12 +7,12 @@ transactionally consistent authorization writes.
 
 ## Status
 
-This repository is preparing its first preview release. The policy and runnable
-PostgreSQL RBAC asset are substantial, but the included asset does not yet
-implement the complete PostgreSQL-session plus Redis active-JTI adapter described
-by the Skill. Do not represent the preview asset as production-ready until its
-documented identity-provider assumptions and PostgreSQL/Redis integration tests
-have been completed for the target deployment.
+`v0.1.0` is the first public preview release. The policy and runnable PostgreSQL
+RBAC asset are substantial, but the included asset does not yet implement the
+complete PostgreSQL-session plus Redis active-JTI adapter described by the Skill.
+Do not represent the preview asset as production-ready until its documented
+identity-provider assumptions and PostgreSQL/Redis integration tests have been
+completed for the target deployment.
 
 ## Upstream And Attribution
 
@@ -45,8 +45,7 @@ and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 ## Install
 
 The repository publishes the Skill at `skills/fastapi-templates-xtn`. For a
-reproducible installation of the first preview after its tag is published, ask
-Codex:
+reproducible installation of this preview release, ask Codex:
 
 ```text
 Use $skill-installer to install the skill from
@@ -104,8 +103,8 @@ python -B scripts/validate_release.py
 
 PostgreSQL-marked tests require the service and test database configured by
 `compose.dev.yaml`. The CI workflow runs those checks against PostgreSQL. Redis
-integration tests will be added with the active-JTI adapter; the preview release
-does not claim that adapter is implemented.
+active-JTI support and its integration tests are planned and are not included in
+`v0.1.0`.
 
 See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) before publishing a tag.
 
