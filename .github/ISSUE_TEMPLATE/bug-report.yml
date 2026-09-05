@@ -1,0 +1,43 @@
+name: Bug report
+description: Report a reproducible problem in the Skill or its included asset.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not disclose credentials, tokens, private data, or exploitable security
+        details here. Follow SECURITY.md for vulnerabilities.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Release tag or commit SHA where the problem occurs.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Skill instructions
+        - PostgreSQL RBAC asset
+        - JWT guidance
+        - Installation or packaging
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Minimal steps, expected behavior, and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python, PostgreSQL, Redis, and Codex versions when relevant.
+    validations:
+      required: true

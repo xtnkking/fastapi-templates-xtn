@@ -1,0 +1,4 @@
+interface:
+  display_name: "FastAPI Templates XTN"
+  short_description: "PostgreSQL FastAPI with strict RBAC and JWT sessions"
+  default_prompt: "Use $fastapi-templates-xtn to build a PostgreSQL FastAPI service with strict RBAC, minimal revocable JWT sessions, and non-sequential UUID identifiers."

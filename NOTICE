@@ -1,0 +1,19 @@
+fastapi-templates-xtn
+Copyright 2026 XTN
+
+This product is an independently maintained extension of the
+"fastapi-templates" Skill from the wshobson/agents project, based on commit
+47a5dbc3f9c2661c6afb13638f80d4a4d4449040.
+
+Upstream project: https://github.com/wshobson/agents
+Upstream copyright: Copyright (c) 2024 Seth Hobson
+Upstream license: MIT License
+
+This product also contains files derived from Alembic project templates.
+Alembic copyright: Copyright 2009-2026 Michael Bayer.
+Alembic license: MIT License
+
+fastapi-templates-xtn is maintained independently by XTN. It is not endorsed
+by, sponsored by, or affiliated with the upstream authors or projects.
+
+The complete third-party license notices are in THIRD_PARTY_NOTICES.md.
