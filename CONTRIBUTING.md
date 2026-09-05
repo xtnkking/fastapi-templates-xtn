@@ -1,5 +1,7 @@
 # Contributing
 
+**English** | [简体中文](CONTRIBUTING.zh-CN.md)
+
 ## Maintenance model
 
 The canonical repository for `fastapi-templates-xtn` is:

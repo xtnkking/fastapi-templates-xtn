@@ -1,5 +1,7 @@
 # Security Policy
 
+**English** | [简体中文](SECURITY.zh-CN.md)
+
 ## Supported versions
 
 Before the first stable release, security fixes are applied only to the latest

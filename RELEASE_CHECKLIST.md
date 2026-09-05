@@ -1,5 +1,7 @@
 # Release Checklist
 
+**English** | [简体中文](RELEASE_CHECKLIST.zh-CN.md)
+
 Use this checklist for the first public preview and subsequent releases.
 
 ## Local package
@@ -41,8 +43,8 @@ Use this checklist for the first public preview and subsequent releases.
 - [ ] Publish `v0.1.0` as a GitHub prerelease and describe the active-JTI adapter
   as planned, not implemented.
 - [ ] Attach a SHA-256 checksum if a release archive is uploaded manually.
-- [ ] Verify installation from the public GitHub tree URL in a clean Codex
-  environment.
+- [ ] Verify installation from the public tagged GitHub tree URL in a clean
+  Codex environment.
 
 ## Later distribution
 

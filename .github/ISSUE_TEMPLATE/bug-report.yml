@@ -1,43 +1,48 @@
-name: Bug report
-description: Report a reproducible problem in the Skill or its included asset.
+name: Bug report / 错误报告
+description: Report a reproducible problem / 报告可复现的问题
 title: "[Bug]: "
 labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: >-
+      value: |
         Do not disclose credentials, tokens, private data, or exploitable security
-        details here. Follow SECURITY.md for vulnerabilities.
+        details here. Follow the [security policy](https://github.com/xtnkking/fastapi-templates-xtn/blob/main/SECURITY.md)
+        for vulnerabilities.
+
+        请勿在此披露凭据、Token、隐私数据或可利用的安全细节；漏洞请按照
+        [中文安全策略](https://github.com/xtnkking/fastapi-templates-xtn/blob/main/SECURITY.zh-CN.md)
+        私密报告。
   - type: input
     id: version
     attributes:
-      label: Version or commit
-      description: Release tag or commit SHA where the problem occurs.
+      label: Version or commit / 版本或提交
+      description: Release tag or commit SHA where the problem occurs. / 出现问题的发布标签或提交 SHA。
     validations:
       required: true
   - type: dropdown
     id: area
     attributes:
-      label: Area
+      label: Area / 范围
       options:
-        - Skill instructions
-        - PostgreSQL RBAC asset
-        - JWT guidance
-        - Installation or packaging
-        - Other
+        - Skill instructions / Skill 指令
+        - PostgreSQL RBAC asset / PostgreSQL RBAC 资产
+        - JWT guidance / JWT 指南
+        - Installation or packaging / 安装或打包
+        - Other / 其他
     validations:
       required: true
   - type: textarea
     id: reproduction
     attributes:
-      label: Reproduction
-      description: Minimal steps, expected behavior, and actual behavior.
+      label: Reproduction / 复现方式
+      description: Minimal steps, expected behavior, and actual behavior. / 最小复现步骤、预期行为和实际行为。
     validations:
       required: true
   - type: textarea
     id: environment
     attributes:
-      label: Environment
-      description: OS, Python, PostgreSQL, Redis, and Codex versions when relevant.
+      label: Environment / 环境
+      description: OS, Python, PostgreSQL, Redis, and Codex versions when relevant. / 相关的操作系统、Python、PostgreSQL、Redis 和 Codex 版本。
     validations:
       required: true

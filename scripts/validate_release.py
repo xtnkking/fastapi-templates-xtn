@@ -29,10 +29,15 @@ REQUIRED_REPO_FILES = (
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
     "README.md",
+    "README.zh-CN.md",
     "CHANGELOG.md",
+    "CHANGELOG.zh-CN.md",
     "CONTRIBUTING.md",
+    "CONTRIBUTING.zh-CN.md",
     "SECURITY.md",
+    "SECURITY.zh-CN.md",
     "RELEASE_CHECKLIST.md",
+    "RELEASE_CHECKLIST.zh-CN.md",
     ".github/CODEOWNERS",
     ".github/PULL_REQUEST_TEMPLATE.md",
     ".github/ISSUE_TEMPLATE/config.yml",
@@ -52,6 +57,13 @@ REQUIRED_ASSET_FILES = (
     "THIRD_PARTY_NOTICES.md",
 )
 MIRRORED_LEGAL_FILES = ("LICENSE", "NOTICE")
+BILINGUAL_DOC_PAIRS = (
+    ("README.md", "README.zh-CN.md"),
+    ("CHANGELOG.md", "CHANGELOG.zh-CN.md"),
+    ("CONTRIBUTING.md", "CONTRIBUTING.zh-CN.md"),
+    ("SECURITY.md", "SECURITY.zh-CN.md"),
+    ("RELEASE_CHECKLIST.md", "RELEASE_CHECKLIST.zh-CN.md"),
+)
 FORBIDDEN_DIRECTORY_NAMES = {
     ".mypy_cache",
     ".pytest_cache",
@@ -148,6 +160,21 @@ def validate_links(errors: list[str]) -> None:
                 fail(errors, f"broken link in {relative_markdown}: {raw_target}")
 
 
+def validate_bilingual_docs(errors: list[str]) -> None:
+    for english_name, chinese_name in BILINGUAL_DOC_PAIRS:
+        english_path = REPO_ROOT / english_name
+        chinese_path = REPO_ROOT / chinese_name
+        if not english_path.is_file() or not chinese_path.is_file():
+            continue
+
+        english = english_path.read_text(encoding="utf-8")
+        chinese = chinese_path.read_text(encoding="utf-8")
+        if f"[简体中文]({chinese_name})" not in english:
+            fail(errors, f"{english_name} is missing its Simplified Chinese link")
+        if f"[English]({english_name})" not in chinese:
+            fail(errors, f"{chinese_name} is missing its English link")
+
+
 def validate_legal_mirrors(errors: list[str]) -> None:
     for name in MIRRORED_LEGAL_FILES:
         repo_file = REPO_ROOT / name
@@ -182,14 +209,19 @@ def validate_legal_mirrors(errors: list[str]) -> None:
 
 
 def validate_release_metadata(errors: list[str]) -> None:
-    readme_path = REPO_ROOT / "README.md"
-    changelog_path = REPO_ROOT / "CHANGELOG.md"
     pyproject_path = ASSET_ROOT / "pyproject.toml"
 
-    if readme_path.is_file():
+    for readme_name in ("README.md", "README.zh-CN.md"):
+        readme_path = REPO_ROOT / readme_name
+        if not readme_path.is_file():
+            continue
         readme = readme_path.read_text(encoding="utf-8")
         if RELEASE_INSTALL_URL not in readme:
-            fail(errors, f"README.md is missing the {RELEASE_TAG} installation URL")
+            fail(errors, f"{readme_name} is missing the {RELEASE_TAG} installation URL")
+
+    readme_path = REPO_ROOT / "README.md"
+    if readme_path.is_file():
+        readme = readme_path.read_text(encoding="utf-8")
         for stale_phrase in (
             "preparing its first preview release",
             "after its tag is published",
@@ -197,11 +229,14 @@ def validate_release_metadata(errors: list[str]) -> None:
             if stale_phrase in readme:
                 fail(errors, f"README.md contains pre-release wording: {stale_phrase!r}")
 
-    if changelog_path.is_file():
+    for changelog_name in ("CHANGELOG.md", "CHANGELOG.zh-CN.md"):
+        changelog_path = REPO_ROOT / changelog_name
+        if not changelog_path.is_file():
+            continue
         changelog = changelog_path.read_text(encoding="utf-8")
         release_heading = f"## [{RELEASE_VERSION}] - {RELEASE_DATE}"
         if release_heading not in changelog:
-            fail(errors, f"CHANGELOG.md is missing release heading: {release_heading}")
+            fail(errors, f"{changelog_name} is missing release heading: {release_heading}")
 
     if pyproject_path.is_file():
         pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
@@ -263,6 +298,7 @@ def main() -> int:
     validate_required_files(errors)
     validate_frontmatter(errors)
     validate_links(errors)
+    validate_bilingual_docs(errors)
     validate_legal_mirrors(errors)
     validate_release_metadata(errors)
     validate_tree_hygiene(errors)

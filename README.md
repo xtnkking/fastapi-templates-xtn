@@ -1,5 +1,7 @@
 # fastapi-templates-xtn
 
+**English** | [简体中文](README.zh-CN.md)
+
 `fastapi-templates-xtn` is an opinionated Codex Skill for building and hardening
 FastAPI services with tenant-scoped PostgreSQL RBAC, strict administrative
 hierarchy, non-sequential identifiers, minimal revocable JWT sessions, and
