@@ -35,7 +35,9 @@ Use this checklist for the first public preview and subsequent releases.
 
 - [ ] Review the staged diff and confirm the XTN copyright year and upstream
   commit.
-- [ ] Create a signed `v0.1.0` tag only after CI passes.
+- [ ] Create the `v0.1.0` tag only after CI passes. A cryptographically signed
+  tag is recommended when a portable key-management process is in place, but
+  it is not required to publish the preview.
 - [ ] Publish `v0.1.0` as a GitHub prerelease and describe the active-JTI adapter
   as planned, not implemented.
 - [ ] Attach a SHA-256 checksum if a release archive is uploaded manually.
