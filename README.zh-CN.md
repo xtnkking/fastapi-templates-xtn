@@ -38,6 +38,10 @@ Skill 基础上独立维护的扩展，所依据的上游提交为
   的活跃 JTI 会话设计。
 - 面向高权限写入的事务、锁顺序、审计、outbox（发件箱模式）、撤销和乐观并发
   控制要求。
+- 面向现有代理管理模块的
+  [可选代理可用性检测实现指南](skills/fastapi-templates-xtn/references/proxy-availability-detection.md)，
+  涵盖 Redis 最近结果回显，以及受控并发的单个和批量检测。它是按需读取的指南，
+  不是 RBAC 参考资产内置的功能。该指南目前位于 `main`，不属于 `v0.1.0`。
 - 可运行的 FastAPI、SQLAlchemy、Alembic 和 PostgreSQL 参考资产，并配有聚焦
   于策略与集成行为的测试。
 
@@ -56,6 +60,9 @@ https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.1.0/skills/fastapi-tem
 需要安装其他已发布版本时，请将 `v0.1.0` 替换为相应标签。只有在明确需要尚未
 发布的最新状态时才使用 `main`。
 
+若要使用尚未发布的代理可用性检测指南，请将上述命令中的 `v0.1.0` 替换为
+`main`。
+
 若只希望在某个仓库内使用，请将 `skills/fastapi-templates-xtn` 复制到目标仓库的
 `.agents/skills/fastapi-templates-xtn`。
 
@@ -73,6 +80,14 @@ Codex；此操作不会影响规范仓库或任何独立维护的派生仓库。
 ```text
 Use $fastapi-templates-xtn to build a tenant-scoped PostgreSQL FastAPI service
 with strict RBAC and revocable JWT sessions.
+```
+
+如果只处理代理可用性功能而不涉及更广泛的 RBAC 请求，请显式调用该 Skill；
+它的自动发现范围仍有意聚焦于 RBAC：
+
+```text
+Use $fastapi-templates-xtn to add proxy availability checks, Redis-backed latest
+results, and single/batch detection to this existing proxy management module.
 ```
 
 当请求与 `SKILL.md` 中的描述匹配时，Codex 也可能自动选择此 Skill。

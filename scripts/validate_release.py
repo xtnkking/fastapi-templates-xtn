@@ -50,6 +50,10 @@ REQUIRED_SKILL_FILES = (
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
     "agents/openai.yaml",
+    "references/proxy-availability-backend.md",
+    "references/proxy-availability-detection.md",
+    "references/proxy-availability-frontend.md",
+    "references/proxy-availability-testing.md",
 )
 REQUIRED_ASSET_FILES = (
     "LICENSE",
@@ -145,6 +149,10 @@ def validate_frontmatter(errors: list[str]) -> None:
     unexpected = set(fields) - {"name", "description", "license", "allowed-tools", "metadata"}
     if unexpected:
         fail(errors, f"SKILL.md has unsupported frontmatter keys: {sorted(unexpected)}")
+
+    proxy_reference = "references/proxy-availability-detection.md"
+    if proxy_reference not in content:
+        fail(errors, f"SKILL.md does not route to {proxy_reference}")
 
 
 def validate_links(errors: list[str]) -> None:

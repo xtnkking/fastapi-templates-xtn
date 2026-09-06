@@ -42,6 +42,7 @@ Start with this file and choose the narrowest primary reference:
 | Hierarchy, delegation, ownership, protected identities, or self-elevation | [Administrative hierarchy](references/administrative-hierarchy.md) |
 | Authorization writes, immediate revocation, concurrency, audit outcomes, cache invalidation, or outbox | [Atomic authorization consistency](references/atomic-consistency.md) |
 | Tables, constraints, permission seeds, backfills, or upgrades | [Migrations](references/migrations.md) |
+| Explicit proxy availability, latency, or exit-IP checks; Redis result hydration; or single/batch detection | [Proxy availability detection](references/proxy-availability-detection.md) |
 | Test-client or test-infrastructure work only | [Testing](references/testing.md) |
 
 Add another reference only when the deliverable spans its concern. For example,
@@ -56,6 +57,12 @@ need `rbac.md`, `migrations.md`, or `modern-fastapi-stack.md`.
 Specialized rows override the general RBAC row: a hierarchy-only question reads
 only `administrative-hierarchy.md`, and an atomicity-only question reads only
 `atomic-consistency.md` in addition to this entrypoint.
+
+Proxy availability detection is an optional product feature. Load or suggest it
+only when the user explicitly asks for availability, latency, exit-IP, cached
+results, or single/batch detection. A proxy model, proxy CRUD, or proxy management
+page alone is not a loading condition. Never add it to an ordinary RBAC service
+merely because this Skill contains the reference.
 
 The PostgreSQL implementation already fixes the baseline policy. Do not also read
 the general RBAC reference unless changing its policy, model, or permission
@@ -158,5 +165,8 @@ activation, and never recreate a missing Redis allowlist entry from a JWT.
 - JWT tests cover minimal claims, UUIDv4 `sub`/`jti`, Redis allowlist mismatch and
   outage, refresh separation, and revocation races. Schema inspection proves no
   RBAC or business identity column uses an integer sequence or identity default.
+- When proxy availability detection is requested, prove with a controlled proxy
+  integration test that traffic did not fall back to the server's direct network;
+  follow the cache, credential-redaction, and five-worker checks in its reference.
 - Do not claim production readiness while required production assumptions or
   PostgreSQL behavior remain unverified.

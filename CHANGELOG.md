@@ -6,6 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Added optional, progressively loaded proxy availability references covering
+  forced proxy routing, safe error mapping, Redis latest-result caching, list
+  hydration, a five-worker frontend batch flow, and controlled routing tests.
 - Added Simplified Chinese mirrors for the repository documentation and
   bilingual GitHub issue and pull-request guidance.
 

@@ -41,6 +41,11 @@ and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
   active-JTI session design.
 - Transaction, lock-order, audit, outbox, revocation, and optimistic concurrency
   requirements for privileged writes.
+- An optional
+  [implementation guide for proxy availability checks](skills/fastapi-templates-xtn/references/proxy-availability-detection.md),
+  Redis-backed latest-result display, and bounded single or batch checks in an
+  existing proxy management UI. This is guidance, not a feature bundled into the
+  RBAC asset. It is currently available on `main` and is not part of `v0.1.0`.
 - A runnable FastAPI, SQLAlchemy, Alembic, and PostgreSQL reference asset with
   focused policy and integration tests.
 
@@ -59,6 +64,9 @@ stops if a directory with the same name already exists. Codex detects newly
 installed Skills automatically; restart Codex if it does not appear. Replace
 `v0.1.0` with another published release tag when needed. Use `main` only when
 you intentionally want the latest unreleased state.
+
+To use the unreleased proxy-availability guide, replace `v0.1.0` in the command
+above with `main`.
 
 For repository-scoped use, copy `skills/fastapi-templates-xtn` to
 `.agents/skills/fastapi-templates-xtn` in the target repository.
@@ -79,6 +87,14 @@ Invoke it explicitly when the request needs its full security baseline:
 ```text
 Use $fastapi-templates-xtn to build a tenant-scoped PostgreSQL FastAPI service
 with strict RBAC and revocable JWT sessions.
+```
+
+For proxy availability work without a broader RBAC request, invoke the Skill
+explicitly because its automatic discovery remains intentionally RBAC-focused:
+
+```text
+Use $fastapi-templates-xtn to add proxy availability checks, Redis-backed latest
+results, and single/batch detection to this existing proxy management module.
 ```
 
 Codex may also select it automatically when a request matches the description in
