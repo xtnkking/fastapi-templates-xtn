@@ -1,6 +1,6 @@
 import uuid
 from collections.abc import Iterable
-from typing import Annotated, Literal, cast
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy import select
@@ -10,27 +10,22 @@ from app.rbac.dependencies import (
     get_authorization_context,
     require_permissions,
 )
-from app.rbac.domain import (
-    TENANT_OWNER_PERMISSION_KEYS,
-    AuthorizationContext,
-    PermissionKey,
-)
-from app.rbac.models import Membership, Permission, Role
+from app.rbac.domain import OWNER_PERMISSION_KEYS, AuthorizationContext, PermissionKey
+from app.rbac.models import Permission, Role, User
 from app.rbac.queries import load_authority_snapshot, load_role_grant
 from app.rbac.schemas import (
     AuthorityResponse,
-    MembershipCreateRequest,
-    MembershipResponse,
-    MembershipStatusUpdateRequest,
     PermissionResponse,
     RoleCreateRequest,
     RoleDelegationReplaceRequest,
     RolePermissionsReplaceRequest,
     RoleResponse,
+    UserResponse,
+    UserStatusUpdateRequest,
 )
 from app.rbac.service import RbacService, get_rbac_service
 
-router = APIRouter(prefix="/tenants/{tenant_id}/rbac", tags=["rbac"])
+router = APIRouter(prefix="/rbac", tags=["rbac"])
 RbacServiceDependency = Annotated[RbacService, Depends(get_rbac_service)]
 
 
@@ -54,22 +49,19 @@ def _role_response(
     )
 
 
-async def _membership_response(
+async def _user_response(
     session: SessionDependency,
     *,
-    tenant_id: uuid.UUID,
-    membership: Membership,
-) -> MembershipResponse:
+    user: User,
+) -> UserResponse:
     authority = await load_authority_snapshot(
         session,
-        tenant_id=tenant_id,
-        membership_id=membership.id,
+        user_id=user.id,
         include_disabled_roles=True,
     )
-    return MembershipResponse(
-        id=membership.id,
-        user_id=membership.user_id,
-        status=cast(Literal["active", "suspended"], authority.membership_status),
+    return UserResponse(
+        id=user.id,
+        is_active=authority.user_is_active,
         management_tier=authority.management_tier,
         role_ids=[role.role_id for role in authority.roles],
         permissions=sorted(authority.permissions),
@@ -85,36 +77,27 @@ async def read_my_authority(
     authority = context.authority
     return AuthorityResponse(
         user_id=authority.user_id,
-        tenant_id=context.tenant_id,
-        membership_id=authority.membership_id,
         management_tier=authority.management_tier,
         permissions=sorted(authority.permissions),
         delegable_permissions=sorted(authority.delegable_permissions),
         authz_version=authority.authz_version,
-        tenant_authz_epoch=context.tenant_authz_epoch,
+        authorization_epoch=context.authorization_epoch,
     )
 
 
 @router.get("/roles", response_model=list[RoleResponse])
 async def list_roles(
-    context: Annotated[
+    _context: Annotated[
         AuthorizationContext,
         Depends(require_permissions(PermissionKey.ROLES_READ)),
     ],
     session: SessionDependency,
 ) -> list[RoleResponse]:
-    roles = (
-        await session.scalars(
-            select(Role)
-            .where(Role.tenant_id == context.tenant_id)
-            .order_by(Role.key, Role.id)
-        )
-    ).all()
+    roles = (await session.scalars(select(Role).order_by(Role.key, Role.id))).all()
     responses: list[RoleResponse] = []
     for role in roles:
         grant = await load_role_grant(
             session,
-            tenant_id=context.tenant_id,
             role_id=role.id,
             include_disabled=True,
         )
@@ -135,7 +118,7 @@ async def list_permissions(
     permissions = (
         await session.scalars(
             select(Permission)
-            .where(Permission.key.in_(TENANT_OWNER_PERMISSION_KEYS))
+            .where(Permission.key.in_(OWNER_PERMISSION_KEYS))
             .order_by(Permission.key)
         )
     ).all()
@@ -145,71 +128,32 @@ async def list_permissions(
     ]
 
 
-@router.get("/memberships", response_model=list[MembershipResponse])
-async def list_memberships(
-    context: Annotated[
+@router.get("/users", response_model=list[UserResponse])
+async def list_users(
+    _context: Annotated[
         AuthorizationContext,
-        Depends(require_permissions(PermissionKey.MEMBERSHIPS_READ)),
+        Depends(require_permissions(PermissionKey.USERS_READ)),
     ],
     session: SessionDependency,
-) -> list[MembershipResponse]:
-    memberships = (
-        await session.scalars(
-            select(Membership)
-            .where(Membership.tenant_id == context.tenant_id)
-            .order_by(Membership.id)
-        )
-    ).all()
-    return [
-        await _membership_response(
-            session,
-            tenant_id=context.tenant_id,
-            membership=membership,
-        )
-        for membership in memberships
-    ]
+) -> list[UserResponse]:
+    users = (await session.scalars(select(User).order_by(User.id))).all()
+    return [await _user_response(session, user=user) for user in users]
 
 
-@router.post(
-    "/memberships",
-    response_model=MembershipResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_membership(
-    body: MembershipCreateRequest,
+@router.patch("/users/{user_id}/status", response_model=UserResponse)
+async def update_user_status(
+    user_id: uuid.UUID,
+    body: UserStatusUpdateRequest,
     context: Annotated[AuthorizationContext, Depends(get_authorization_context)],
     session: SessionDependency,
     service: RbacServiceDependency,
-) -> MembershipResponse:
-    membership = await service.create_membership(context=context, request=body)
-    return await _membership_response(
-        session,
-        tenant_id=context.tenant_id,
-        membership=membership,
-    )
-
-
-@router.patch(
-    "/memberships/{membership_id}/status",
-    response_model=MembershipResponse,
-)
-async def update_membership_status(
-    membership_id: uuid.UUID,
-    body: MembershipStatusUpdateRequest,
-    context: Annotated[AuthorizationContext, Depends(get_authorization_context)],
-    session: SessionDependency,
-    service: RbacServiceDependency,
-) -> MembershipResponse:
-    membership = await service.update_membership_status(
+) -> UserResponse:
+    user = await service.update_user_status(
         context=context,
-        target_membership_id=membership_id,
+        target_user_id=user_id,
         request=body,
     )
-    return await _membership_response(
-        session,
-        tenant_id=context.tenant_id,
-        membership=membership,
-    )
+    return await _user_response(session, user=user)
 
 
 @router.post("/roles", response_model=RoleResponse, status_code=status.HTTP_201_CREATED)
@@ -220,41 +164,41 @@ async def create_role(
     service: RbacServiceDependency,
 ) -> RoleResponse:
     role = await service.create_role(context=context, request=body)
-    grant = await load_role_grant(session, tenant_id=context.tenant_id, role_id=role.id)
+    grant = await load_role_grant(session, role_id=role.id)
     return _role_response(role, grant.permissions, grant.delegable_permissions)
 
 
 @router.put(
-    "/memberships/{membership_id}/roles/{role_id}",
+    "/users/{user_id}/roles/{role_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def assign_role(
-    membership_id: uuid.UUID,
+    user_id: uuid.UUID,
     role_id: uuid.UUID,
     context: Annotated[AuthorizationContext, Depends(get_authorization_context)],
     service: RbacServiceDependency,
 ) -> Response:
     await service.assign_role(
         context=context,
-        target_membership_id=membership_id,
+        target_user_id=user_id,
         role_id=role_id,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete(
-    "/memberships/{membership_id}/roles/{role_id}",
+    "/users/{user_id}/roles/{role_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def revoke_role(
-    membership_id: uuid.UUID,
+    user_id: uuid.UUID,
     role_id: uuid.UUID,
     context: Annotated[AuthorizationContext, Depends(get_authorization_context)],
     service: RbacServiceDependency,
 ) -> Response:
     await service.revoke_role(
         context=context,
-        target_membership_id=membership_id,
+        target_user_id=user_id,
         role_id=role_id,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -273,7 +217,7 @@ async def replace_role_permissions(
         role_id=role_id,
         request=body,
     )
-    grant = await load_role_grant(session, tenant_id=context.tenant_id, role_id=role.id)
+    grant = await load_role_grant(session, role_id=role.id)
     return _role_response(role, grant.permissions, grant.delegable_permissions)
 
 
@@ -290,21 +234,21 @@ async def replace_role_delegation(
         role_id=role_id,
         request=body,
     )
-    grant = await load_role_grant(session, tenant_id=context.tenant_id, role_id=role.id)
+    grant = await load_role_grant(session, role_id=role.id)
     return _role_response(role, grant.permissions, grant.delegable_permissions)
 
 
 @router.post(
-    "/ownership/transfer/{membership_id}",
+    "/ownership/transfer/{user_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def transfer_ownership(
-    membership_id: uuid.UUID,
+    user_id: uuid.UUID,
     context: Annotated[AuthorizationContext, Depends(get_authorization_context)],
     service: RbacServiceDependency,
 ) -> Response:
     await service.transfer_ownership(
         context=context,
-        target_membership_id=membership_id,
+        target_user_id=user_id,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

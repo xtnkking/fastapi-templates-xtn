@@ -1,6 +1,6 @@
 ---
 name: fastapi-templates-xtn
-description: Build or harden FastAPI services that require tenant-scoped PostgreSQL RBAC, strict administrative hierarchy, minimal revocable JWT sessions, non-sequential identifiers, and transactionally consistent authorization writes. Use for new or existing FastAPI RBAC work; do not select for FastAPI tasks with no authorization requirement.
+description: Build or harden single-project FastAPI services that require PostgreSQL RBAC, strict administrative hierarchy, minimal revocable JWT sessions, non-sequential identifiers, and transactionally consistent authorization writes. Use for new or existing FastAPI RBAC work; do not select for FastAPI tasks with no authorization requirement.
 ---
 
 # FastAPI Templates XTN
@@ -21,8 +21,8 @@ baseline when the product has not already made conflicting choices.
   identity provider, package layout, transaction ownership, and tests.
 - Preserve the selected database, identity provider, package manager, module
   boundaries, and deployment model unless changing one is requested.
-- Keep async handlers free of blocking work. Do not add background workers,
-  multi-tenancy, or another architecture layer without a product need. An active
+- Keep async handlers free of blocking work. Do not add background workers or
+  another architecture layer without a product need. An active
   JTI registry requested for token revocation is a valid Redis need; keep it
   separate from any RBAC permission cache.
 
@@ -37,7 +37,7 @@ Start with this file and choose the narrowest primary reference:
 | Concrete JWT/PostgreSQL-session/Redis code or adapting the included token adapter | [JWT session security](references/jwt-session-security.md), then [JWT session implementation](references/jwt-session-implementation.md) |
 | Identifier policy, UUID models, sequence avoidance, or public ID review | [Identifier policy](references/identifier-policy.md) |
 | Concrete integer-to-UUID schema migration or identifier backfill | [Identifier policy](references/identifier-policy.md), then [Migrations](references/migrations.md) |
-| Database-agnostic RBAC policy, flow, tenant isolation, or authorization cache | [RBAC design](references/rbac.md) |
+| Database-agnostic RBAC policy, flow, or authorization cache | [RBAC design](references/rbac.md) |
 | PostgreSQL models, services, endpoints, or runnable baseline | [PostgreSQL implementation](references/postgresql-rbac-implementation.md) |
 | Hierarchy, delegation, ownership, protected identities, or self-elevation | [Administrative hierarchy](references/administrative-hierarchy.md) |
 | Authorization writes, immediate revocation, concurrency, audit outcomes, cache invalidation, or outbox | [Atomic authorization consistency](references/atomic-consistency.md) |
@@ -80,45 +80,45 @@ tests. Running a test does not require reading its implementation first.
 Unless existing product decisions conflict, keep these defaults:
 
 - Python 3.12+, FastAPI, Pydantic 2, SQLAlchemy 2 async, asyncpg, Alembic, named
-  constraints, tenant-safe composite foreign keys, and PostgreSQL integration
-  tests. SQLite cannot prove this lock or constraint contract.
-- Use non-sequential UUID primary/API IDs for users, tenants, memberships, roles,
+  constraints, explicit foreign keys, and PostgreSQL integration tests. SQLite
+  cannot prove this lock or constraint contract.
+- Use non-sequential UUID primary/API IDs for users, roles,
   permissions, sessions, audit rows, and every business entity; generate new
   entity IDs as random UUIDv4. Only a deterministic seed whose stable key is
   already public may use the narrow UUIDv5 exception in the identifier policy.
   Do not use `SERIAL`,
   `BIGSERIAL`, `IDENTITY`, integer autoincrement, `max(id)+1`, or a hidden
   sequential public alias. Integer tiers, versions, epochs, and counts are not
-  identifiers. UUIDs reduce casual enumeration; they never replace tenant-scoped
-  SQL, object authorization, non-leaking `404`s, rate limits, or IDOR tests.
+  identifiers. UUIDs reduce casual enumeration; they never replace capability
+  checks, object authorization, non-leaking `404`s, rate limits, or IDOR tests.
 - Use stable, exact `resource:action` positive grants. Active roles union
   permissions and take the maximum tier. Do not add deny rules, wildcards, role
   inheritance, scope languages, or a permission cache to the baseline.
-- Scope every tenant lookup in SQL, including list, search, count, export, bulk,
-  and nested operations. Apply ownership and row policy separately from RBAC.
+- Apply capability, ownership, and row policy consistently to detail, list,
+  search, count, export, bulk, and nested operations. Keep ownership and row
+  policy separate from RBAC.
 - Larger tiers are higher. Compare complete current and proposed multi-role
   authority: ordinary actors manage only strictly lower authority. Deny peer,
-  higher, incomparable, protected, and cross-tenant targets, plus direct and
-  indirect self-elevation. Owner alone uses tier `1000`; ordinary roles use
+  higher, incomparable, and protected targets, plus direct and indirect
+  self-elevation. System Owner alone uses tier `1000`; ordinary roles use
   `0..999`.
 - Keep role assignment, role definition, permission replacement, delegation, and
   ownership transfer as separate capabilities. `can_delegate` is an explicit
   subset; new roles start non-delegable; only Owner changes delegation; delegation
   control and ownership transfer cannot be delegated.
-- Privileged bodies use `extra="forbid"` and never accept tenant, ownership,
-  protection, delegation, or mutable authorization-version fields. Protect system
+- Privileged bodies use `extra="forbid"` and never accept ownership, protection,
+  delegation, or mutable authorization-version fields. Protect system
   roles, the final Owner, bootstrap, and break-glass paths explicitly.
 - In JWTs, `sub` is the only user identity claim and is the canonical UUIDv4
   string of immutable `users.id`; never put username, email, display name, roles,
-  permissions, tier, status, protection flags, or versions in the payload. The
-  tenant-bound baseline also carries `tid` as scope, not profile data. Require a
-  unique random UUIDv4 `jti` and validate it against the server-side active
-  session before authorization. Reload PostgreSQL identity, membership, and RBAC
+  permissions, tier, status, protection flags, or versions in the payload.
+  Require a unique random UUIDv4 `jti` and validate it against the server-side
+  active session before authorization. Reload PostgreSQL identity and RBAC
   authority; fail closed on unavailable state. Follow
   [JWT session security](references/jwt-session-security.md).
 - Use `401` for invalid, expired, missing, or revoked credentials; `403` for a
-  visible but forbidden action; `404` to conceal missing or cross-tenant
-  resources; and `503` when a required authentication authority is unavailable.
+  visible but forbidden action; `404` for a missing or deliberately concealed
+  resource; and `503` when a required authentication authority is unavailable.
 - Apply the same authorization service at HTTP, WebSocket, job, CLI, and direct
   service trust boundaries. Audit privileged decisions without secrets.
 
@@ -126,28 +126,30 @@ Unless existing product decisions conflict, keep these defaults:
 
 Every authorization control-plane write, and every protected business write that
 promises immediate revocation, has one authoritative transaction. Under the
-shared lock order, reload the actor and complete affected authority from
-PostgreSQL, decide again, then commit the mutation, all version increments, the
-allowed audit, and any outbox rows together. On denial, roll back the whole
-attempt before writing a denied audit in a separate transaction. A route check,
-old JWT, cached context, or earlier ORM read cannot replace this decision. Follow
-[atomic authorization consistency](references/atomic-consistency.md). Full-set or
-status replacement commands also require a post-lock `If-Match` check so one
-authorized administrator cannot silently overwrite another's newer decision.
+shared lock order, every writer acquires the fixed
+`authorization_state(scope='global')` guard as its first lock, then reloads the
+actor and complete affected authority from PostgreSQL, decides again, and commits
+the mutation, all version increments, the allowed audit, and any outbox rows
+together. On denial, roll back the whole attempt before writing a denied audit in
+a separate transaction. A route check, old JWT, cached context, or earlier ORM
+read cannot replace this decision. Follow [atomic authorization consistency](references/atomic-consistency.md).
+Full-set or status replacement commands also require a post-lock `If-Match`
+check so one authorized administrator cannot silently overwrite another's newer
+decision.
 PostgreSQL and Redis are not one ACID boundary: persist authoritative session
 state and any revocation outbox in PostgreSQL, fail closed during partial
 activation, and never recreate a missing Redis allowlist entry from a JWT.
 
 ## Implementation Workflow
 
-1. Define actors, protected resources, stable capabilities, tenant boundaries,
+1. Define actors, protected resources, stable capabilities,
    row-level rules, administrative effects, and expected failure responses.
 2. For greenfield PostgreSQL RBAC, copy the complete asset. In an existing app,
    preserve its policy, transaction, query, and migration boundaries.
 3. Implement complete configuration, models, schemas, dependencies, services,
    routes, migrations, and tests. Never copy a route without its policy, locking
-   query, tenant constraint, audit path, and negative tests.
-4. Keep authentication, capability checks, tenant filtering, and row policy
+   query, database constraint, audit path, and negative tests.
+4. Keep authentication, capability checks, ownership, and row policy
    distinct. Run formatting, linting, typing, migrations, PostgreSQL tests, and an
    ASGI exercise; report anything not verified.
 
@@ -156,12 +158,12 @@ activation, and never recreate a missing Redis allowlist entry from a JWT.
 - A clean environment installs and imports; configuration has no insecure
   production defaults or runtime `create_all()` migration substitute.
 - Migrations work from empty and supported prior revisions. The result includes
-  executable models, tenant constraints, permission seed, authorization service,
-  transactional administration, Owner-only delegation, auditing, and identity
-  integration points.
-- PostgreSQL tests cover positive and negative policy, rollback, tenant isolation,
-  low-to-high and peer denial, self-elevation, protected and Owner invariants,
-  committed revocation, phantom holders, and cross-tenant assignment.
+  executable models, user-role constraints, permission seed, authorization
+  service, transactional administration, Owner-only delegation, auditing, and
+  identity integration points.
+- PostgreSQL tests cover positive and negative policy, rollback, low-to-high and
+  peer denial, self-elevation, protected and Owner invariants, committed
+  revocation, concurrent assignments, role-assignment constraints, and IDOR behavior.
 - JWT tests cover minimal claims, UUIDv4 `sub`/`jti`, Redis allowlist mismatch and
   outage, refresh separation, and revocation races. Schema inspection proves no
   RBAC or business identity column uses an integer sequence or identity default.

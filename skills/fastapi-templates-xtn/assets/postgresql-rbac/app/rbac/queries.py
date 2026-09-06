@@ -1,20 +1,18 @@
 import uuid
 from dataclasses import dataclass, field
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.rbac.domain import AuthoritySnapshot, RoleGrant
-from app.rbac.errors import not_found, unauthenticated
+from app.rbac.errors import not_found, unauthenticated, unavailable
 from app.rbac.models import (
-    Membership,
-    MembershipRole,
+    AuthorizationState,
     Permission,
     Role,
     RolePermission,
-    Tenant,
-    TenantAuthorizationState,
     User,
+    UserRole,
 )
 
 
@@ -38,11 +36,10 @@ class _RoleAccumulator:
         )
 
 
-async def load_role_grants_for_membership(
+async def load_role_grants_for_user(
     session: AsyncSession,
     *,
-    tenant_id: uuid.UUID,
-    membership_id: uuid.UUID,
+    user_id: uuid.UUID,
     include_disabled_roles: bool,
 ) -> tuple[RoleGrant, ...]:
     statement = (
@@ -54,26 +51,11 @@ async def load_role_grants_for_membership(
             Permission.key.label("permission_key"),
             RolePermission.can_delegate,
         )
-        .select_from(MembershipRole)
-        .join(
-            Role,
-            and_(
-                Role.id == MembershipRole.role_id,
-                Role.tenant_id == MembershipRole.tenant_id,
-            ),
-        )
-        .outerjoin(
-            RolePermission,
-            and_(
-                RolePermission.tenant_id == Role.tenant_id,
-                RolePermission.role_id == Role.id,
-            ),
-        )
+        .select_from(UserRole)
+        .join(Role, Role.id == UserRole.role_id)
+        .outerjoin(RolePermission, RolePermission.role_id == Role.id)
         .outerjoin(Permission, Permission.id == RolePermission.permission_id)
-        .where(
-            MembershipRole.tenant_id == tenant_id,
-            MembershipRole.membership_id == membership_id,
-        )
+        .where(UserRole.user_id == user_id)
         .order_by(Role.id, Permission.key)
     )
     if not include_disabled_roles:
@@ -101,56 +83,36 @@ async def load_role_grants_for_membership(
 async def load_authority_snapshot(
     session: AsyncSession,
     *,
-    tenant_id: uuid.UUID,
-    membership_id: uuid.UUID,
+    user_id: uuid.UUID,
     include_disabled_roles: bool = False,
 ) -> AuthoritySnapshot:
-    result = await session.execute(
-        select(
-            Membership,
-            User.is_active.label("user_is_active"),
-            User.is_protected.label("user_is_protected"),
-        )
-        .join(User, User.id == Membership.user_id)
-        .where(
-            Membership.tenant_id == tenant_id,
-            Membership.id == membership_id,
-        )
-        .execution_options(populate_existing=True)
+    user = await session.scalar(
+        select(User).where(User.id == user_id).execution_options(populate_existing=True)
     )
-    row = result.one_or_none()
-    if row is None:
-        raise not_found("membership_not_found")
-    membership: Membership = row[0]
-    roles = await load_role_grants_for_membership(
+    if user is None:
+        raise not_found("user_not_found")
+    roles = await load_role_grants_for_user(
         session,
-        tenant_id=tenant_id,
-        membership_id=membership_id,
+        user_id=user_id,
         include_disabled_roles=include_disabled_roles,
     )
     return AuthoritySnapshot.build(
-        membership_id=membership.id,
-        user_id=membership.user_id,
-        membership_status=membership.status,
-        membership_is_protected=membership.is_protected,
-        user_is_protected=bool(row.user_is_protected),
-        authz_version=membership.authz_version,
+        user_id=user.id,
+        user_is_active=user.is_active,
+        user_is_protected=user.is_protected,
+        authz_version=user.authz_version,
         roles=roles,
-        user_is_active=bool(row.user_is_active),
     )
 
 
 async def load_role_grant(
     session: AsyncSession,
     *,
-    tenant_id: uuid.UUID,
     role_id: uuid.UUID,
     include_disabled: bool = False,
 ) -> RoleGrant:
     role = await session.scalar(
-        select(Role)
-        .where(Role.tenant_id == tenant_id, Role.id == role_id)
-        .execution_options(populate_existing=True)
+        select(Role).where(Role.id == role_id).execution_options(populate_existing=True)
     )
     if role is None or (not include_disabled and not role.is_active):
         raise not_found("role_not_found")
@@ -160,10 +122,7 @@ async def load_role_grant(
             select(Permission.key, RolePermission.can_delegate)
             .select_from(RolePermission)
             .join(Permission, Permission.id == RolePermission.permission_id)
-            .where(
-                RolePermission.tenant_id == tenant_id,
-                RolePermission.role_id == role_id,
-            )
+            .where(RolePermission.role_id == role_id)
             .order_by(Permission.key)
         )
     ).all()
@@ -178,19 +137,16 @@ async def load_role_grant(
     )
 
 
-async def find_membership_for_user(
-    session: AsyncSession,
-    *,
-    tenant_id: uuid.UUID,
-    user_id: uuid.UUID,
-) -> Membership | None:
-    result = await session.scalars(
-        select(Membership).where(
-            Membership.tenant_id == tenant_id,
-            Membership.user_id == user_id,
-        )
+async def lock_authorization_state(session: AsyncSession) -> AuthorizationState:
+    state = await session.scalar(
+        select(AuthorizationState)
+        .where(AuthorizationState.scope == "global")
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
-    return result.one_or_none()
+    if state is None:
+        raise unavailable("authorization_state_missing")
+    return state
 
 
 async def lock_users(
@@ -210,52 +166,9 @@ async def lock_users(
     return {user.id: user for user in users}
 
 
-async def lock_tenant_authorization_state(
-    session: AsyncSession, tenant_id: uuid.UUID
-) -> tuple[Tenant, TenantAuthorizationState]:
-    state = await session.scalar(
-        select(TenantAuthorizationState)
-        .where(TenantAuthorizationState.tenant_id == tenant_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    tenant = await session.scalar(
-        select(Tenant)
-        .where(Tenant.id == tenant_id)
-        .execution_options(populate_existing=True)
-    )
-    if state is None or tenant is None:
-        raise not_found("tenant_not_found")
-    return tenant, state
-
-
-async def lock_memberships(
-    session: AsyncSession,
-    *,
-    tenant_id: uuid.UUID,
-    membership_ids: set[uuid.UUID],
-) -> dict[uuid.UUID, Membership]:
-    if not membership_ids:
-        return {}
-    memberships = (
-        await session.scalars(
-            select(Membership)
-            .where(
-                Membership.tenant_id == tenant_id,
-                Membership.id.in_(membership_ids),
-            )
-            .order_by(Membership.id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-    ).all()
-    return {membership.id: membership for membership in memberships}
-
-
 async def lock_roles(
     session: AsyncSession,
     *,
-    tenant_id: uuid.UUID,
     role_ids: set[uuid.UUID],
 ) -> dict[uuid.UUID, Role]:
     if not role_ids:
@@ -263,7 +176,7 @@ async def lock_roles(
     roles = (
         await session.scalars(
             select(Role)
-            .where(Role.tenant_id == tenant_id, Role.id.in_(role_ids))
+            .where(Role.id.in_(role_ids))
             .order_by(Role.id)
             .with_for_update()
             .execution_options(populate_existing=True)
@@ -275,17 +188,13 @@ async def lock_roles(
 async def lock_role_permissions(
     session: AsyncSession,
     *,
-    tenant_id: uuid.UUID,
     role_id: uuid.UUID,
 ) -> dict[str, RolePermission]:
     rows = (
         await session.execute(
             select(RolePermission, Permission.key.label("permission_key"))
             .join(Permission, Permission.id == RolePermission.permission_id)
-            .where(
-                RolePermission.tenant_id == tenant_id,
-                RolePermission.role_id == role_id,
-            )
+            .where(RolePermission.role_id == role_id)
             .order_by(Permission.key)
             .with_for_update(of=RolePermission)
             .execution_options(populate_existing=True)
@@ -297,8 +206,6 @@ async def lock_role_permissions(
 async def require_current_actor(
     session: AsyncSession,
     *,
-    tenant_id: uuid.UUID,
-    actor_membership_id: uuid.UUID,
     actor_user_id: uuid.UUID,
     token_version: int,
 ) -> AuthoritySnapshot:
@@ -309,14 +216,7 @@ async def require_current_actor(
     )
     if user is None or not user.is_active or user.token_version != token_version:
         raise unauthenticated("actor_no_longer_active")
-    actor = await load_authority_snapshot(
-        session,
-        tenant_id=tenant_id,
-        membership_id=actor_membership_id,
-    )
-    if actor.user_id != actor_user_id or actor.membership_status != "active":
-        raise unauthenticated("actor_membership_no_longer_active")
-    return actor
+    return await load_authority_snapshot(session, user_id=actor_user_id)
 
 
 async def load_permission_ids(

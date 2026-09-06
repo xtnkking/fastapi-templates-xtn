@@ -59,6 +59,14 @@ def conflict(reason_code: str) -> RbacError:
     )
 
 
+def unavailable(reason_code: str) -> RbacError:
+    return RbacError(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        public_code="authorization_unavailable",
+        reason_code=reason_code,
+    )
+
+
 def invalid_request(reason_code: str) -> RbacError:
     return RbacError(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

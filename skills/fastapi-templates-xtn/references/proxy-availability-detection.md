@@ -27,7 +27,7 @@ changes authorization policy.
 
 ## Inspect The Existing Product First
 
-Inspect the proxy model and credential-encryption boundary, tenant-scoped query,
+Inspect the proxy model and credential-encryption boundary, access-controlled query,
 router and response envelope, service ownership, async HTTP client, Redis
 wrapper and topology, list filters and pagination, frontend API/table/query
 state, and relevant tests. Preserve intentional boundaries and naming.
@@ -43,9 +43,9 @@ Unless the user supplies a conflicting requirement:
 
 - Add `POST /api/v1/proxies/{proxy_id}/availability-check` with no body, adapted
   only to the repository's route naming. The browser sends only a proxy UUID.
-- In an RBAC product, require the stable `proxies:check` capability. Resolve the
-  authenticated tenant first and query by `(tenant_id, proxy_id)`; missing and
-  cross-tenant UUIDs have the same `404` behavior.
+- In an RBAC product, require the stable `proxies:check` capability. Query by
+  `proxy_id`, apply any independent row policy, and return the same generic `404`
+  for missing and deliberately concealed UUIDs.
 - Keep `protocol`, `host`, `port`, username, and encrypted password or secret
   reference backend-only. Decrypt only after authorization and outbound-policy
   checks. Neither API returns credentials or a complete proxy URL.
@@ -80,7 +80,7 @@ Unless the user supplies a conflicting requirement:
 
 The result is display-only diagnostic data. The HTTP target and an untrusted
 proxy can expose or fabricate the exit IP and location, so never use the result
-for authorization, tenant access, billing, fraud decisions, or proof of trust.
+for authorization, resource access, billing, fraud decisions, or proof of trust.
 Confirm the provider's current terms, privacy constraints, and rate limits before
 production use; do not retry a `429` automatically.
 
@@ -180,5 +180,5 @@ audit documents.
   ordinary Redis Cluster cannot issue one cross-slot `MGET` for many differently
   tagged proxy keys without a cluster-aware wrapper.
 - No TTL is an explicit retention policy. Remove result and coordination keys
-  after proxy or tenant deletion, restrict access to exit-IP/location data, and
+  after proxy deletion, restrict access to exit-IP/location data, and
   do not duplicate it into indefinite telemetry.

@@ -1,11 +1,13 @@
 import uuid
 from typing import Literal, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from starlette.requests import Request
 
 from app.main import app
-from app.rbac.dependencies import get_current_principal, require_permissions
+from app.rbac.dependencies import get_authorization_context, require_permissions
 from app.rbac.domain import (
     AuthoritySnapshot,
     AuthorizationContext,
@@ -13,11 +15,11 @@ from app.rbac.domain import (
     Principal,
     RoleGrant,
 )
-from app.rbac.errors import RbacError
+from app.rbac.errors import RbacError, not_found, unavailable
+from app.rbac.models import AuthorizationState
 
 
 def authorization_context(*permission_groups: set[str]) -> AuthorizationContext:
-    tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()
     roles = tuple(
         RoleGrant(
@@ -31,10 +33,8 @@ def authorization_context(*permission_groups: set[str]) -> AuthorizationContext:
         for index, permissions in enumerate(permission_groups)
     )
     authority = AuthoritySnapshot.build(
-        membership_id=uuid.uuid4(),
         user_id=user_id,
-        membership_status="active",
-        membership_is_protected=False,
+        user_is_active=True,
         user_is_protected=False,
         authz_version=0,
         roles=roles,
@@ -42,12 +42,10 @@ def authorization_context(*permission_groups: set[str]) -> AuthorizationContext:
     return AuthorizationContext(
         principal=Principal(
             user_id=user_id,
-            token_tenant_id=tenant_id,
             token_version=0,
-            token_id=str(uuid.uuid4()),
+            token_id=uuid.uuid4(),
         ),
-        tenant_id=tenant_id,
-        tenant_authz_epoch=0,
+        authorization_epoch=0,
         authority=authority,
         request_id="dependency-test",
     )
@@ -100,32 +98,42 @@ async def test_http_authentication_failures_return_bearer_challenge(
     request_headers = {} if authorization is None else {"Authorization": authorization}
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get(
-            f"/tenants/{uuid.uuid4()}/rbac/me",
-            headers=request_headers,
-        )
+        response = await client.get("/rbac/me", headers=request_headers)
 
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
     assert response.json() == {"detail": {"code": "invalid_authentication"}}
 
 
-async def test_http_token_tenant_mismatch_is_concealed() -> None:
-    token_tenant_id = uuid.uuid4()
+def test_missing_authoritative_state_maps_to_service_unavailable() -> None:
+    error = unavailable("authorization_state_missing")
+
+    assert error.status_code == 503
+    assert error.public_code == "authorization_unavailable"
+
+
+async def test_disappearing_authenticated_user_remains_a_401(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     principal = Principal(
         user_id=uuid.uuid4(),
-        token_tenant_id=token_tenant_id,
         token_version=0,
-        token_id=str(uuid.uuid4()),
+        token_id=uuid.uuid4(),
     )
+    session = AsyncMock()
+    session.scalar.return_value = AuthorizationState(scope="global", epoch=0)
 
-    app.dependency_overrides[get_current_principal] = lambda: principal
-    try:
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get(f"/tenants/{uuid.uuid4()}/rbac/me")
-    finally:
-        app.dependency_overrides.pop(get_current_principal, None)
+    async def missing_authority(*_args: object, **_kwargs: object) -> AuthoritySnapshot:
+        raise not_found("user_not_found")
 
-    assert response.status_code == 404
-    assert response.json() == {"detail": {"code": "not_found"}}
+    monkeypatch.setattr(
+        "app.rbac.dependencies.load_authority_snapshot",
+        missing_authority,
+    )
+    request = Request({"type": "http", "headers": []})
+
+    with pytest.raises(RbacError) as caught:
+        await get_authorization_context(request, principal, session)
+
+    assert caught.value.status_code == 401
+    assert caught.value.public_code == "invalid_authentication"

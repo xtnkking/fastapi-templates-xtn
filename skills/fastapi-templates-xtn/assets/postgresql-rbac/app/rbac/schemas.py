@@ -1,5 +1,5 @@
 import uuid
-from typing import Annotated, Literal
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -58,16 +58,10 @@ class RoleDelegationReplaceRequest(BaseModel):
         return value
 
 
-class MembershipCreateRequest(BaseModel):
+class UserStatusUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    user_id: uuid.UUID
-
-
-class MembershipStatusUpdateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    status: Literal["active", "suspended"]
+    is_active: bool
 
 
 class RoleResponse(BaseModel):
@@ -89,10 +83,9 @@ class PermissionResponse(BaseModel):
     description: str
 
 
-class MembershipResponse(BaseModel):
+class UserResponse(BaseModel):
     id: uuid.UUID
-    user_id: uuid.UUID
-    status: Literal["active", "suspended"]
+    is_active: bool
     management_tier: int
     role_ids: list[uuid.UUID]
     permissions: list[str]
@@ -102,10 +95,8 @@ class MembershipResponse(BaseModel):
 
 class AuthorityResponse(BaseModel):
     user_id: uuid.UUID
-    tenant_id: uuid.UUID
-    membership_id: uuid.UUID
     management_tier: int
     permissions: list[str]
     delegable_permissions: list[str]
     authz_version: int
-    tenant_authz_epoch: int
+    authorization_epoch: int

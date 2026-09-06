@@ -9,9 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.rbac.domain import AuthorizationContext, PermissionKey, Principal
-from app.rbac.errors import forbidden, not_found, unauthenticated
-from app.rbac.models import Tenant, TenantAuthorizationState, User
-from app.rbac.queries import find_membership_for_user, load_authority_snapshot
+from app.rbac.errors import RbacError, forbidden, unauthenticated, unavailable
+from app.rbac.models import AuthorizationState, User
+from app.rbac.queries import load_authority_snapshot
 from app.rbac.security import decode_access_token
 from app.settings import Settings, get_settings
 
@@ -42,43 +42,30 @@ PrincipalDependency = Annotated[Principal, Depends(get_current_principal)]
 
 
 async def get_authorization_context(
-    tenant_id: uuid.UUID,
     request: Request,
     principal: PrincipalDependency,
     session: SessionDependency,
 ) -> AuthorizationContext:
-    if principal.token_tenant_id != tenant_id:
-        raise not_found("tenant_not_visible")
-
-    tenant = await session.scalar(select(Tenant).where(Tenant.id == tenant_id))
     state = await session.scalar(
-        select(TenantAuthorizationState).where(
-            TenantAuthorizationState.tenant_id == tenant_id
-        )
+        select(AuthorizationState).where(AuthorizationState.scope == "global")
     )
-    if tenant is None or state is None or not tenant.is_active:
-        raise not_found("tenant_not_visible")
+    if state is None:
+        raise unavailable("authorization_state_missing")
 
-    membership = await find_membership_for_user(
-        session,
-        tenant_id=tenant_id,
-        user_id=principal.user_id,
-    )
-    if membership is None or membership.status != "active":
-        raise not_found("tenant_membership_not_visible")
-
-    authority = await load_authority_snapshot(
-        session,
-        tenant_id=tenant_id,
-        membership_id=membership.id,
-    )
+    try:
+        authority = await load_authority_snapshot(session, user_id=principal.user_id)
+    except RbacError as exc:
+        if exc.reason_code == "user_not_found":
+            raise unauthenticated("identity_inactive_or_revoked") from exc
+        raise
+    if not authority.user_is_active:
+        raise unauthenticated("identity_inactive_or_revoked")
     request_id = request.headers.get("X-Request-ID", "").strip()
     if not request_id or len(request_id) > 128:
         request_id = str(uuid.uuid4())
     return AuthorizationContext(
         principal=principal,
-        tenant_id=tenant_id,
-        tenant_authz_epoch=state.epoch,
+        authorization_epoch=state.epoch,
         authority=authority,
         request_id=request_id,
     )

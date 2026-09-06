@@ -8,7 +8,6 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
-    ForeignKeyConstraint,
     Index,
     Integer,
     PrimaryKeyConstraint,
@@ -28,10 +27,14 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         CheckConstraint("token_version >= 0", name="token_version_nonnegative"),
+        CheckConstraint("authz_version >= 0", name="authz_version_nonnegative"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
     )
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
     is_active: Mapped[bool] = mapped_column(
@@ -43,70 +46,6 @@ class User(Base):
     token_version: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0, server_default="0"
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-
-class Tenant(Base):
-    __tablename__ = "tenants"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    slug: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
-    name: Mapped[str] = mapped_column(String(160), nullable=False)
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True, server_default="true"
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-
-class TenantAuthorizationState(Base):
-    __tablename__ = "tenant_authorization_state"
-    __table_args__ = (CheckConstraint("epoch >= 0", name="epoch_nonnegative"),)
-
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("tenants.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    epoch: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0, server_default="0"
-    )
-
-
-class Membership(Base):
-    __tablename__ = "memberships"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "user_id", name="uq_memberships_tenant_user"),
-        UniqueConstraint("tenant_id", "id", name="uq_memberships_tenant_id"),
-        CheckConstraint("status IN ('active', 'suspended')", name="valid_status"),
-        CheckConstraint("authz_version >= 0", name="authz_version_nonnegative"),
-        Index("ix_memberships_tenant_status", "tenant_id", "status"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("tenants.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="active", server_default="active"
-    )
-    is_protected: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="false"
-    )
     authz_version: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0, server_default="0"
     )
@@ -115,11 +54,27 @@ class Membership(Base):
     )
 
 
+class AuthorizationState(Base):
+    __tablename__ = "authorization_state"
+    __table_args__ = (
+        CheckConstraint("scope = 'global'", name="authorization_scope_global"),
+        CheckConstraint("epoch >= 0", name="authorization_epoch_nonnegative"),
+    )
+
+    scope: Mapped[str] = mapped_column(String(16), primary_key=True)
+    epoch: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+
+
 class Permission(Base):
     __tablename__ = "permissions"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
     )
     key: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
@@ -128,8 +83,7 @@ class Permission(Base):
 class Role(Base):
     __tablename__ = "roles"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "key", name="uq_roles_tenant_key"),
-        UniqueConstraint("tenant_id", "id", name="uq_roles_tenant_id"),
+        UniqueConstraint("key", name="uq_roles_key"),
         CheckConstraint(
             "management_tier >= 0 AND management_tier <= 1000",
             name="management_tier_range",
@@ -145,22 +99,20 @@ class Role(Base):
             "AND management_tier = 1000)",
             name="owner_shape",
         ),
-        Index("ix_roles_tenant_active", "tenant_id", "is_active"),
+        Index("ix_roles_active", "is_active"),
         Index(
-            "uq_roles_one_owner_per_tenant",
-            "tenant_id",
+            "uq_roles_single_owner",
+            "is_owner",
             unique=True,
             postgresql_where=text("is_owner"),
         ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("tenants.id", ondelete="RESTRICT"),
-        nullable=False,
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
     )
     key: Mapped[str] = mapped_column(String(80), nullable=False)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -190,23 +142,15 @@ class Role(Base):
 class RolePermission(Base):
     __tablename__ = "role_permissions"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "role_id", "permission_id"),
-        ForeignKeyConstraint(
-            ["tenant_id", "role_id"],
-            ["roles.tenant_id", "roles.id"],
-            name="fk_role_permissions_role_tenant",
-            ondelete="RESTRICT",
-        ),
-        Index(
-            "ix_role_permissions_permission_tenant_role",
-            "permission_id",
-            "tenant_id",
-            "role_id",
-        ),
+        PrimaryKeyConstraint("role_id", "permission_id"),
+        Index("ix_role_permissions_permission_role", "permission_id", "role_id"),
     )
 
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    role_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    role_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("roles.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
     permission_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("permissions.id", ondelete="RESTRICT"),
@@ -217,41 +161,27 @@ class RolePermission(Base):
     )
 
 
-class MembershipRole(Base):
-    __tablename__ = "membership_roles"
+class UserRole(Base):
+    __tablename__ = "user_roles"
     __table_args__ = (
-        PrimaryKeyConstraint("tenant_id", "membership_id", "role_id"),
-        ForeignKeyConstraint(
-            ["tenant_id", "membership_id"],
-            ["memberships.tenant_id", "memberships.id"],
-            name="fk_membership_roles_membership_tenant",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "role_id"],
-            ["roles.tenant_id", "roles.id"],
-            name="fk_membership_roles_role_tenant",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "assigned_by_membership_id"],
-            ["memberships.tenant_id", "memberships.id"],
-            name="fk_membership_roles_assigner_tenant",
-            ondelete="RESTRICT",
-        ),
-        Index(
-            "ix_membership_roles_tenant_role_membership",
-            "tenant_id",
-            "role_id",
-            "membership_id",
-        ),
+        PrimaryKeyConstraint("user_id", "role_id"),
+        Index("ix_user_roles_role_user", "role_id", "user_id"),
     )
 
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    membership_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    role_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    assigned_by_membership_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    role_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("roles.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    assigned_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=True,
     )
     assigned_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -262,24 +192,18 @@ class AuthorizationAuditEvent(Base):
     __tablename__ = "authorization_audit_events"
     __table_args__ = (
         CheckConstraint("decision IN ('allowed', 'denied')", name="valid_decision"),
-        Index("ix_authz_audit_tenant_created", "tenant_id", "created_at"),
-        Index("ix_authz_audit_actor_created", "actor_membership_id", "created_at"),
+        Index("ix_authz_audit_actor_created", "actor_user_id", "created_at"),
         Index("ix_authz_audit_request_id", "request_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("tenants.id", ondelete="RESTRICT"),
-        nullable=False,
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
     )
     actor_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    actor_membership_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False
-    )
-    target_membership_id: Mapped[uuid.UUID | None] = mapped_column(
+    target_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
     target_role_id: Mapped[uuid.UUID | None] = mapped_column(

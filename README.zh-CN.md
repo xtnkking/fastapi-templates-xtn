@@ -3,16 +3,17 @@
 [English](README.md) | **简体中文**
 
 `fastapi-templates-xtn` 是一个具有明确安全基线的 Codex Skill（技能），用于构建
-和加固 FastAPI 服务。它涵盖租户作用域的 PostgreSQL 基于角色的访问控制
+和加固 FastAPI 服务。它涵盖单项目范围的 PostgreSQL 基于角色的访问控制
 （RBAC）、严格的管理权限层级、非顺序标识符、最小化且可撤销的 JWT 会话，
 以及具备事务一致性的授权写入。
 
 ## 当前状态
 
-`v0.1.0` 是第一个公开预览版。策略规范和可运行的 PostgreSQL RBAC 参考资产
-已经较为完整，但该资产尚未实现 Skill 所描述的完整 PostgreSQL 会话与 Redis
-活跃 JTI 适配器。在目标部署完成文档列出的身份提供方假设验证，以及
-PostgreSQL/Redis 集成测试之前，不得将此预览资产描述为生产就绪。
+`main` 已包含尚未发布的单项目 RBAC 重构。`v0.1.0` 是历史上的第一个公开
+预览版，不包含本次重构。策略规范和可运行的 PostgreSQL RBAC 参考资产已经较为
+完整，但该资产尚未实现 Skill 所描述的完整 PostgreSQL 会话与 Redis 活跃 JTI
+适配器。在目标部署完成文档列出的身份提供方假设验证，以及 PostgreSQL/Redis
+集成测试之前，不得将该资产描述为生产就绪。
 
 ## 上游来源与署名
 
@@ -22,19 +23,19 @@ Skill 基础上独立维护的扩展，所依据的上游提交为
 `47a5dbc3f9c2661c6afb13638f80d4a4d4449040`。
 
 上游作品 Copyright (c) 2024 Seth Hobson，并按 MIT License 使用。XTN 的改动
-增加了 PostgreSQL RBAC 模型、租户隔离、管理权限层级与防止自我提权的规则、
+增加了 PostgreSQL RBAC 模型、应用级管理权限层级与防止自我提权的规则、
 原子授权写入、UUID 标识符策略，以及最小化且可撤销的 JWT 指南。本项目与上游
 项目之间不存在从属、赞助或背书关系。完整署名和许可信息请参阅英文法律原文
 [NOTICE](NOTICE) 和 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 提供的能力
 
-- 面向 PostgreSQL 的租户作用域正向授予 RBAC。
-- 严格的管理权限级别，拒绝同级、向上、受保护身份、跨租户，以及直接或间接
+- 面向 PostgreSQL 的单项目正向授予 RBAC。
+- 严格的管理权限级别，拒绝同级、向上、受保护身份，以及直接或间接
   自我提权操作。
-- 用户、租户、RBAC 记录、会话、审计记录和业务实体统一采用 UUIDv4，避免使用
+- 用户、RBAC 记录、会话、审计记录和业务实体统一采用 UUIDv4，避免使用
   容易枚举的自增标识符。
-- 最小化的租户绑定 JWT 声明，以及“以 PostgreSQL 为权威状态源、Redis 辅助”
+- 不携带角色或资料字段的最小化 JWT 声明，以及“以 PostgreSQL 为权威状态源、Redis 辅助”
   的活跃 JTI 会话设计。
 - 面向高权限写入的事务、锁顺序、审计、outbox（发件箱模式）、撤销和乐观并发
   控制要求。
@@ -47,8 +48,15 @@ Skill 基础上独立维护的扩展，所依据的上游提交为
 
 ## 安装
 
-仓库中的 Skill 位于 `skills/fastapi-templates-xtn`。若要可复现地安装此预览版，
-请向 Codex 输入：
+仓库中的 Skill 位于 `skills/fastapi-templates-xtn`。若要安装当前单项目版本，请向
+Codex 输入：
+
+```text
+Use $skill-installer to install the skill from
+https://github.com/xtnkking/fastapi-templates-xtn/tree/main/skills/fastapi-templates-xtn
+```
+
+若要安装历史 `v0.1.0` 预览版，请改用其不可变标签：
 
 ```text
 Use $skill-installer to install the skill from
@@ -57,11 +65,8 @@ https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.1.0/skills/fastapi-tem
 
 安装器会将目录放入已配置的用户 Skill 位置；若同名目录已经存在，安装器会停止，
 不会覆盖。Codex 通常会自动检测新安装的 Skill；若没有显示，请重启 Codex。
-需要安装其他已发布版本时，请将 `v0.1.0` 替换为相应标签。只有在明确需要尚未
-发布的最新状态时才使用 `main`。
-
-若要使用尚未发布的代理可用性检测指南，请将上述命令中的 `v0.1.0` 替换为
-`main`。
+需要安装其他已发布版本时，请将 `v0.1.0` 替换为相应标签。`main` 尚未发布，
+在创建下一个版本标签前仍可能发生变化。
 
 若只希望在某个仓库内使用，请将 `skills/fastapi-templates-xtn` 复制到目标仓库的
 `.agents/skills/fastapi-templates-xtn`。
@@ -78,7 +83,7 @@ Codex；此操作不会影响规范仓库或任何独立维护的派生仓库。
 当任务需要完整安全基线时，可以显式调用：
 
 ```text
-Use $fastapi-templates-xtn to build a tenant-scoped PostgreSQL FastAPI service
+Use $fastapi-templates-xtn to build a single-project PostgreSQL FastAPI service
 with strict RBAC and revocable JWT sessions.
 ```
 

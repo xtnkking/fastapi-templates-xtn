@@ -1,28 +1,21 @@
 # RBAC Migrations And Permission Catalog
 
 Read this reference when adding or changing RBAC tables, constraints, permission
-keys, seeded roles, tenant boundaries, or authorization-version columns.
+keys, seeded roles, assignments, or authorization-version columns.
 For any primary/public identifier or integer-to-UUID conversion, also read
 [identifier policy](identifier-policy.md); it owns the non-sequential ID contract
 and compatible migration sequence.
 
-The included PostgreSQL asset demonstrates both a clean initial schema and an
-upgrade of an already-created RBAC installation:
+The included PostgreSQL asset provides a clean initial schema in
+[`0001_single_project_rbac.py`](../assets/postgresql-rbac/alembic/versions/0001_single_project_rbac.py).
+It creates the normalized tables, singleton global guard, constraints, indexes,
+and initial permission catalog.
 
-- [`0001_postgresql_rbac.py`](../assets/postgresql-rbac/alembic/versions/0001_postgresql_rbac.py)
-  creates the initial normalized schema.
-- [`0002_complete_rbac_control_plane.py`](../assets/postgresql-rbac/alembic/versions/0002_complete_rbac_control_plane.py)
-  idempotently adds control-plane permissions, backfills existing Owner roles,
-  increments affected versions, reserves tier `1000` for Owner, and strengthens
-  system-role protection. Its downgrade deletes the three added permissions and
-  every associated grant; it also does not restore legacy system-role protection
-  flags or non-Owner roles normalized from tier `1000` to `999`. Treat this as a
-  destructive schema rollback and restore a pre-upgrade backup when exact data
-  recovery is required.
-
-For a greenfield copy, both revisions run in order. After a revision has shipped,
-never edit it to change the permission catalog; add a new Alembic revision and a
-catalog synchronization test instead.
+This initial revision is for a new application. Replacing an older schema file is
+not an in-place production upgrade. A deployed application must add a new Alembic
+revision that preserves and explicitly maps its existing users, roles, grants,
+assignments, versions, and audit history. After any revision ships, never edit it
+to change the catalog; add a new revision and synchronization test instead.
 
 ## Migration Strategy
 
@@ -34,12 +27,12 @@ deployed systems:
 3. Deploy code that can read the old and new shapes and dual-writes new authority
    data, or use an equivalent database transition mechanism. Confirm it is safe
    while old application instances still exist.
-4. Backfill memberships, tenant ownership, roles, and assignments in bounded
+4. Backfill users, system ownership, roles, and assignments in bounded
    batches when data volume requires it.
 5. Switch reads to the new model, stop legacy writers, and verify no old instance
-   or job can create unscoped data.
-6. Validate that every protected record and active user has the intended scope,
-   then make constraints strict.
+   or job can create invalid authorization data.
+6. Validate that every protected record and active user has the intended
+   authority, then make constraints strict.
 7. Remove legacy authorization fields only after rollback and compatibility
    windows close.
 
@@ -53,18 +46,14 @@ to make a migration pass.
   autoincrement, or a sequential compatibility alias. Integer tier/version/epoch
   columns are counters, not identifiers.
 - Give tables, foreign keys, unique constraints, and indexes deterministic names.
-- Enforce uniqueness for permission keys, tenant role keys, memberships,
-  role-permission pairs, and membership-role pairs.
-- In multi-tenant systems, include `tenant_id` in `membership_roles`. Add unique
-  keys on `memberships(id, tenant_id)` and `roles(id, tenant_id)`, then use
-  composite foreign keys from `(membership_id, tenant_id)` and
-  `(role_id, tenant_id)`. This makes cross-tenant role assignment invalid in the
-  database; a Python pre-check is not enough under concurrency.
-- Make `membership_roles.tenant_id`, `membership_id`, and `role_id` non-null in
-  the final schema. PostgreSQL `MATCH SIMPLE` composite foreign keys do not reject
-  a row when a participating column is null.
-- Add indexes that support the exact permission-resolution and tenant-scoped
-  resource queries used by the application.
+- Enforce uniqueness for permission keys, role keys, `(user_id, role_id)`
+  assignments, and `(role_id, permission_id)` grants. Keep both assignment
+  foreign keys non-null; a Python pre-check is insufficient under concurrency.
+- Create `authorization_state` with exactly one `scope='global'` row. Enforce the
+  fixed value with a primary key and check constraint, seed it in the migration,
+  and never create it lazily at runtime.
+- Add indexes supporting exact permission resolution, affected-user scans, and
+  application resource queries.
 - Decide delete behavior deliberately. Cascades must not erase audit history or
   silently broaden access through fallback logic.
 
@@ -79,11 +68,11 @@ role composition.
   period; do not delete the old key before all code is updated.
 - Do not automatically delete unknown database permissions because another
   deployed version may still use them.
-- Separate the global permission catalog from tenant-managed role membership.
+- Separate the permission catalog from role composition and user assignments.
 - Record material seed changes in an audit trail or deployment record.
-- Keep tenant-owner grants in an explicit allowlist. Never grant every row from a
-  global permission table, because future platform or break-glass keys would then
-  leak into tenant authority.
+- Keep system Owner grants in an explicit allowlist. Never grant every catalog
+  row automatically because future internal or break-glass keys would silently
+  broaden Owner authority.
 
 ## Safe Administrative Changes
 
@@ -104,14 +93,14 @@ When adding management tiers, scopes, delegable permissions, or protected-role
 flags, follow [administrative-hierarchy.md](administrative-hierarchy.md) and use
 conservative migration defaults:
 
-- New and unmapped users, memberships, and roles start with no administrative
+- New and unmapped users and roles start with no administrative
   authority. Never infer a high tier from a display name such as `admin`.
 - Keep hierarchy and delegation fields out of ordinary public mutation schemas.
 - Backfill authority from an explicitly reviewed mapping, then validate that no
   actor can manage a peer, a higher authority, or itself through an indirect role
   change.
-- A tier, scope, delegation, protected-role, ownership, or shared-role change must
-  increment every authorization version or epoch used by affected decisions.
+- A tier, delegation, protected-role, ownership, or shared-role change must
+  increment every authorization version or global epoch used by affected decisions.
 - Deploy compatible reads and writes before making hierarchy columns non-null or
   removing legacy checks.
 
@@ -119,10 +108,12 @@ conservative migration defaults:
 
 - Upgrade a new empty database to head.
 - Upgrade a database at every supported prior production revision using data with
-  realistic memberships and roles.
+  realistic users, roles, grants, and assignments.
 - Run the seed step more than once and verify stable results.
-- Prove that database constraints reject a cross-tenant role assignment.
-- Check query plans for permission resolution and high-volume tenant lookups.
+- Prove that database constraints reject duplicate or orphaned role assignments.
+- Prove that the fixed global authorization-state row exists and locks first for
+  every authorization writer.
+- Check query plans for permission resolution and high-volume affected-user scans.
 - Verify the application during a mixed-version rollout when zero downtime is a
   requirement.
 - Run PostgreSQL-specific constraints and optional row-level security against

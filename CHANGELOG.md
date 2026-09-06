@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **BREAKING:** Reworked authorization into a single-project RBAC baseline built on users,
+  user-role assignments, and one global authorization state. Access tokens now
+  carry only the minimal identity and protocol claims. This replaces the prior
+  table, API route, JWT, and locking contracts and is not an in-place upgrade
+  from `v0.1.0`.
 - Added optional, progressively loaded proxy availability references covering
   forced proxy routing, safe error mapping, Redis latest-result caching, list
   hydration, a five-worker frontend batch flow, and controlled routing tests.

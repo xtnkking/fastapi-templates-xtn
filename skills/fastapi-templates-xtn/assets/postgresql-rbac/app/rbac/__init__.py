@@ -1,1 +1,1 @@
-"""Tenant RBAC package."""
+"""Single-project RBAC package."""

@@ -4,79 +4,59 @@ import asyncio
 from sqlalchemy import select
 
 from app.database import SessionFactory
-from app.rbac.domain import (
-    TENANT_OWNER_DELEGABLE_PERMISSION_KEYS,
-    TENANT_OWNER_PERMISSION_KEYS,
-)
+from app.rbac.domain import OWNER_DELEGABLE_PERMISSION_KEYS, OWNER_PERMISSION_KEYS
 from app.rbac.models import (
     AuthorizationAuditEvent,
-    Membership,
-    MembershipRole,
     Permission,
     Role,
     RolePermission,
-    Tenant,
-    TenantAuthorizationState,
     User,
+    UserRole,
 )
+from app.rbac.queries import lock_authorization_state
 
 
-async def bootstrap_tenant(
-    *,
-    owner_email: str,
-    tenant_slug: str,
-    tenant_name: str,
-) -> tuple[Tenant, Membership]:
-    """Create one tenant and its first owner in an explicit transaction."""
+async def bootstrap_owner(*, owner_email: str) -> User:
+    """Create the single system Owner in an explicit transaction."""
     async with SessionFactory() as session:
         async with session.begin():
-            existing_tenant = await session.scalar(
-                select(Tenant.id).where(Tenant.slug == tenant_slug)
+            state = await lock_authorization_state(session)
+            existing_owner = await session.scalar(
+                select(Role.id).where(Role.is_owner.is_(True))
             )
-            if existing_tenant is not None:
-                raise RuntimeError("tenant slug already exists; bootstrap refused")
+            if existing_owner is not None:
+                raise RuntimeError("system Owner already exists; bootstrap refused")
 
             permission_rows = {
                 permission.key: permission
                 for permission in (
                     await session.scalars(
                         select(Permission)
-                        .where(Permission.key.in_(TENANT_OWNER_PERMISSION_KEYS))
+                        .where(Permission.key.in_(OWNER_PERMISSION_KEYS))
                         .order_by(Permission.key)
                     )
                 ).all()
             }
-            missing_permissions = TENANT_OWNER_PERMISSION_KEYS - set(permission_rows)
+            missing_permissions = OWNER_PERMISSION_KEYS - set(permission_rows)
             if missing_permissions:
                 missing = ", ".join(sorted(missing_permissions))
                 raise RuntimeError(
-                    f"tenant permission catalog is incomplete ({missing}); run Alembic"
+                    f"permission catalog is incomplete ({missing}); run Alembic"
                 )
 
             owner_user = await session.scalar(
-                select(User).where(User.email == owner_email)
+                select(User).where(User.email == owner_email).with_for_update()
             )
             if owner_user is None:
                 owner_user = User(email=owner_email)
                 session.add(owner_user)
+                await session.flush()
             elif not owner_user.is_active or owner_user.is_protected:
                 raise RuntimeError(
-                    "existing owner identity is inactive or platform-protected"
+                    "existing Owner identity is inactive or system-protected"
                 )
 
-            tenant = Tenant(slug=tenant_slug, name=tenant_name)
-            session.add(tenant)
-            await session.flush()
-            session.add(TenantAuthorizationState(tenant_id=tenant.id, epoch=1))
-
-            membership = Membership(
-                tenant_id=tenant.id,
-                user_id=owner_user.id,
-                status="active",
-                authz_version=1,
-            )
             owner_role = Role(
-                tenant_id=tenant.id,
                 key="owner",
                 name="Owner",
                 management_tier=1000,
@@ -86,66 +66,50 @@ async def bootstrap_tenant(
                 is_owner=True,
                 version=1,
             )
-            session.add_all([membership, owner_role])
+            session.add(owner_role)
             await session.flush()
-
             session.add_all(
                 RolePermission(
-                    tenant_id=tenant.id,
                     role_id=owner_role.id,
                     permission_id=permission.id,
-                    can_delegate=(
-                        permission.key in TENANT_OWNER_DELEGABLE_PERMISSION_KEYS
-                    ),
+                    can_delegate=(permission.key in OWNER_DELEGABLE_PERMISSION_KEYS),
                 )
                 for permission in permission_rows.values()
             )
             session.add(
-                MembershipRole(
-                    tenant_id=tenant.id,
-                    membership_id=membership.id,
+                UserRole(
+                    user_id=owner_user.id,
                     role_id=owner_role.id,
-                    assigned_by_membership_id=None,
+                    assigned_by_user_id=None,
                 )
             )
+            owner_user.authz_version += 1
+            state.epoch += 1
             session.add(
                 AuthorizationAuditEvent(
-                    tenant_id=tenant.id,
                     actor_user_id=owner_user.id,
-                    actor_membership_id=membership.id,
-                    target_membership_id=membership.id,
+                    target_user_id=owner_user.id,
                     target_role_id=owner_role.id,
-                    action="tenant.bootstrap",
+                    action="system.bootstrap",
                     decision="allowed",
                     reason_code="explicit_owner_bootstrap",
                     before_state=None,
                     after_state={
-                        "owner_membership_id": str(membership.id),
+                        "owner_user_id": str(owner_user.id),
                         "owner_role_id": str(owner_role.id),
                     },
                     request_id="bootstrap",
                 )
             )
-        return tenant, membership
+        return owner_user
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Create an explicitly named tenant and first owner."
-    )
+    parser = argparse.ArgumentParser(description="Create the first system Owner.")
     parser.add_argument("--owner-email", required=True)
-    parser.add_argument("--tenant-slug", required=True)
-    parser.add_argument("--tenant-name", required=True)
     args = parser.parse_args()
-    tenant, membership = asyncio.run(
-        bootstrap_tenant(
-            owner_email=args.owner_email,
-            tenant_slug=args.tenant_slug,
-            tenant_name=args.tenant_name,
-        )
-    )
-    print(f"tenant_id={tenant.id}")
-    print(f"owner_membership_id={membership.id}")
+    owner = asyncio.run(bootstrap_owner(owner_email=args.owner_email))
+    print(f"owner_user_id={owner.id}")
 
 
 if __name__ == "__main__":

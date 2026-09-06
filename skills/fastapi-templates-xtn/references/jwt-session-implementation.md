@@ -22,7 +22,7 @@ import jwt
 ACCESS_TTL_SECONDS = 600
 CLOCK_LEEWAY_SECONDS = 30
 REQUIRED_ACCESS_CLAIMS = (
-    "iss", "aud", "sub", "tid", "jti", "iat", "exp", "token_type"
+    "iss", "aud", "sub", "jti", "iat", "exp", "token_type"
 )
 
 
@@ -33,7 +33,6 @@ class InvalidCredential(Exception):
 @dataclass(frozen=True, slots=True)
 class AccessClaims:
     user_id: uuid.UUID
-    tenant_id: uuid.UUID
     jti: uuid.UUID
     issued_at: int
     expires_at: int
@@ -84,7 +83,6 @@ def decode_access_token(token: str, settings: Settings) -> AccessClaims:
             raise InvalidCredential
         return AccessClaims(
             user_id=_uuid4(payload["sub"]),
-            tenant_id=_uuid4(payload["tid"]),
             jti=_uuid4(payload["jti"]),
             issued_at=iat,
             expires_at=exp,
@@ -99,12 +97,11 @@ accept it from a login request.
 
 ```python
 def issue_access_token(
-    *, user_id: uuid.UUID, tenant_id: uuid.UUID, settings: Settings
+    *, user_id: uuid.UUID, settings: Settings
 ) -> tuple[str, AccessClaims]:
     now = datetime.now(UTC).replace(microsecond=0)
     claims = AccessClaims(
         user_id=user_id,
-        tenant_id=tenant_id,
         jti=uuid.uuid4(),
         issued_at=int(now.timestamp()),
         expires_at=int((now + timedelta(seconds=ACCESS_TTL_SECONDS)).timestamp()),
@@ -113,7 +110,6 @@ def issue_access_token(
         "iss": settings.jwt_issuer,
         "aud": settings.jwt_audience,
         "sub": str(claims.user_id),
-        "tid": str(claims.tenant_id),
         "jti": str(claims.jti),
         "iat": claims.issued_at,
         "exp": claims.expires_at,
@@ -142,7 +138,6 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
-    ForeignKeyConstraint,
     Index,
     String,
     text,
@@ -170,12 +165,6 @@ class AuthenticationSession(Base):
             "(status = 'revoked') = (revoked_at IS NOT NULL)",
             name="authentication_sessions_revocation_shape",
         ),
-        ForeignKeyConstraint(
-            ["tenant_id", "user_id"],
-            ["memberships.tenant_id", "memberships.user_id"],
-            name="fk_authentication_sessions_membership_tenant_user",
-            ondelete="RESTRICT",
-        ),
         Index("ix_authentication_sessions_user_status", "user_id", "status"),
     )
 
@@ -188,9 +177,6 @@ class AuthenticationSession(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False
-    )
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     user_token_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -198,12 +184,11 @@ class AuthenticationSession(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 ```
 
-The Alembic revision also creates the named foreign keys/checks/index. The
-composite membership foreign key depends on the baseline's unique
-`memberships(tenant_id, user_id)` constraint. The issuer supplies the same UUIDv4
-for row ID and JTI. At authentication, select the row by all of `id`, `user_id`,
-and `tenant_id`; require `active`, require database time before `expires_at`, load
-an active user, and compare the row's version with `users.token_version`.
+The Alembic revision also creates the named foreign key, checks, and index. The
+issuer supplies the same UUIDv4 for row ID and JTI. At authentication, select the
+row by both `id` and `user_id`; require `active`, require database time before
+`expires_at`, load an active user, and compare the row's version with
+`users.token_version`.
 
 ## Redis Registry
 
@@ -237,7 +222,6 @@ def _registry_value(claims: AccessClaims) -> str:
     return json.dumps(
         {
             "sub": str(claims.user_id),
-            "tid": str(claims.tenant_id),
             "typ": "access",
             "exp": claims.expires_at,
         },
@@ -299,13 +283,13 @@ complete adaptation changes these boundaries together:
 
 1. Add Redis settings/dependency and a migration plus SQLAlchemy model for
    `authentication_sessions`; keep every identifier UUIDv4.
-2. Change `Principal` to carry `user_id`, `tenant_id`, and UUID `jti`; remove the
-   token-provided version.
+2. Change `Principal` to carry `user_id` and UUID `jti`; remove the token-provided
+   version.
 3. Update `security.py` to the minimal claim contract and fixed algorithm/key
    resolver.
 4. In `get_current_principal`, decode first, require the exact Redis record, then
    load the matching active PostgreSQL session and current active user. Do not
-   execute tenant or RBAC queries on either failure.
+   execute RBAC queries on either failure.
 5. Integrate the pending-to-active issuance protocol at the trusted issuer or
    token-exchange boundary. Never activate a Redis miss from a bearer request.
 6. Revoke PostgreSQL session state and write the outbox/audit atomically; process

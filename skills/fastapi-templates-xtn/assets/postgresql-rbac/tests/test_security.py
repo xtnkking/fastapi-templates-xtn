@@ -16,7 +16,6 @@ def valid_payload() -> dict[str, Any]:
     now = datetime.now(UTC)
     return {
         "sub": str(uuid.uuid4()),
-        "tid": str(uuid.uuid4()),
         "ver": 3,
         "jti": str(uuid.uuid4()),
         "token_type": "access",
@@ -43,7 +42,7 @@ def test_valid_access_token_resolves_identity_only() -> None:
     principal = decode_access_token(encode(payload), get_settings())
 
     assert principal.user_id == uuid.UUID(payload["sub"])
-    assert principal.token_tenant_id == uuid.UUID(payload["tid"])
+    assert principal.token_id == uuid.UUID(payload["jti"])
     assert principal.token_version == 3
 
 
@@ -56,6 +55,9 @@ def test_valid_access_token_resolves_identity_only() -> None:
         lambda payload: payload.update(exp=datetime.now(UTC) - timedelta(seconds=1)),
         lambda payload: payload.update(nbf=datetime.now(UTC) + timedelta(minutes=5)),
         lambda payload: payload.update(sub="not-a-uuid"),
+        lambda payload: payload.update(sub=str(uuid.uuid1())),
+        lambda payload: payload.update(jti=str(uuid.uuid1())),
+        lambda payload: payload.update(ver=-1),
         lambda payload: payload.pop("jti"),
     ],
 )

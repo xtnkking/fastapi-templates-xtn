@@ -1,62 +1,49 @@
 # RBAC Design And Authorization Flow
 
-Read this reference for any role, permission, tenant, or authorization task.
-RBAC answers whether a principal has a named capability. Ownership, object state,
-relationships, and other row-level conditions are separate policy inputs.
+Read this reference for role, permission, or authorization policy work. RBAC
+answers whether a principal has a named capability. Ownership, object state,
+relationships, and other row-level conditions remain separate policy inputs.
 
-For an executable PostgreSQL version of these rules, use
+For executable PostgreSQL code, use
 [postgresql-rbac-implementation.md](postgresql-rbac-implementation.md) and copy
-the linked asset as one coherent unit. It includes the tables, dependencies,
-member lifecycle, role services, owner-only delegation control, migrations, and
-negative/concurrency tests described here.
+the linked asset as one coherent unit. It includes tables, dependencies, user and
+role administration, Owner-only delegation control, migrations, and negative and
+concurrency tests.
 
 ## Define The Policy First
 
 Before writing models, list:
 
 - principals and their active or disabled states;
-- resources and tenant boundaries;
+- protected resources and any ownership or row-level boundaries;
 - actions such as `read`, `create`, `update`, `delete`, `approve`, or `manage`;
 - stable permission keys in `resource:action` form;
 - which roles bundle those permissions;
-- ownership or row-level conditions that RBAC alone cannot express;
 - delegation, bootstrap, revocation, and audit requirements.
 
 Do not infer sensitive policy from route names. Record a small permission matrix
 and turn it into tests.
 
-## Data Model
+## Fixed Data Model
 
-For a single-tenant application, the minimum normalized model is:
+Use this normalized single-project model:
 
-- `users`;
-- `roles`, with a unique stable key;
-- `permissions`, with a unique stable permission key;
-- `user_roles`, unique on `(user_id, role_id)`;
-- `role_permissions`, unique on `(role_id, permission_id)`.
+- `users` store identity status, protection, token revocation version, and the
+  per-user authorization version;
+- `roles` have a globally unique stable key, explicit status, management tier,
+  version, and protected/system/Owner flags;
+- `permissions` form the stable capability catalog;
+- `user_roles` join users to roles and are unique on `(user_id, role_id)`;
+- `role_permissions` join roles to permissions and record the explicit
+  `can_delegate` subset;
+- `authorization_state` contains exactly one global guard row and the shared
+  authorization epoch;
+- `authorization_audit_events` capture actor, target, action, decision, safe
+  before/after state, request ID, and timestamp for privileged mutations.
 
-If the product has organizations or tenants, model the boundary from the start:
-
-- `users` are global identities and include status plus a token version when
-  immediate account revocation is required.
-- `tenants` include status and, when caching authorization, an authorization
-  epoch.
-- `memberships` join users to tenants and include status plus a membership
-  authorization version. Enforce uniqueness on `(tenant_id, user_id)`.
-- `roles` belong to exactly one tenant and have an explicit active or disabled
-  state (or an equally explicit deletion model). Enforce uniqueness on
-  `(tenant_id, role_key)` and a key suitable for tenant-safe references.
-- `permissions` form a global catalog of stable capability keys.
-- `role_permissions` join roles to permissions.
-- `membership_roles` join memberships to roles and carry `tenant_id`. Give
-  `memberships` a unique `(id, tenant_id)` key and `roles` a unique
-  `(id, tenant_id)` key. Reference both pairs from `membership_roles`, so one row
-  cannot combine a membership from one tenant with a role from another tenant.
-- `authorization_audit_events` capture actor, target, tenant, action, before and
-  after state, request ID, and timestamp for privileged mutations.
-
-Use positive grants and union the permissions from active roles attached to an
-active membership. Disabled or deleted roles grant nothing and must invalidate
+Use positive grants. An active user's effective permissions are the union of
+permissions from all active assigned roles; the effective management tier is the
+maximum active role tier. Disabled or deleted roles grant nothing and must update
 the relevant authorization version. Start without explicit deny, wildcard
 permissions, or role inheritance. Add them only with a documented precedence
 model and tests for conflicts and cycles.
@@ -65,20 +52,17 @@ model and tests for conflicts and cycles.
 
 - Define permission keys as stable code constants, for example
   `projects:read`, `projects:update`, and `roles:assign`.
-- A role is administrative data. Ordinary endpoint checks should depend on
-  permission keys so that role composition can change without code changes.
-- Define separate capabilities for separate administrative effects. For example,
-  `roles:assign` may attach or detach an existing role, while `roles:create`,
-  `roles:update`, `roles:delete`, and `roles:permissions:update` govern role
-  definitions. Do not let `roles:assign` modify a role's permission set.
-- Define the actor's delegable permission set explicitly, either in authorization
-  data or a version-controlled policy. It is not implied by `roles:assign` and
-  need not equal every permission the actor can personally exercise. A role being
-  assigned or updated must not contain permissions outside that set.
-- Treat platform-level administration as a separate, explicit trust boundary.
-  Do not hide a universal bypass behind a common role name such as `admin`.
-- Permission renames are data migrations. Do not silently reinterpret an existing
-  key.
+- Endpoint checks depend on permission keys, not display names such as `admin`.
+- Separate administrative effects. `roles:assign` may attach an existing role;
+  `roles:create`, `roles:update`, `roles:delete`, and
+  `roles:permissions:update` govern role definitions.
+- Define delegable permissions explicitly. Possessing or assigning a permission
+  does not imply authority to grant it. A role being assigned or changed must not
+  contain authority outside the actor's delegable set.
+- Treat system Owner and break-glass operations as explicit trust boundaries. Do
+  not hide a universal bypass behind an ordinary role name.
+- Treat permission-key renames as data migrations; never silently reinterpret an
+  existing key.
 
 ## Authorization Pipeline
 
@@ -86,21 +70,19 @@ Use one consistent chain:
 
 ```text
 Bearer credential
-  -> authenticate principal
-  -> resolve candidate tenant
-  -> validate active user, tenant, and membership
-  -> load a permission snapshot
+  -> verify token and active JTI
+  -> load the active PostgreSQL session and user
+  -> load a current immutable permission snapshot
   -> enforce required permissions
-  -> query the resource within the tenant
+  -> query the protected resource
   -> apply ownership or other row-level policy
 ```
 
-Separate request contexts make the boundaries visible:
+Keep request contexts narrow:
 
-- `Principal` contains verified identity and authentication/session metadata.
-- `TenantContext` contains the resolved, visible tenant and membership.
-- `AuthorizationContext` contains the principal, tenant context, and immutable
-  permission set used for the request.
+- `Principal` contains verified user and authentication/session metadata.
+- `AuthorizationContext` contains the principal and immutable current authority
+  used for the request.
 
 A permission dependency can follow this shape:
 
@@ -155,7 +137,7 @@ Adapt names and error envelopes to the repository. Never let an empty permission
 configuration become an implicit allow. Centralize ALL versus ANY semantics and
 test both.
 
-Use the resulting context in a tenant-scoped query:
+Apply row policy after the capability check:
 
 ```python
 ProjectReadAccess = Annotated[
@@ -170,111 +152,79 @@ async def read_project(
     access: ProjectReadAccess,
     session: SessionDependency,
 ) -> ProjectResponse:
-    project = await project_repository.get_for_tenant(
-        session,
-        tenant_id=access.tenant.id,
-        project_id=project_id,
-    )
-    if project is None:
+    project = await project_repository.get_by_id(session, project_id=project_id)
+    if project is None or not project_policy.can_read(access, project):
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     return ProjectResponse.model_validate(project)
 ```
 
 Lists, counts, search, export, bulk operations, and nested-resource queries need
-the same database-level tenant predicate. Filtering only detail endpoints is not
-tenant isolation.
-
-## Tenant Resolution
-
-A path value, trusted subdomain, header, or token claim may identify a candidate
-tenant. It is never sufficient by itself. Validate it against the authenticated
-principal's active membership and, when a token is tenant-bound, the token tenant.
-
-- Do not accept `tenant_id` from an ordinary body model as authorization context.
-- Prefer tenant-bound access tokens when users can switch between organizations.
-- Make cross-tenant objects indistinguishable from missing objects to callers who
-  cannot see them.
-- If PostgreSQL row-level security is used as defense in depth, still keep
-  application authorization explicit and set database session context safely for
-  every transaction.
+equivalent SQL visibility predicates. Filtering only detail endpoints leaves
+IDOR and data-disclosure paths.
 
 ## Status Codes
 
-- Return `401` with `WWW-Authenticate: Bearer` for a missing, invalid, expired,
-  revoked, or wrong-type bearer token, and normally for a disabled identity.
-- Return `403` when authentication and tenant visibility are valid but the
-  required action is not permitted.
-- Return `404` for a missing resource or a cross-tenant resource whose existence
-  must not be disclosed. An unknown or invisible tenant should normally behave
-  the same way.
-- Authenticate and resolve tenant context before performing a protected resource
-  lookup. Keep ordering consistent so response differences do not become an
-  enumeration signal.
+- Return `401` with `WWW-Authenticate: Bearer` for missing, invalid, expired, or
+  revoked credentials, and normally for a disabled user.
+- Return `403` when authentication is valid and the action is visible but the
+  required capability is absent.
+- Return `404` for a missing resource or one deliberately concealed by row
+  policy. Keep lookup and response ordering consistent so differences do not
+  become an enumeration signal.
+- Return `503` when a required authentication or authorization authority is
+  unavailable; never turn infrastructure failure into allow.
 
 ## Authorization Cache Consistency
 
 JWT session validation and an RBAC permission cache are different security
-boundaries. Follow [JWT session security](jwt-session-security.md) for token
-claims, JTI registration, and session revocation. Never treat roles, permissions,
-tiers, versions, or other authorization state from a token as authoritative.
+boundaries. Follow [JWT session security](jwt-session-security.md) for claims,
+JTI registration, and session revocation. Never treat roles, permissions, tiers,
+or versions from a token as authoritative.
 
-Prefer loading current permissions from PostgreSQL or a versioned authorization
-cache. A multi-tenant permission-cache key should include at least:
+Prefer PostgreSQL reads or a versioned permission cache. A cache key includes at
+least:
 
 ```text
-tenant_id:user_id:user_token_version:tenant_authz_epoch:membership_authz_version
+user_id:user_token_version:authorization_epoch:user_authz_version
 ```
 
-- Change the tenant epoch when shared role authority changes, the membership
-  version when that member's roles or status changes, and the user token version
-  when the identity is disabled. For write ordering, atomic version increments,
-  and post-commit invalidation, follow
-  [atomic authorization consistency](atomic-consistency.md).
-- Resolve the current version tuple from the authoritative database or a strongly
-  consistent version store before selecting a permission-cache entry. Values from
-  the presented token or an old permission entry are not proof that a version is
-  current.
-- On cache miss or outage, reload from the authority or fail closed. Never convert
-  an authorization infrastructure failure into allow.
-- Define and test the maximum permitted revocation delay. High-risk operations may
-  require a database or strong-version check on every request even when normal
-  reads use a cache.
+- Increment `users.authz_version` when that user's status or assignments change,
+  and increment `authorization_state.epoch` when a shared role changes.
+- Resolve the current version tuple from PostgreSQL or a strongly consistent
+  version store before choosing a cache entry. Token or old-cache values are not
+  proof that a version is current.
+- On cache miss or outage, reload from the authority or fail closed.
+- Define and test the maximum revocation delay. High-risk operations may require
+  a database or strong-version check on every request.
 
 ## Atomic Writes And Immediate Revocation
 
-A versioned cache with a short TTL provides bounded staleness; it does not provide
-immediate revocation. Every authorization control-plane write, and every
-high-risk business write that promises immediate revocation, must follow
+A short cache TTL only bounds staleness; it does not provide immediate
+revocation. Every authorization control-plane write, and every high-risk business
+write promising immediate revocation, follows
 [atomic authorization consistency](atomic-consistency.md). That protocol defines
-the transaction owner, canonical lock order, authoritative post-lock reload,
-discover-lock-requery behavior, audit outcomes, external effects, isolation, and
-deterministic concurrency tests. A route-level permission check cannot replace
-the transaction-local decision.
+the transaction owner, global guard, canonical lock order, post-lock reload,
+affected-set validation, audit outcomes, external effects, and deterministic tests. A
+route-level check cannot replace the transaction-local decision.
 
 ## Privileged Mutations
 
-- For identity administration, authority levels, shared-role changes, and direct
-  or indirect self-escalation, apply
-  [administrative-hierarchy.md](administrative-hierarchy.md).
+- Apply [administrative hierarchy](administrative-hierarchy.md) to identity
+  administration, role changes, delegation, system ownership, and self-elevation.
 - Use dedicated request models with `extra="forbid"` and an allowlist of mutable
   fields.
-- Require the permission for the exact operation. Assignment, role lifecycle, and
-  permission-set replacement are separate effects.
-- When assigning a role or replacing its permissions, calculate the target
-  effective permission set and require it to be a subset of the actor's explicit
-  delegable set. Validate tenant scope and protected-role policy in the same
-  transaction.
-- Protect system roles from ordinary rename, deletion, or permission replacement.
-- Lock and validate changes that could remove the last owner or administrator.
-- Do not make the first registered user an administrator implicitly. Bootstrap an
-  initial administrator through an explicit, one-time, auditable operation.
-- Apply the mandatory allowed, denied, retry, and audit outcomes from
-  [atomic authorization consistency](atomic-consistency.md).
+- Require the exact operation capability. Assignment, role lifecycle, permission
+  replacement, delegation, and ownership transfer are separate effects.
+- For assignment or permission replacement, calculate complete proposed
+  authority and require it to remain within the actor's delegable authority.
+- Protect system roles and the final Owner from ordinary rename, deletion,
+  replacement, or revocation.
+- Bootstrap the first Owner through an explicit one-time auditable operation;
+  never promote the first registered user implicitly.
 
 ## Avoid Authorization Bypasses
 
-Route dependencies are not sufficient if background jobs, WebSockets, CLI tools,
-or internal service entry points can perform the same privileged operation.
-Pass an authorization context or call a shared policy service at every boundary
-that handles untrusted intent. Keep truly trusted system jobs explicit and
-auditable rather than manufacturing a fake user role.
+Route dependencies are insufficient if jobs, WebSockets, CLI tools, or direct
+service entry points can perform the same privileged operation. Call the shared
+authorization service at every boundary handling untrusted intent. Keep truly
+trusted system jobs explicit and auditable instead of manufacturing a fake role.

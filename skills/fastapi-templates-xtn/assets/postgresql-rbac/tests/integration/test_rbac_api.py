@@ -4,124 +4,196 @@ from collections.abc import Callable
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from app.database import SessionFactory
 from app.rbac.domain import AuthorizationContext, PermissionKey, Principal
-from app.rbac.errors import RbacError, forbidden
+from app.rbac.errors import RbacError
 from app.rbac.models import (
     AuthorizationAuditEvent,
-    MembershipRole,
+    AuthorizationState,
     Permission,
-    Role,
     RolePermission,
-    Tenant,
-    TenantAuthorizationState,
     User,
+    UserRole,
 )
 from app.rbac.queries import load_authority_snapshot
-from app.rbac.service import RbacService, _MutationOutcome
+from app.rbac.schemas import RolePermissionsReplaceRequest, UserStatusUpdateRequest
+from app.rbac.service import RbacService
 from tests.integration.conftest import World
 
 pytestmark = pytest.mark.postgresql
-type AccessToken = Callable[[User, Tenant], str]
+type AccessToken = Callable[[User], str]
 
 
 def headers(access_token: AccessToken, world: World, user_name: str) -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {access_token(world.users[user_name], world.tenant)}",
-        "X-Request-ID": f"test-{user_name}",
-    }
+    return {"Authorization": f"Bearer {access_token(world.users[user_name])}"}
+
+
+async def context_for(
+    world: World,
+    user_name: str,
+    request_id: str,
+) -> AuthorizationContext:
+    async with SessionFactory() as session:
+        authority = await load_authority_snapshot(
+            session,
+            user_id=world.users[user_name].id,
+        )
+        state = await session.get(AuthorizationState, "global")
+        assert state is not None
+    return AuthorizationContext(
+        principal=Principal(
+            user_id=world.users[user_name].id,
+            token_version=world.users[user_name].token_version,
+            token_id=uuid.uuid4(),
+        ),
+        authorization_epoch=state.epoch,
+        authority=authority,
+        request_id=request_id,
+    )
+
+
+async def increment_token_version(user_id: uuid.UUID) -> None:
+    async with SessionFactory() as session:
+        async with session.begin():
+            user = await session.get(User, user_id, with_for_update=True)
+            assert user is not None
+            user.token_version += 1
+
+
+async def test_stale_actor_cannot_probe_missing_user(world: World) -> None:
+    context = await context_for(world, "manager", "stale-actor-missing-user")
+    await increment_token_version(world.users["manager"].id)
+
+    with pytest.raises(RbacError) as caught:
+        await RbacService(SessionFactory).update_user_status(
+            context=context,
+            target_user_id=uuid.uuid4(),
+            request=UserStatusUpdateRequest(is_active=False),
+        )
+
+    assert caught.value.status_code == 401
+
+
+async def test_stale_actor_cannot_probe_missing_owner_transfer_target(
+    world: World,
+) -> None:
+    context = await context_for(world, "owner", "stale-owner-missing-user")
+    await increment_token_version(world.users["owner"].id)
+
+    with pytest.raises(RbacError) as caught:
+        await RbacService(SessionFactory).transfer_ownership(
+            context=context,
+            target_user_id=uuid.uuid4(),
+        )
+
+    assert caught.value.status_code == 401
+
+
+async def test_stale_actor_cannot_probe_missing_shared_role(world: World) -> None:
+    context = await context_for(world, "owner", "stale-owner-missing-role")
+    await increment_token_version(world.users["owner"].id)
+
+    with pytest.raises(RbacError) as caught:
+        await RbacService(SessionFactory).replace_role_permissions(
+            context=context,
+            role_id=uuid.uuid4(),
+            request=RolePermissionsReplaceRequest(permissions=[]),
+        )
+
+    assert caught.value.status_code == 401
 
 
 async def test_authority_uses_all_active_roles(
     client: AsyncClient,
-    access_token: AccessToken,
     world: World,
+    access_token: AccessToken,
 ) -> None:
     response = await client.get(
-        f"/tenants/{world.tenant.id}/rbac/me",
+        "/rbac/me",
         headers=headers(access_token, world, "hidden_higher"),
     )
 
     assert response.status_code == 200
-    assert response.json()["management_tier"] == 700
-    assert response.json()["permissions"] == ["projects:read"]
+    body = response.json()
+    assert body["user_id"] == str(world.users["hidden_higher"].id)
+    assert body["management_tier"] == 700
+    assert body["permissions"] == ["projects:read"]
+    assert "authorization_epoch" in body
 
 
 async def test_normal_permission_dependency_defaults_to_deny(
     client: AsyncClient,
-    access_token: AccessToken,
     world: World,
-) -> None:
-    allowed = await client.get(
-        f"/tenants/{world.tenant.id}/rbac/roles",
-        headers=headers(access_token, world, "manager"),
-    )
-    denied = await client.get(
-        f"/tenants/{world.tenant.id}/rbac/roles",
-        headers=headers(access_token, world, "blank"),
-    )
-
-    assert allowed.status_code == 200
-    assert denied.status_code == 403
-
-
-async def test_manager_assigns_lower_role_and_audits(
-    client: AsyncClient,
     access_token: AccessToken,
-    world: World,
 ) -> None:
-    response = await client.put(
-        f"/tenants/{world.tenant.id}/rbac/memberships/"
-        f"{world.memberships['blank'].id}/roles/{world.roles['viewer'].id}",
-        headers=headers(access_token, world, "manager"),
-    )
-
-    assert response.status_code == 204
-    async with SessionFactory() as session:
-        assignment = await session.scalar(
-            select(MembershipRole).where(
-                MembershipRole.membership_id == world.memberships["blank"].id,
-                MembershipRole.role_id == world.roles["viewer"].id,
-            )
-        )
-        audit = await session.scalar(
-            select(AuthorizationAuditEvent).where(
-                AuthorizationAuditEvent.request_id == "test-manager"
-            )
-        )
-    assert assignment is not None
-    assert audit is not None
-    assert audit.decision == "allowed"
-
-
-@pytest.mark.parametrize("actor,target", [("junior", "higher"), ("manager", "peer")])
-async def test_lower_and_peer_cannot_manage_target(
-    client: AsyncClient,
-    access_token: AccessToken,
-    world: World,
-    actor: str,
-    target: str,
-) -> None:
-    response = await client.put(
-        f"/tenants/{world.tenant.id}/rbac/memberships/"
-        f"{world.memberships[target].id}/roles/{world.roles['viewer'].id}",
-        headers=headers(access_token, world, actor),
+    response = await client.get(
+        "/rbac/users",
+        headers=headers(access_token, world, "lower"),
     )
 
     assert response.status_code == 403
     assert response.json() == {"detail": {"code": "rbac_forbidden"}}
 
 
+async def test_manager_assigns_lower_role_and_audits(
+    client: AsyncClient,
+    world: World,
+    access_token: AccessToken,
+) -> None:
+    response = await client.put(
+        f"/rbac/users/{world.users['blank'].id}/roles/{world.roles['viewer'].id}",
+        headers={
+            **headers(access_token, world, "manager"),
+            "X-Request-ID": "assign-lower",
+        },
+    )
+
+    assert response.status_code == 204
+    async with SessionFactory() as session:
+        assignment = await session.get(
+            UserRole,
+            (world.users["blank"].id, world.roles["viewer"].id),
+        )
+        audit = await session.scalar(
+            select(AuthorizationAuditEvent).where(
+                AuthorizationAuditEvent.request_id == "assign-lower"
+            )
+        )
+        user = await session.get(User, world.users["blank"].id)
+    assert assignment is not None
+    assert assignment.assigned_by_user_id == world.users["manager"].id
+    assert audit is not None and audit.decision == "allowed"
+    assert user is not None and user.authz_version == 1
+
+
+@pytest.mark.parametrize(
+    ("actor", "target"),
+    [("junior", "higher"), ("manager", "peer")],
+)
+async def test_lower_and_peer_cannot_manage_target(
+    actor: str,
+    target: str,
+    client: AsyncClient,
+    world: World,
+    access_token: AccessToken,
+) -> None:
+    response = await client.put(
+        f"/rbac/users/{world.users[target].id}/roles/{world.roles['viewer'].id}",
+        headers=headers(access_token, world, actor),
+    )
+
+    assert response.status_code == 403
+
+
 async def test_hidden_higher_role_prevents_management(
     client: AsyncClient,
-    access_token: AccessToken,
     world: World,
+    access_token: AccessToken,
 ) -> None:
     response = await client.delete(
-        f"/tenants/{world.tenant.id}/rbac/memberships/"
-        f"{world.memberships['hidden_higher'].id}/roles/"
+        f"/rbac/users/{world.users['hidden_higher'].id}/roles/"
         f"{world.roles['viewer'].id}",
         headers=headers(access_token, world, "manager"),
     )
@@ -131,81 +203,39 @@ async def test_hidden_higher_role_prevents_management(
 
 async def test_direct_self_assignment_is_denied(
     client: AsyncClient,
-    access_token: AccessToken,
     world: World,
+    access_token: AccessToken,
 ) -> None:
     response = await client.put(
-        f"/tenants/{world.tenant.id}/rbac/memberships/"
-        f"{world.memberships['manager'].id}/roles/{world.roles['viewer'].id}",
+        f"/rbac/users/{world.users['manager'].id}/roles/{world.roles['viewer'].id}",
         headers=headers(access_token, world, "manager"),
     )
 
     assert response.status_code == 403
-
-
-async def test_missing_operation_permission_is_denied_and_audited(
-    client: AsyncClient,
-    access_token: AccessToken,
-    world: World,
-) -> None:
-    response = await client.put(
-        f"/tenants/{world.tenant.id}/rbac/memberships/"
-        f"{world.memberships['lower'].id}/roles/{world.roles['viewer'].id}",
-        headers=headers(access_token, world, "blank"),
-    )
-
-    assert response.status_code == 403
-    async with SessionFactory() as session:
-        audit = await session.scalar(
-            select(AuthorizationAuditEvent).where(
-                AuthorizationAuditEvent.request_id == "test-blank"
-            )
-        )
-    assert audit is not None
-    assert audit.decision == "denied"
-    assert audit.reason_code == "missing_operation_permission"
 
 
 async def test_possession_does_not_imply_delegation(
     client: AsyncClient,
-    access_token: AccessToken,
     world: World,
+    access_token: AccessToken,
 ) -> None:
     response = await client.put(
-        f"/tenants/{world.tenant.id}/rbac/memberships/"
-        f"{world.memberships['blank'].id}/roles/"
-        f"{world.roles['nondelegable'].id}",
+        f"/rbac/users/{world.users['blank'].id}/roles/{world.roles['nondelegable'].id}",
         headers=headers(access_token, world, "manager"),
     )
 
     assert response.status_code == 403
 
 
-async def test_cross_tenant_membership_is_concealed(
-    client: AsyncClient,
-    access_token: AccessToken,
-    world: World,
-) -> None:
-    response = await client.put(
-        f"/tenants/{world.tenant.id}/rbac/memberships/"
-        f"{world.memberships['outsider'].id}/roles/{world.roles['viewer'].id}",
-        headers=headers(access_token, world, "manager"),
-    )
-
-    assert response.status_code == 404
-    assert response.json() == {"detail": {"code": "not_found"}}
-
-
 async def test_actor_cannot_edit_role_it_holds(
     client: AsyncClient,
-    access_token: AccessToken,
     world: World,
+    access_token: AccessToken,
 ) -> None:
     response = await client.put(
-        f"/tenants/{world.tenant.id}/rbac/roles/"
-        f"{world.roles['manager'].id}/permissions",
-        headers=headers(access_token, world, "manager"),
+        f"/rbac/roles/{world.roles['manager'].id}/permissions",
         json={"permissions": ["projects:read"]},
+        headers=headers(access_token, world, "manager"),
     )
 
     assert response.status_code == 403
@@ -213,518 +243,279 @@ async def test_actor_cannot_edit_role_it_holds(
 
 async def test_shared_role_edit_checks_every_assignee_role(
     client: AsyncClient,
-    access_token: AccessToken,
     world: World,
+    access_token: AccessToken,
 ) -> None:
     response = await client.put(
-        f"/tenants/{world.tenant.id}/rbac/roles/{world.roles['viewer'].id}/permissions",
-        headers=headers(access_token, world, "manager"),
+        f"/rbac/roles/{world.roles['viewer'].id}/permissions",
         json={"permissions": ["projects:read", "projects:update"]},
+        headers=headers(access_token, world, "manager"),
     )
 
-    # hidden_higher also holds viewer, so the equal-looking shared role is unsafe.
     assert response.status_code == 403
 
 
-async def test_role_creation_never_creates_delegable_grants(
+async def test_role_creation_starts_non_delegable_and_cannot_elevate_creator(
     client: AsyncClient,
-    access_token: AccessToken,
     world: World,
+    access_token: AccessToken,
 ) -> None:
-    response = await client.post(
-        f"/tenants/{world.tenant.id}/rbac/roles",
-        headers=headers(access_token, world, "manager"),
+    created = await client.post(
+        "/rbac/roles",
         json={
             "key": "report-reader",
             "name": "Report reader",
-            "management_tier": 40,
+            "management_tier": 10,
             "permissions": ["projects:read"],
         },
-    )
-
-    assert response.status_code == 201
-    role_id = uuid.UUID(response.json()["id"])
-    async with SessionFactory() as session:
-        grants = (
-            await session.scalars(
-                select(RolePermission).where(RolePermission.role_id == role_id)
-            )
-        ).all()
-    assert grants
-    assert not any(grant.can_delegate for grant in grants)
-
-    replace_response = await client.put(
-        f"/tenants/{world.tenant.id}/rbac/roles/{role_id}/permissions",
-        headers=headers(access_token, world, "manager"),
-        json={"permissions": ["projects:update"]},
-    )
-    assert replace_response.status_code == 200
-    assert replace_response.json()["permissions"] == ["projects:update"]
-
-
-async def test_owner_transfer_is_atomic_and_ordinary_assignment_cannot_add_owner(
-    client: AsyncClient,
-    access_token: AccessToken,
-    world: World,
-) -> None:
-    ordinary_response = await client.put(
-        f"/tenants/{world.tenant.id}/rbac/memberships/"
-        f"{world.memberships['blank'].id}/roles/{world.roles['owner'].id}",
         headers=headers(access_token, world, "manager"),
     )
-    assert ordinary_response.status_code == 403
 
-    transfer_response = await client.post(
-        f"/tenants/{world.tenant.id}/rbac/ownership/transfer/"
-        f"{world.memberships['blank'].id}",
-        headers=headers(access_token, world, "owner"),
-    )
-    assert transfer_response.status_code == 204
-
-    async with SessionFactory() as session:
-        owner_assignments = (
-            await session.scalars(
-                select(MembershipRole).where(
-                    MembershipRole.tenant_id == world.tenant.id,
-                    MembershipRole.role_id == world.roles["owner"].id,
-                )
-            )
-        ).all()
-    assert [item.membership_id for item in owner_assignments] == [
-        world.memberships["blank"].id
-    ]
-
-
-async def test_manager_can_create_suspend_and_reactivate_lower_membership(
-    client: AsyncClient,
-    access_token: AccessToken,
-    world: World,
-) -> None:
-    create_response = await client.post(
-        f"/tenants/{world.tenant.id}/rbac/memberships",
-        headers=headers(access_token, world, "manager"),
-        json={"user_id": str(world.users["newcomer"].id)},
-    )
-
-    assert create_response.status_code == 201
-    created = create_response.json()
-    assert created["user_id"] == str(world.users["newcomer"].id)
-    assert created["permissions"] == []
-    membership_id = created["id"]
-
-    suspend_response = await client.patch(
-        f"/tenants/{world.tenant.id}/rbac/memberships/{membership_id}/status",
-        headers=headers(access_token, world, "manager"),
-        json={"status": "suspended"},
-    )
-    assert suspend_response.status_code == 200
-    assert suspend_response.json()["status"] == "suspended"
-
-    suspended_access = await client.get(
-        f"/tenants/{world.tenant.id}/rbac/me",
-        headers={
-            "Authorization": (
-                f"Bearer {access_token(world.users['newcomer'], world.tenant)}"
-            )
-        },
-    )
-    assert suspended_access.status_code == 404
-
-    reactivate_response = await client.patch(
-        f"/tenants/{world.tenant.id}/rbac/memberships/{membership_id}/status",
-        headers=headers(access_token, world, "manager"),
-        json={"status": "active"},
-    )
-    assert reactivate_response.status_code == 200
-    assert reactivate_response.json()["status"] == "active"
-
-
-async def test_membership_management_rejects_inactive_and_peer_targets(
-    client: AsyncClient,
-    access_token: AccessToken,
-    world: World,
-) -> None:
-    inactive_response = await client.post(
-        f"/tenants/{world.tenant.id}/rbac/memberships",
-        headers=headers(access_token, world, "manager"),
-        json={"user_id": str(world.users["disabled"].id)},
-    )
-    peer_response = await client.patch(
-        f"/tenants/{world.tenant.id}/rbac/memberships/"
-        f"{world.memberships['peer'].id}/status",
-        headers=headers(access_token, world, "manager"),
-        json={"status": "suspended"},
-    )
-
-    assert inactive_response.status_code == 403
-    assert peer_response.status_code == 403
-
-
-async def test_owner_replaces_delegation_and_noop_does_not_bump_versions(
-    client: AsyncClient,
-    access_token: AccessToken,
-    world: World,
-) -> None:
-    url = (
-        f"/tenants/{world.tenant.id}/rbac/roles/"
-        f"{world.roles['manager'].id}/delegable-permissions"
-    )
-    first = await client.put(
-        url,
-        headers=headers(access_token, world, "owner"),
-        json={"delegable_permissions": ["projects:read"]},
-    )
-    second = await client.put(
-        url,
-        headers=headers(access_token, world, "owner"),
-        json={"delegable_permissions": ["projects:read"]},
-    )
-
-    assert first.status_code == 200
-    assert first.json()["delegable_permissions"] == ["projects:read"]
-    assert second.status_code == 200
-    async with SessionFactory() as session:
-        role = await session.get(Role, world.roles["manager"].id)
-        state = await session.get(TenantAuthorizationState, world.tenant.id)
-        audits = (
-            await session.scalars(
-                select(AuthorizationAuditEvent)
-                .where(AuthorizationAuditEvent.action == "role.delegation.replace")
-                .order_by(AuthorizationAuditEvent.created_at)
-            )
-        ).all()
-    assert role is not None
-    assert state is not None
-    assert role.version == 1
-    assert state.epoch == 1
-    assert [audit.reason_code for audit in audits] == [
-        "role_delegation_replaced",
-        "role_delegation_unchanged",
-    ]
-
-
-async def test_permission_replace_preserves_retained_delegation(
-    client: AsyncClient,
-    access_token: AccessToken,
-    world: World,
-) -> None:
-    response = await client.put(
-        f"/tenants/{world.tenant.id}/rbac/roles/"
-        f"{world.roles['manager'].id}/permissions",
-        headers=headers(access_token, world, "owner"),
-        json={
-            "permissions": [
-                "memberships:read",
-                "projects:read",
-                "roles:read",
-            ]
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["delegable_permissions"] == ["projects:read"]
-
-
-async def test_non_owner_cannot_use_delegation_control_even_with_permission(
-    client: AsyncClient,
-    access_token: AccessToken,
-    world: World,
-) -> None:
-    async with SessionFactory() as session:
-        permission = await session.scalar(
-            select(Permission).where(
-                Permission.key == PermissionKey.ROLES_DELEGATION_UPDATE.value
-            )
-        )
-        assert permission is not None
-        session.add(
-            RolePermission(
-                tenant_id=world.tenant.id,
-                role_id=world.roles["junior_admin"].id,
-                permission_id=permission.id,
-                can_delegate=False,
-            )
-        )
-        await session.commit()
-
-    response = await client.put(
-        f"/tenants/{world.tenant.id}/rbac/roles/"
-        f"{world.roles['viewer'].id}/delegable-permissions",
-        headers=headers(access_token, world, "junior"),
-        json={"delegable_permissions": ["projects:read"]},
-    )
-
-    assert response.status_code == 403
-
-
-async def test_delegation_rejects_non_role_and_control_permissions(
-    client: AsyncClient,
-    access_token: AccessToken,
-    world: World,
-) -> None:
-    url = (
-        f"/tenants/{world.tenant.id}/rbac/roles/"
-        f"{world.roles['manager'].id}/delegable-permissions"
-    )
-    missing_role_permission = await client.put(
-        url,
-        headers=headers(access_token, world, "owner"),
-        json={"delegable_permissions": ["tenant_ownership:transfer"]},
-    )
-    assert missing_role_permission.status_code == 422
-
-    async with SessionFactory() as session:
-        permission = await session.scalar(
-            select(Permission).where(
-                Permission.key == PermissionKey.TENANT_OWNERSHIP_TRANSFER.value
-            )
-        )
-        assert permission is not None
-        session.add(
-            RolePermission(
-                tenant_id=world.tenant.id,
-                role_id=world.roles["manager"].id,
-                permission_id=permission.id,
-                can_delegate=False,
-            )
-        )
-        await session.commit()
-
-    protected_permission = await client.put(
-        url,
-        headers=headers(access_token, world, "owner"),
-        json={"delegable_permissions": ["tenant_ownership:transfer"]},
-    )
-    assert protected_permission.status_code == 403
-
-
-async def test_create_then_assign_to_self_is_denied(
-    client: AsyncClient,
-    access_token: AccessToken,
-    world: World,
-) -> None:
-    created = await client.post(
-        f"/tenants/{world.tenant.id}/rbac/roles",
-        headers=headers(access_token, world, "manager"),
-        json={
-            "key": "self-escalation-attempt",
-            "name": "Self escalation attempt",
-            "management_tier": 40,
-            "permissions": ["projects:read"],
-        },
-    )
     assert created.status_code == 201
-
+    assert created.json()["delegable_permissions"] == []
     assignment = await client.put(
-        f"/tenants/{world.tenant.id}/rbac/memberships/"
-        f"{world.memberships['manager'].id}/roles/{created.json()['id']}",
+        f"/rbac/users/{world.users['manager'].id}/roles/{created.json()['id']}",
         headers=headers(access_token, world, "manager"),
     )
     assert assignment.status_code == 403
 
 
-async def test_role_create_does_not_reveal_platform_permission_catalog(
+async def test_owner_transfer_is_atomic(
     client: AsyncClient,
-    access_token: AccessToken,
     world: World,
-) -> None:
-    async with SessionFactory() as session:
-        session.add(
-            Permission(
-                id=uuid.uuid4(),
-                key="platform:break_glass",
-                description="Platform-only emergency capability",
-            )
-        )
-        await session.commit()
-
-    url = f"/tenants/{world.tenant.id}/rbac/roles"
-    responses = [
-        await client.post(
-            url,
-            headers=headers(access_token, world, "owner"),
-            json={
-                "key": role_key,
-                "name": "Unavailable permission role",
-                "management_tier": 10,
-                "permissions": [permission_key],
-            },
-        )
-        for role_key, permission_key in (
-            ("platform-probe", "platform:break_glass"),
-            ("unknown-probe", "unknown:capability"),
-        )
-    ]
-
-    assert [response.status_code for response in responses] == [422, 422]
-    assert (
-        responses[0].json()
-        == responses[1].json()
-        == {"detail": {"code": "invalid_request"}}
-    )
-
-
-async def test_disabled_role_assignment_can_be_safely_revoked(
-    client: AsyncClient,
     access_token: AccessToken,
-    world: World,
 ) -> None:
-    async with SessionFactory() as session:
-        role = await session.get(Role, world.roles["viewer"].id)
-        assert role is not None
-        role.is_active = False
-        await session.commit()
-
-    response = await client.delete(
-        f"/tenants/{world.tenant.id}/rbac/memberships/"
-        f"{world.memberships['lower'].id}/roles/{world.roles['viewer'].id}",
-        headers=headers(access_token, world, "manager"),
+    response = await client.post(
+        f"/rbac/ownership/transfer/{world.users['blank'].id}",
+        headers=headers(access_token, world, "owner"),
     )
 
     assert response.status_code == 204
     async with SessionFactory() as session:
-        assignment = await session.scalar(
-            select(MembershipRole).where(
-                MembershipRole.membership_id == world.memberships["lower"].id,
-                MembershipRole.role_id == world.roles["viewer"].id,
+        owner_role = world.roles["owner"]
+        assignments = (
+            await session.scalars(
+                select(UserRole).where(UserRole.role_id == owner_role.id)
             )
+        ).all()
+        old_owner = await session.get(User, world.users["owner"].id)
+        new_owner = await session.get(User, world.users["blank"].id)
+    assert [item.user_id for item in assignments] == [world.users["blank"].id]
+    assert old_owner is not None and old_owner.authz_version == 1
+    assert new_owner is not None and new_owner.authz_version == 1
+
+
+async def test_status_change_invalidates_old_token_even_after_reactivation(
+    client: AsyncClient,
+    world: World,
+    access_token: AccessToken,
+) -> None:
+    old_token = access_token(world.users["lower"])
+    url = f"/rbac/users/{world.users['lower'].id}/status"
+    admin_headers = headers(access_token, world, "manager")
+
+    disabled = await client.patch(
+        url,
+        json={"is_active": False},
+        headers=admin_headers,
+    )
+    assert disabled.status_code == 200
+    assert not disabled.json()["is_active"]
+    rejected = await client.get(
+        "/rbac/me",
+        headers={"Authorization": f"Bearer {old_token}"},
+    )
+    assert rejected.status_code == 401
+
+    enabled = await client.patch(
+        url,
+        json={"is_active": True},
+        headers=admin_headers,
+    )
+    assert enabled.status_code == 200
+    rejected_again = await client.get(
+        "/rbac/me",
+        headers={"Authorization": f"Bearer {old_token}"},
+    )
+    assert rejected_again.status_code == 401
+
+    async with SessionFactory() as session:
+        user = await session.get(User, world.users["lower"].id)
+    assert user is not None
+    assert user.token_version == 2
+    assert user.authz_version == 2
+
+
+async def test_owner_replaces_delegation_and_noop_does_not_bump_versions(
+    client: AsyncClient,
+    world: World,
+    access_token: AccessToken,
+) -> None:
+    url = f"/rbac/roles/{world.roles['viewer'].id}/delegable-permissions"
+    request = {"delegable_permissions": ["projects:read"]}
+
+    first = await client.put(
+        url,
+        json=request,
+        headers=headers(access_token, world, "owner"),
+    )
+    assert first.status_code == 200
+    assert first.json()["version"] == 1
+
+    async with SessionFactory() as session:
+        state_before = await session.get(AuthorizationState, "global")
+        assert state_before is not None
+        epoch_before = state_before.epoch
+
+    second = await client.put(
+        url,
+        json=request,
+        headers=headers(access_token, world, "owner"),
+    )
+    assert second.status_code == 200
+    assert second.json()["version"] == 1
+    async with SessionFactory() as session:
+        state_after = await session.get(AuthorizationState, "global")
+    assert state_after is not None and state_after.epoch == epoch_before
+
+
+async def test_permission_replace_preserves_retained_delegation(
+    client: AsyncClient,
+    world: World,
+    access_token: AccessToken,
+) -> None:
+    owner_headers = headers(access_token, world, "owner")
+    role_id = world.roles["viewer"].id
+    delegated = await client.put(
+        f"/rbac/roles/{role_id}/delegable-permissions",
+        json={"delegable_permissions": ["projects:read"]},
+        headers=owner_headers,
+    )
+    assert delegated.status_code == 200
+
+    replaced = await client.put(
+        f"/rbac/roles/{role_id}/permissions",
+        json={"permissions": ["projects:read", "projects:update"]},
+        headers=owner_headers,
+    )
+    assert replaced.status_code == 200
+    assert replaced.json()["delegable_permissions"] == ["projects:read"]
+
+
+async def test_audit_failure_rolls_back_authorization_mutation(world: World) -> None:
+    context = await context_for(world, "manager", "audit-must-rollback")
+    service = RbacService(SessionFactory)
+
+    def invalid_audit(**_kwargs: object) -> AuthorizationAuditEvent:
+        return AuthorizationAuditEvent(
+            actor_user_id=world.users["manager"].id,
+            target_user_id=world.users["blank"].id,
+            target_role_id=world.roles["viewer"].id,
+            action="role.assign",
+            decision="invalid",
+            reason_code="forced_failure",
+            request_id="audit-must-rollback",
+        )
+
+    service._audit_event = invalid_audit  # type: ignore[method-assign]
+    with pytest.raises(IntegrityError):
+        await service.assign_role(
+            context=context,
+            target_user_id=world.users["blank"].id,
+            role_id=world.roles["viewer"].id,
+        )
+
+    async with SessionFactory() as session:
+        assignment = await session.get(
+            UserRole,
+            (world.users["blank"].id, world.roles["viewer"].id),
         )
     assert assignment is None
 
 
-async def test_denied_operation_rolls_back_mutation_before_audit(world: World) -> None:
+async def test_missing_authoritative_state_returns_503(
+    client: AsyncClient,
+    world: World,
+    access_token: AccessToken,
+) -> None:
     async with SessionFactory() as session:
-        authority = await load_authority_snapshot(
-            session,
-            tenant_id=world.tenant.id,
-            membership_id=world.memberships["manager"].id,
-        )
-        state = await session.get(TenantAuthorizationState, world.tenant.id)
+        state = await session.get(AuthorizationState, "global")
         assert state is not None
-        original_epoch = state.epoch
+        await session.delete(state)
+        await session.commit()
 
-    context = AuthorizationContext(
-        principal=Principal(
-            user_id=world.users["manager"].id,
-            token_tenant_id=world.tenant.id,
-            token_version=world.users["manager"].token_version,
-            token_id=str(uuid.uuid4()),
-        ),
-        tenant_id=world.tenant.id,
-        tenant_authz_epoch=original_epoch,
-        authority=authority,
-        request_id="test-mutate-then-deny",
-    )
-    service = RbacService(SessionFactory)
-
-    async def mutate_then_deny(
-        session: AsyncSession,
-    ) -> _MutationOutcome[None]:
-        mutable_state = await session.get(TenantAuthorizationState, world.tenant.id)
-        assert mutable_state is not None
-        mutable_state.epoch += 100
-        await session.flush()
-        raise forbidden("forced_denial_after_flush")
-
-    with pytest.raises(RbacError):
-        await service._run_audited(
-            context=context,
-            action="test.mutate_then_deny",
-            target_membership_id=None,
-            target_role_id=None,
-            operation=mutate_then_deny,
+    try:
+        response = await client.get(
+            "/rbac/me",
+            headers=headers(access_token, world, "manager"),
         )
+        assert response.status_code == 503
+        assert response.json() == {"detail": {"code": "authorization_unavailable"}}
+    finally:
+        async with SessionFactory() as session:
+            session.add(AuthorizationState(scope="global", epoch=0))
+            await session.commit()
 
+
+async def test_missing_authoritative_state_does_not_write_false_denial(
+    world: World,
+) -> None:
+    request_id = "missing-state-is-not-a-policy-denial"
+    context = await context_for(world, "manager", request_id)
     async with SessionFactory() as session:
-        persisted_state = await session.get(TenantAuthorizationState, world.tenant.id)
-        audit = await session.scalar(
-            select(AuthorizationAuditEvent).where(
-                AuthorizationAuditEvent.request_id == "test-mutate-then-deny"
-            )
-        )
-    assert persisted_state is not None
-    assert persisted_state.epoch == original_epoch
-    assert audit is not None
-    assert audit.decision == "denied"
-    assert audit.reason_code == "forced_denial_after_flush"
-
-
-async def test_direct_service_call_rejects_token_tenant_mismatch(world: World) -> None:
-    async with SessionFactory() as session:
-        authority = await load_authority_snapshot(
-            session,
-            tenant_id=world.second_tenant.id,
-            membership_id=world.memberships["outsider"].id,
-        )
-        state = await session.get(TenantAuthorizationState, world.second_tenant.id)
+        state = await session.get(AuthorizationState, "global")
         assert state is not None
-        original_epoch = state.epoch
+        await session.delete(state)
+        await session.commit()
 
-    context = AuthorizationContext(
-        principal=Principal(
-            user_id=world.users["outsider"].id,
-            token_tenant_id=world.tenant.id,
-            token_version=world.users["outsider"].token_version,
-            token_id=str(uuid.uuid4()),
-        ),
-        tenant_id=world.second_tenant.id,
-        tenant_authz_epoch=original_epoch,
-        authority=authority,
-        request_id="test-direct-service-cross-tenant",
-    )
-    service = RbacService(SessionFactory)
-
-    async def forbidden_cross_tenant_operation(
-        session: AsyncSession,
-    ) -> _MutationOutcome[None]:
-        mutable_state = await session.get(
-            TenantAuthorizationState, world.second_tenant.id
-        )
-        assert mutable_state is not None
-        mutable_state.epoch += 1
-        return _MutationOutcome(value=None, reason_code="must_not_run")
-
-    with pytest.raises(RbacError) as caught:
-        await service._run_audited(
-            context=context,
-            action="test.cross_tenant_service_call",
-            target_membership_id=None,
-            target_role_id=None,
-            operation=forbidden_cross_tenant_operation,
-        )
-
-    assert caught.value.status_code == 404
-    async with SessionFactory() as session:
-        persisted_state = await session.get(
-            TenantAuthorizationState, world.second_tenant.id
-        )
-        audit = await session.scalar(
-            select(AuthorizationAuditEvent).where(
-                AuthorizationAuditEvent.request_id == "test-direct-service-cross-tenant"
+    try:
+        with pytest.raises(RbacError) as caught:
+            await RbacService(SessionFactory).assign_role(
+                context=context,
+                target_user_id=world.users["blank"].id,
+                role_id=world.roles["viewer"].id,
             )
-        )
-    assert persisted_state is not None
-    assert persisted_state.epoch == original_epoch
-    assert audit is not None
-    assert audit.decision == "denied"
-    assert audit.reason_code == "tenant_not_visible"
+        assert caught.value.status_code == 503
+
+        async with SessionFactory() as session:
+            audit = await session.scalar(
+                select(AuthorizationAuditEvent).where(
+                    AuthorizationAuditEvent.request_id == request_id
+                )
+            )
+        assert audit is None
+    finally:
+        async with SessionFactory() as session:
+            session.add(AuthorizationState(scope="global", epoch=0))
+            await session.commit()
 
 
 async def test_privileged_request_models_reject_mass_assignment(
     client: AsyncClient,
-    access_token: AccessToken,
     world: World,
+    access_token: AccessToken,
 ) -> None:
-    response = await client.post(
-        f"/tenants/{world.tenant.id}/rbac/roles",
+    response = await client.patch(
+        f"/rbac/users/{world.users['lower'].id}/status",
+        json={"is_active": False, "is_protected": True},
         headers=headers(access_token, world, "manager"),
-        json={
-            "key": "mass-assignment",
-            "name": "Mass assignment",
-            "management_tier": 40,
-            "permissions": ["projects:read"],
-            "is_protected": True,
-        },
     )
 
     assert response.status_code == 422
+
+
+async def test_role_permission_rows_use_expected_global_keys(world: World) -> None:
+    async with SessionFactory() as session:
+        keys = set(
+            (
+                await session.scalars(
+                    select(Permission.key)
+                    .select_from(RolePermission)
+                    .join(Permission, Permission.id == RolePermission.permission_id)
+                    .where(RolePermission.role_id == world.roles["owner"].id)
+                )
+            ).all()
+        )
+
+    assert PermissionKey.SYSTEM_OWNER_TRANSFER.value in keys
+    assert "system_owner:transfer" in keys

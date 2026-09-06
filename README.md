@@ -3,18 +3,19 @@
 **English** | [简体中文](README.zh-CN.md)
 
 `fastapi-templates-xtn` is an opinionated Codex Skill for building and hardening
-FastAPI services with tenant-scoped PostgreSQL RBAC, strict administrative
+FastAPI services with application-scoped PostgreSQL RBAC, strict administrative
 hierarchy, non-sequential identifiers, minimal revocable JWT sessions, and
 transactionally consistent authorization writes.
 
 ## Status
 
-`v0.1.0` is the first public preview release. The policy and runnable PostgreSQL
-RBAC asset are substantial, but the included asset does not yet implement the
-complete PostgreSQL-session plus Redis active-JTI adapter described by the Skill.
-Do not represent the preview asset as production-ready until its documented
-identity-provider assumptions and PostgreSQL/Redis integration tests have been
-completed for the target deployment.
+`main` contains the unreleased single-project RBAC rewrite. `v0.1.0` is the
+historical first public preview and does not contain this rewrite. The policy and
+runnable PostgreSQL asset are substantial, but the included asset does not yet
+implement the complete PostgreSQL-session plus Redis active-JTI adapter described
+by the Skill. Do not represent it as production-ready until its documented
+identity-provider assumptions and PostgreSQL/Redis integration tests are complete
+for the target deployment.
 
 ## Upstream And Attribution
 
@@ -24,7 +25,7 @@ from [`wshobson/agents`](https://github.com/wshobson/agents), based on commit
 `47a5dbc3f9c2661c6afb13638f80d4a4d4449040`.
 
 The upstream work is Copyright (c) 2024 Seth Hobson and is used under the MIT
-License. XTN's changes add the PostgreSQL RBAC model, tenant isolation,
+License. XTN's changes add the PostgreSQL RBAC model, application-wide
 administrative hierarchy and anti-self-elevation rules, atomic authorization
 writes, UUID identifier policy, and minimal revocable JWT guidance. This project
 is not affiliated with or endorsed by the upstream project. See [NOTICE](NOTICE)
@@ -32,12 +33,12 @@ and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## What It Provides
 
-- Tenant-scoped positive-grant RBAC for PostgreSQL.
-- Strict authority tiers that deny peer, upward, protected, cross-tenant, and
+- Single-project positive-grant RBAC for PostgreSQL.
+- Strict authority tiers that deny peer, upward, protected, and
   direct or indirect self-elevation operations.
-- UUIDv4 identifiers for users, tenants, RBAC records, sessions, audits, and
+- UUIDv4 identifiers for users, RBAC records, sessions, audits, and
   business entities instead of enumerable autoincrement identifiers.
-- Minimal tenant-bound JWT claims and a PostgreSQL-authoritative, Redis-assisted
+- Minimal JWT claims without roles or profile data and a PostgreSQL-authoritative, Redis-assisted
   active-JTI session design.
 - Transaction, lock-order, audit, outbox, revocation, and optimistic concurrency
   requirements for privileged writes.
@@ -51,8 +52,15 @@ and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Install
 
-The repository publishes the Skill at `skills/fastapi-templates-xtn`. For a
-reproducible installation of this preview release, ask Codex:
+The repository publishes the Skill at `skills/fastapi-templates-xtn`. To install
+the current single-project version, ask Codex:
+
+```text
+Use $skill-installer to install the skill from
+https://github.com/xtnkking/fastapi-templates-xtn/tree/main/skills/fastapi-templates-xtn
+```
+
+To install the historical `v0.1.0` preview instead, use its immutable tag:
 
 ```text
 Use $skill-installer to install the skill from
@@ -62,11 +70,8 @@ https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.1.0/skills/fastapi-tem
 The installer places the directory in the configured user Skill location and
 stops if a directory with the same name already exists. Codex detects newly
 installed Skills automatically; restart Codex if it does not appear. Replace
-`v0.1.0` with another published release tag when needed. Use `main` only when
-you intentionally want the latest unreleased state.
-
-To use the unreleased proxy-availability guide, replace `v0.1.0` in the command
-above with `main`.
+`v0.1.0` with a later published release tag when needed. `main` is intentionally
+unreleased and can change before the next tag.
 
 For repository-scoped use, copy `skills/fastapi-templates-xtn` to
 `.agents/skills/fastapi-templates-xtn` in the target repository.
@@ -85,7 +90,7 @@ repository or an independently maintained fork.
 Invoke it explicitly when the request needs its full security baseline:
 
 ```text
-Use $fastapi-templates-xtn to build a tenant-scoped PostgreSQL FastAPI service
+Use $fastapi-templates-xtn to build a single-project PostgreSQL FastAPI service
 with strict RBAC and revocable JWT sessions.
 ```
 

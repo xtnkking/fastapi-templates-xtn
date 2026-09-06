@@ -30,8 +30,8 @@ nondeterministic, and disclose test traffic.
 
 Cover these behaviors with unit, integration, and security tests as appropriate:
 
-- Tenant-scoped `proxies:check`, cross-tenant concealment, UUIDv4 proxy IDs, and
-  request bodies or query values unable to replace the fixed target.
+- Application-level `proxies:check`, concealed-resource behavior, UUIDv4 proxy
+  IDs, and request bodies or query values unable to replace the fixed target.
 - Exact `GET http://ip-api.com/json/?lang=zh-CN`, redirect refusal, selected-proxy
   routing, environment-proxy isolation, no direct fallback, and minimal outbound
   headers.
@@ -69,11 +69,11 @@ Cover these behaviors with unit, integration, and security tests as appropriate:
 
 - Each completed diagnostic performs one full-result conditional write; a later
   explicit check performs real I/O and replaces the earlier success or failure.
-- Result and sequence keys have `TTL=-1`; proxy/tenant deletion commits a durable
+- Result and sequence keys have `TTL=-1`; proxy deletion commits a durable
   cleanup outbox row, whose idempotent handler deletes both keys in one command.
   Redis failure is retried, and a deleted UUID is never reused.
 - Every connection field change increments `connection_version`. A list ignores
-  malformed, wrong-tenant, or version-mismatched cache objects.
+  malformed or version-mismatched cache objects.
 - Check finalization briefly holds a proxy-row lock that conflicts with edit and
   delete writers. Test both commit orders: the old result is written before the
   edit or rejected after observing its new `connection_version`, never written

@@ -332,8 +332,8 @@ policy is instead a stable application `422`, for example
 Do not keep a PostgreSQL transaction, ORM object, authorization lock, or database
 connection checked out during the external request. Use this sequence:
 
-1. Authenticate, resolve tenant scope, and require `proxies:check`.
-2. Load by `(tenant_id, proxy_id)` and copy protocol, host, port, username,
+1. Authenticate and require `proxies:check`.
+2. Load by `proxy_id`, apply any independent row policy, and copy protocol, host, port, username,
    encrypted credential/secret reference, and monotonically increasing
    `connection_version`; finish the database read.
 3. Strictly validate bounded protocol, host, port, and username values without
@@ -349,7 +349,7 @@ connection checked out during the external request. Use this sequence:
    configuration; a KMS/secret-store timeout or outage is infrastructure `503`
    and is not cached. For invalid stored data, use its safe `success=false`
    result without opening a client.
-6. Open a short finalization transaction and lock the tenant-scoped proxy row
+6. Open a short finalization transaction and lock the proxy row
    with PostgreSQL `FOR SHARE`, or the project's equivalent lock that conflicts
    with connection edits and deletion. Re-read `connection_version`. If the row
    disappeared or changed, do not cache or return the stale result; use the
@@ -386,13 +386,15 @@ async def check_proxy_availability(
     access: ProxyCheckAccess,
     service: ProxyAvailabilityServiceDependency,
 ) -> ProxyCheckSuccess | ProxyCheckFailure:
-    return await service.check(
-        tenant_id=access.tenant.id,
-        proxy_id=proxy_id,
-    )
+    return await service.check(proxy_id=proxy_id, access=access)
 ```
 
-Apply a server-side per-actor or per-tenant rate limit and a bounded outbound
+`ProxyCheckAccess` must carry the authenticated actor and any row-policy context
+required by the existing application. The service applies that context before
+loading or decrypting the proxy; the dependency is not merely a route-level
+capability check.
+
+Apply a server-side per-actor and application-wide rate limit plus a bounded outbound
 concurrency budget. Five browser workers are not a global capacity limit. Bound
 queue wait and release semaphore slots in `finally`; do not retry provider `429`,
 timeouts, or connection failures inside one explicit check.
@@ -427,8 +429,8 @@ def proxy_check_keys(proxy_id: UUID) -> tuple[str, str]:
     )
 ```
 
-The complete JSON contains the public result plus internal `tenant_id`,
-`connection_version`, and `attempt_sequence`. A success resembles:
+The complete JSON contains the public result plus internal `connection_version`
+and `attempt_sequence`. A success resembles:
 
 ```json
 {
@@ -441,7 +443,6 @@ The complete JSON contains the public result plus internal `tenant_id`,
   "city": "Los Angeles",
   "message": "代理连接成功",
   "updated_at": "2026-09-06T08:30:00Z",
-  "tenant_id": "6a88fb2c-5f7c-4f5e-a457-98ad5ed0d8f3",
   "connection_version": 7,
   "attempt_sequence": 12
 }
@@ -470,7 +471,6 @@ REDIS_LUA_SAFE_INTEGER_MAX = 9_007_199_254_740_991
 
 
 class CachedProxyCheckSuccess(ProxyCheckSuccess):
-    tenant_id: UUID
     connection_version: int = Field(
         ge=0,
         le=REDIS_LUA_SAFE_INTEGER_MAX,
@@ -482,7 +482,6 @@ class CachedProxyCheckSuccess(ProxyCheckSuccess):
 
 
 class CachedProxyCheckFailure(ProxyCheckFailure):
-    tenant_id: UUID
     connection_version: int = Field(
         ge=0,
         le=REDIS_LUA_SAFE_INTEGER_MAX,
@@ -503,9 +502,7 @@ CACHED_CHECK_ADAPTER = TypeAdapter(CachedProxyCheck)
 def to_public_check(
     cached: CachedProxyCheckSuccess | CachedProxyCheckFailure,
 ) -> ProxyCheckSuccess | ProxyCheckFailure:
-    data = cached.model_dump(
-        exclude={"tenant_id", "connection_version", "attempt_sequence"}
-    )
+    data = cached.model_dump(exclude={"connection_version", "attempt_sequence"})
     if cached.success:
         return ProxyCheckSuccess.model_validate(data)
     return ProxyCheckFailure.model_validate(data)
@@ -685,17 +682,17 @@ return 0
 It must not unconditionally advance the attempt sequence or delete an equal/newer
 version: a new-version check can legitimately finish before delayed outbox
 delivery. List-time version comparison is the correctness fallback while cleanup
-is pending. Proxy and tenant deletion instead enqueue durable cleanup whose
+is pending. Proxy deletion instead enqueues durable cleanup whose
 handler removes result and sequence keys together with one `DEL` before marking
 the outbox row delivered.
 
 For each authorized list page:
 
-1. Query PostgreSQL with tenant, search, filter, deterministic order, and
+1. Query PostgreSQL with search, filter, row-policy, deterministic order, and
    pagination predicates.
 2. Build result keys only for proxy IDs in that returned page.
 3. Issue one `MGET` through the supported topology path. Validate each internal
-   object, require matching `tenant_id` and `connection_version`, strip internal
+   object, require matching `connection_version`, strip internal
    metadata, and merge `availability_check` by proxy ID.
 4. Treat missing, malformed, or version-mismatched values as `null` without
    invoking the detector.
@@ -710,7 +707,7 @@ either the old or new snapshot.
 
 ## Logging And Abuse Controls
 
-- Log stable event names, tenant ID, proxy UUID, duration category, outcome code,
+- Log stable event names, proxy UUID, duration category, outcome code,
   and request correlation ID only. Never log the connection object, stored host,
   username, password, `httpx.Proxy`, proxy URL, raw exception, or upstream body.
 - Disable or redact HTTPX/httpcore debug logging and tracing hooks that can expose
@@ -719,8 +716,8 @@ either the old or new snapshot.
 - Create only minimal outbound headers. Never forward inbound `Authorization`,
   `Cookie`, tracing baggage, or arbitrary user headers.
 - Authorize before proxy lookup and decrypt only after destination approval. Do
-  not reveal whether a cross-tenant UUID exists.
-- Rate-limit checks per actor and tenant, and use a process/distributed capacity
+  not reveal whether a deliberately concealed UUID exists.
+- Rate-limit checks per actor and across the application, and use a process/distributed capacity
   control appropriate to deployment. Audit initiation only when needed, without
   credentials. This display diagnostic is not an RBAC control-plane write.
 - Treat no-TTL exit-IP and location data as retained operational data. Document

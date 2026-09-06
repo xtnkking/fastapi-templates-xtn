@@ -9,6 +9,13 @@ from app.rbac.errors import unauthenticated
 from app.settings import Settings
 
 
+def _uuid4(value: object) -> uuid.UUID:
+    parsed = uuid.UUID(str(value))
+    if parsed.version != 4 or str(parsed) != str(value):
+        raise ValueError("claim must be a canonical UUIDv4 string")
+    return parsed
+
+
 def decode_access_token(token: str, settings: Settings) -> Principal:
     try:
         payload: dict[str, Any] = jwt.decode(
@@ -20,7 +27,6 @@ def decode_access_token(token: str, settings: Settings) -> Principal:
             options={
                 "require": [
                     "sub",
-                    "tid",
                     "ver",
                     "jti",
                     "token_type",
@@ -35,11 +41,13 @@ def decode_access_token(token: str, settings: Settings) -> Principal:
         issued_at = datetime.fromtimestamp(int(payload["iat"]), tz=UTC)
         if issued_at > datetime.now(UTC):
             raise ValueError("token issued in the future")
+        token_version = int(payload["ver"])
+        if token_version < 0:
+            raise ValueError("negative token version")
         return Principal(
-            user_id=uuid.UUID(str(payload["sub"])),
-            token_tenant_id=uuid.UUID(str(payload["tid"])),
-            token_version=int(payload["ver"]),
-            token_id=str(payload["jti"]),
+            user_id=_uuid4(payload["sub"]),
+            token_version=token_version,
+            token_id=_uuid4(payload["jti"]),
         )
     except (jwt.PyJWTError, KeyError, OverflowError, TypeError, ValueError) as exc:
         raise unauthenticated("invalid_access_token") from exc
