@@ -9,9 +9,9 @@ transactionally consistent authorization writes.
 
 ## Status
 
-`main` contains the unreleased single-project RBAC rewrite. `v0.1.0` is the
-historical first public preview and does not contain this rewrite. The policy and
-runnable PostgreSQL asset are substantial, but the included asset does not yet
+`v0.2.0` is the current single-project RBAC release. `v0.1.0` is the historical
+first public preview and does not contain this rewrite. The policy and runnable
+PostgreSQL asset are substantial, but the included asset does not yet
 implement the complete PostgreSQL-session plus Redis active-JTI adapter described
 by the Skill. Do not represent it as production-ready until its documented
 identity-provider assumptions and PostgreSQL/Redis integration tests are complete
@@ -46,18 +46,18 @@ and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
   [implementation guide for proxy availability checks](skills/fastapi-templates-xtn/references/proxy-availability-detection.md),
   Redis-backed latest-result display, and bounded single or batch checks in an
   existing proxy management UI. This is guidance, not a feature bundled into the
-  RBAC asset. It is currently available on `main` and is not part of `v0.1.0`.
+  RBAC asset. It is included in `v0.2.0` and was not part of `v0.1.0`.
 - A runnable FastAPI, SQLAlchemy, Alembic, and PostgreSQL reference asset with
   focused policy and integration tests.
 
 ## Install
 
 The repository publishes the Skill at `skills/fastapi-templates-xtn`. To install
-the current single-project version, ask Codex:
+the current stable single-project release, ask Codex:
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/main/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.2.0/skills/fastapi-templates-xtn
 ```
 
 To install the historical `v0.1.0` preview instead, use its immutable tag:
@@ -69,9 +69,9 @@ https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.1.0/skills/fastapi-tem
 
 The installer places the directory in the configured user Skill location and
 stops if a directory with the same name already exists. Codex detects newly
-installed Skills automatically; restart Codex if it does not appear. Replace
-`v0.1.0` with a later published release tag when needed. `main` is intentionally
-unreleased and can change before the next tag.
+installed Skills automatically; restart Codex if it does not appear. Use the
+immutable `v0.2.0` tag for reproducible installation. The `main` branch may
+change before the next release.
 
 For repository-scoped use, copy `skills/fastapi-templates-xtn` to
 `.agents/skills/fastapi-templates-xtn` in the target repository.
@@ -127,7 +127,7 @@ python -B scripts/validate_release.py
 PostgreSQL-marked tests require the service and test database configured by
 `compose.dev.yaml`. The CI workflow runs those checks against PostgreSQL. Redis
 active-JTI support and its integration tests are planned and are not included in
-`v0.1.0`.
+`v0.2.0`.
 
 See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) before publishing a tag.
 

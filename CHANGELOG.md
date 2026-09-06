@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-06
+
 - **BREAKING:** Reworked authorization into a single-project RBAC baseline built on users,
   user-role assignments, and one global authorization state. Access tokens now
   carry only the minimal identity and protocol claims. This replaces the prior

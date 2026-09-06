@@ -9,7 +9,7 @@
 
 ## 当前状态
 
-`main` 已包含尚未发布的单项目 RBAC 重构。`v0.1.0` 是历史上的第一个公开
+`v0.2.0` 是当前正式发布的单项目 RBAC 版本。`v0.1.0` 是历史上的第一个公开
 预览版，不包含本次重构。策略规范和可运行的 PostgreSQL RBAC 参考资产已经较为
 完整，但该资产尚未实现 Skill 所描述的完整 PostgreSQL 会话与 Redis 活跃 JTI
 适配器。在目标部署完成文档列出的身份提供方假设验证，以及 PostgreSQL/Redis
@@ -42,18 +42,19 @@ Skill 基础上独立维护的扩展，所依据的上游提交为
 - 面向现有代理管理模块的
   [可选代理可用性检测实现指南](skills/fastapi-templates-xtn/references/proxy-availability-detection.md)，
   涵盖 Redis 最近结果回显，以及受控并发的单个和批量检测。它是按需读取的指南，
-  不是 RBAC 参考资产内置的功能。该指南目前位于 `main`，不属于 `v0.1.0`。
+  不是 RBAC 参考资产内置的功能。该指南已包含在 `v0.2.0` 中，但不属于
+  `v0.1.0`。
 - 可运行的 FastAPI、SQLAlchemy、Alembic 和 PostgreSQL 参考资产，并配有聚焦
   于策略与集成行为的测试。
 
 ## 安装
 
-仓库中的 Skill 位于 `skills/fastapi-templates-xtn`。若要安装当前单项目版本，请向
-Codex 输入：
+仓库中的 Skill 位于 `skills/fastapi-templates-xtn`。若要安装当前稳定的单项目
+版本，请向 Codex 输入：
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/main/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.2.0/skills/fastapi-templates-xtn
 ```
 
 若要安装历史 `v0.1.0` 预览版，请改用其不可变标签：
@@ -65,8 +66,8 @@ https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.1.0/skills/fastapi-tem
 
 安装器会将目录放入已配置的用户 Skill 位置；若同名目录已经存在，安装器会停止，
 不会覆盖。Codex 通常会自动检测新安装的 Skill；若没有显示，请重启 Codex。
-需要安装其他已发布版本时，请将 `v0.1.0` 替换为相应标签。`main` 尚未发布，
-在创建下一个版本标签前仍可能发生变化。
+需要可复现安装时，请使用不可变的 `v0.2.0` 标签；`main` 分支在下次发布前仍
+可能发生变化。
 
 若只希望在某个仓库内使用，请将 `skills/fastapi-templates-xtn` 复制到目标仓库的
 `.agents/skills/fastapi-templates-xtn`。
@@ -118,7 +119,7 @@ python -B scripts/validate_release.py
 
 带有 PostgreSQL 标记的测试需要使用 `compose.dev.yaml` 配置的服务和测试数据库。
 CI 会使用 PostgreSQL 运行这些检查。Redis 活跃 JTI 支持及其集成测试仍在规划中，
-未包含在 `v0.1.0` 中。
+未包含在 `v0.2.0` 中。
 
 发布标签前请参阅[发布检查清单](RELEASE_CHECKLIST.zh-CN.md)。
 
