@@ -15,9 +15,8 @@ from alembic import command
 from app.database import SessionFactory, engine
 from app.main import app
 from app.rbac.domain import (
-    OWNER_DELEGABLE_PERMISSION_KEYS,
-    OWNER_PERMISSION_KEYS,
     PermissionKey,
+    SystemRoleKey,
 )
 from app.rbac.models import Permission, Role, RolePermission, User, UserRole
 from app.settings import get_settings
@@ -51,12 +50,19 @@ async def clean_database(migrated_database: None) -> AsyncIterator[None]:
                 raise RuntimeError(
                     "refusing to truncate a non-test PostgreSQL database"
                 )
+            await connection.execute(text("DELETE FROM authorization_audit_events"))
+            # Test isolation intentionally resets the pre-bootstrap state without
+            # exercising the deferred production invariant.
+            await connection.execute(text("TRUNCATE TABLE user_roles"))
             await connection.execute(
                 text(
-                    "TRUNCATE TABLE authorization_audit_events, user_roles, "
-                    "role_permissions, roles, users CASCADE"
+                    "DELETE FROM role_permissions USING roles "
+                    "WHERE role_permissions.role_id = roles.id "
+                    "AND NOT roles.is_system"
                 )
             )
+            await connection.execute(text("DELETE FROM roles WHERE NOT is_system"))
+            await connection.execute(text("DELETE FROM users"))
             await connection.execute(
                 text("UPDATE authorization_state SET epoch = 0 WHERE scope = 'global'")
             )
@@ -110,6 +116,13 @@ async def world() -> World:
                 for permission in (await session.scalars(select(Permission))).all()
             }
             assert permissions, "Alembic permission seed did not run"
+            system_roles = {
+                role.key: role
+                for role in (
+                    await session.scalars(select(Role).where(Role.is_system.is_(True)))
+                ).all()
+            }
+            assert set(system_roles) == {item.value for item in SystemRoleKey}
 
             users = {
                 name: User(email=f"{name}@example.test")
@@ -131,19 +144,9 @@ async def world() -> World:
             await session.flush()
 
             roles = {
-                "owner": Role(
-                    key="owner",
-                    name="Owner",
-                    management_tier=1000,
-                    is_system=True,
-                    is_protected=True,
-                    is_owner=True,
-                ),
-                "manager": Role(
-                    key="manager",
-                    name="Manager",
-                    management_tier=500,
-                ),
+                "super_admin": system_roles[SystemRoleKey.SUPER_ADMIN.value],
+                "admin": system_roles[SystemRoleKey.ADMIN.value],
+                "user": system_roles[SystemRoleKey.USER.value],
                 "junior_admin": Role(
                     key="junior-admin",
                     name="Junior admin",
@@ -165,7 +168,13 @@ async def world() -> World:
                     management_tier=30,
                 ),
             }
-            session.add_all(roles.values())
+            roles["owner"] = roles["super_admin"]
+            roles["manager"] = roles["admin"]
+            session.add_all(
+                role
+                for key, role in roles.items()
+                if key not in {"super_admin", "admin", "user", "owner", "manager"}
+            )
             await session.flush()
 
             def grant(
@@ -187,29 +196,6 @@ async def world() -> World:
 
             session.add_all(
                 grant(
-                    "owner",
-                    set(OWNER_PERMISSION_KEYS),
-                    delegable=set(OWNER_DELEGABLE_PERMISSION_KEYS),
-                )
-                + grant(
-                    "manager",
-                    {
-                        PermissionKey.ROLES_READ.value,
-                        PermissionKey.ROLES_CREATE.value,
-                        PermissionKey.ROLES_ASSIGN.value,
-                        PermissionKey.ROLES_REVOKE.value,
-                        PermissionKey.ROLES_PERMISSIONS_UPDATE.value,
-                        PermissionKey.USERS_READ.value,
-                        PermissionKey.USERS_STATUS_UPDATE.value,
-                        PermissionKey.PROJECTS_READ.value,
-                        PermissionKey.PROJECTS_UPDATE.value,
-                    },
-                    delegable={
-                        PermissionKey.PROJECTS_READ.value,
-                        PermissionKey.PROJECTS_UPDATE.value,
-                    },
-                )
-                + grant(
                     "junior_admin",
                     {
                         PermissionKey.ROLES_ASSIGN.value,
@@ -223,10 +209,10 @@ async def world() -> World:
                 + grant("nondelegable", {PermissionKey.USERS_READ.value})
             )
 
-            assignments = (
-                ("owner", "owner"),
-                ("manager", "manager"),
-                ("peer", "manager"),
+            assignments = tuple((user_name, "user") for user_name in users) + (
+                ("owner", "super_admin"),
+                ("manager", "admin"),
+                ("peer", "admin"),
                 ("junior", "junior_admin"),
                 ("higher", "higher"),
                 ("lower", "viewer"),

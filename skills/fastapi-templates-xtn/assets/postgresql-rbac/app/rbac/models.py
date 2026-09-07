@@ -92,12 +92,47 @@ class Role(Base):
             "management_tier < 1000 OR is_owner",
             name="owner_tier_reserved",
         ),
+        CheckConstraint(
+            "is_system OR (management_tier >= 1 AND management_tier <= 999)",
+            name="custom_role_tier_range",
+        ),
         CheckConstraint("version >= 0", name="version_nonnegative"),
-        CheckConstraint("is_system = is_protected", name="system_protection_match"),
+        CheckConstraint(
+            "NOT is_protected OR is_system",
+            name="protected_role_is_system",
+        ),
+        CheckConstraint(
+            "NOT is_system OR (is_active AND deleted_at IS NULL)",
+            name="system_role_always_available",
+        ),
+        CheckConstraint(
+            "deleted_at IS NULL OR NOT is_active",
+            name="deleted_role_inactive",
+        ),
+        CheckConstraint(
+            "deleted_by_user_id IS NULL OR deleted_at IS NOT NULL",
+            name="deleted_role_actor_requires_timestamp",
+        ),
         CheckConstraint(
             "NOT is_owner OR (is_system AND is_protected AND is_active "
-            "AND management_tier = 1000)",
+            "AND management_tier = 1000 AND key = 'super_admin' "
+            "AND deleted_at IS NULL)",
             name="owner_shape",
+        ),
+        CheckConstraint(
+            "key <> 'super_admin' OR (is_system AND is_protected AND is_owner "
+            "AND is_active AND management_tier = 1000 AND deleted_at IS NULL)",
+            name="super_admin_role_shape",
+        ),
+        CheckConstraint(
+            "key <> 'admin' OR (is_system AND NOT is_protected AND NOT is_owner "
+            "AND is_active AND management_tier = 500 AND deleted_at IS NULL)",
+            name="admin_role_shape",
+        ),
+        CheckConstraint(
+            "key <> 'user' OR (is_system AND NOT is_protected AND NOT is_owner "
+            "AND is_active AND management_tier = 0 AND deleted_at IS NULL)",
+            name="user_role_shape",
         ),
         Index("ix_roles_active", "is_active"),
         Index(
@@ -116,6 +151,9 @@ class Role(Base):
     )
     key: Mapped[str] = mapped_column(String(80), nullable=False)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     management_tier: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
@@ -136,6 +174,18 @@ class Role(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deleted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            name="fk_roles_deleted_by_user_id_users",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
     )
 
 

@@ -19,7 +19,9 @@ from app.rbac.models import (
 @dataclass(slots=True)
 class _RoleAccumulator:
     role_id: uuid.UUID
+    key: str
     management_tier: int
+    is_system: bool
     is_protected: bool
     is_owner: bool
     permissions: set[str] = field(default_factory=set)
@@ -28,9 +30,11 @@ class _RoleAccumulator:
     def freeze(self) -> RoleGrant:
         return RoleGrant(
             role_id=self.role_id,
+            key=self.key,
             management_tier=self.management_tier,
             permissions=frozenset(self.permissions),
             delegable_permissions=frozenset(self.delegable_permissions),
+            is_system=self.is_system,
             is_protected=self.is_protected,
             is_owner=self.is_owner,
         )
@@ -45,7 +49,9 @@ async def load_role_grants_for_user(
     statement = (
         select(
             Role.id.label("role_id"),
+            Role.key,
             Role.management_tier,
+            Role.is_system,
             Role.is_protected,
             Role.is_owner,
             Permission.key.label("permission_key"),
@@ -56,6 +62,7 @@ async def load_role_grants_for_user(
         .outerjoin(RolePermission, RolePermission.role_id == Role.id)
         .outerjoin(Permission, Permission.id == RolePermission.permission_id)
         .where(UserRole.user_id == user_id)
+        .where(Role.deleted_at.is_(None))
         .order_by(Role.id, Permission.key)
     )
     if not include_disabled_roles:
@@ -67,7 +74,9 @@ async def load_role_grants_for_user(
             row.role_id,
             _RoleAccumulator(
                 role_id=row.role_id,
+                key=row.key,
                 management_tier=row.management_tier,
+                is_system=row.is_system,
                 is_protected=row.is_protected,
                 is_owner=row.is_owner,
             ),
@@ -110,11 +119,16 @@ async def load_role_grant(
     *,
     role_id: uuid.UUID,
     include_disabled: bool = False,
+    include_deleted: bool = False,
 ) -> RoleGrant:
     role = await session.scalar(
         select(Role).where(Role.id == role_id).execution_options(populate_existing=True)
     )
-    if role is None or (not include_disabled and not role.is_active):
+    if (
+        role is None
+        or (not include_disabled and not role.is_active)
+        or (not include_deleted and role.deleted_at is not None)
+    ):
         raise not_found("role_not_found")
 
     rows = (
@@ -129,9 +143,11 @@ async def load_role_grant(
     permissions = frozenset(row.key for row in rows)
     return RoleGrant(
         role_id=role.id,
+        key=role.key,
         management_tier=role.management_tier,
         permissions=permissions,
         delegable_permissions=frozenset(row.key for row in rows if row.can_delegate),
+        is_system=role.is_system,
         is_protected=role.is_protected,
         is_owner=role.is_owner,
     )
@@ -232,3 +248,19 @@ async def load_permission_ids(
         )
     ).all()
     return {row.key: row.id for row in rows}
+
+
+async def load_permission_keys(
+    session: AsyncSession,
+    permission_ids: frozenset[uuid.UUID],
+) -> dict[uuid.UUID, str]:
+    if not permission_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(Permission.id, Permission.key).where(
+                Permission.id.in_(permission_ids)
+            )
+        )
+    ).all()
+    return {row.id: row.key for row in rows}

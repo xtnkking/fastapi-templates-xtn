@@ -21,7 +21,6 @@ from app.rbac.queries import (
     lock_roles,
     lock_users,
 )
-from app.rbac.schemas import RolePermissionsReplaceRequest
 from app.rbac.service import RbacService
 from tests.integration.conftest import World
 
@@ -184,12 +183,14 @@ async def test_shared_role_change_observes_new_high_authority_holder(
             await lock_roles(writer_session, role_ids={shared_role.id})
 
             waiting_change = asyncio.create_task(
-                service.replace_role_permissions(
+                service.change_role_permissions(
                     context=context,
                     role_id=shared_role.id,
-                    request=RolePermissionsReplaceRequest(
-                        permissions=["projects:read", "projects:update"]
+                    permission_ids=(
+                        world.permissions[PermissionKey.PROJECTS_UPDATE.value].id,
                     ),
+                    operation="bind",
+                    expected_version=0,
                 )
             )
             with pytest.raises(TimeoutError):

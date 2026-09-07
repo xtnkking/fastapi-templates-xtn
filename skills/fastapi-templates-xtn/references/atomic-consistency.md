@@ -40,7 +40,10 @@ savepoint behavior.
 
 The final decision for a write belongs in the transaction that owns the mutation.
 A route dependency may reject obvious failures early, but its snapshot is not
-authoritative for a concurrent write.
+authoritative for a concurrent write. If that fast gate rejects a privileged
+write, attempt its denied audit there; if it allows the request, the transaction
+owner still reloads and checks the capability before revealing target existence
+or concurrency versions.
 
 The transaction owner must:
 
@@ -93,13 +96,13 @@ never create it opportunistically.
 
 The global row intentionally serializes authorization changes in this
 single-project baseline. This makes assignment, revocation, user status, shared
-role edits, delegation, and Owner transfer participate in one proof. Keep
+role edits, delegation, and super-admin transfer participate in one proof. Keep
 transactions short; do not perform network I/O while holding the guard.
 
 ## Canonical PostgreSQL Lock Order
 
 Use one order across authorization changes, identity disablement, session
-revocation, Owner transfer, and protected business writes:
+revocation, super-admin transfer, and protected business writes:
 
 ```text
 class 10: singleton authorization_state row
@@ -154,17 +157,19 @@ Database locks serialize execution but do not preserve client intent. Two still
 authorized administrators can read version 4, then submit different full
 replacements; without a precondition, the second silently overwrites the first.
 
-For `PUT`, full-set replacement, status replacement, and similar commands,
-require a strong `If-Match` derived from the read model version. Reject a missing
-precondition with `428`, weak tags and `*`, and compare the expected version only
-after locks, fresh reload, visibility, and manageability checks. Return `412` on
-mismatch and `409` for another server-detected state conflict. Return the new
-strong `ETag` after success.
+For role information update, lifecycle, soft deletion, and permission or
+delegation bind/unbind commands, require a strong `If-Match` derived from
+`roles.version`. Reject a missing precondition with `428`; reject malformed,
+weak, wildcard, or wrong-resource tags with `422`; and compare the expected
+version only after locks, fresh reload, visibility, and manageability checks.
+Return `412` on version mismatch and `409` for another server-detected state
+conflict. Build the successful body and new strong `ETag` from the same immutable
+in-transaction snapshot before locks are released; never requery part of a
+response after commit.
 
-Role permission and delegation replacements share `roles.version`. If a user
-ETag covers effective authority as well as direct status, include both
-`users.authz_version` and `authorization_state.epoch`; a shared-role change may
-not increment every assigned user's version.
+User-role bind/unbind is an incremental, idempotent, single-transaction command
+and does not require a user ETag in this baseline. It still requires the global
+guard, post-lock authority reload, and complete hierarchy decision.
 
 An expected version is a concurrency condition, not authorization. It never
 allows the caller to skip the post-lock policy decision.
@@ -217,10 +222,11 @@ The included asset implements the core boundary in:
 - [`tests/integration/test_postgresql_locking.py`](../assets/postgresql-rbac/tests/integration/test_postgresql_locking.py):
   isolation, lock waits, committed actor revocation, and concurrent assignments.
 
-The asset does not by itself prove crash-proof denied-audit delivery,
-`If-Match`, generic request idempotency, database lock timeouts, a business
-outbox, or product-specific protected writes. Add and test the relevant pieces
-when adapting those surfaces.
+The asset does not by itself prove crash-proof denied-audit delivery, generic
+request idempotency, database lock timeouts, a business outbox, or
+product-specific protected writes. It implements strong role `If-Match` for the
+shared role commands named above. Add and test other relevant pieces when
+adapting those surfaces.
 
 ## Verification Matrix
 
@@ -231,8 +237,8 @@ For the changed surface, cover:
 - allowed-audit failure rolls back the protected mutation;
 - denial-audit failure never converts rejection into success;
 - revocation-first and protected-write-first commit orders;
-- actor disablement, target promotion, Owner changes, and a shared-role assignment
-  racing the constrained write in both lock acquisition orders;
+- actor disablement, target promotion, super-admin changes, and a shared-role
+  assignment racing the constrained write in both lock acquisition orders;
 - stale `If-Match` in both administrator commit orders;
 - actual isolation, lock and statement timeouts, retry exhaustion, and deadlocks;
 - response loss after commit resolves through idempotency rather than replay;

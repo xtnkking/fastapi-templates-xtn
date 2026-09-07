@@ -9,9 +9,11 @@ transactionally consistent authorization writes.
 
 ## Status
 
-`v0.2.0` is the current single-project RBAC release. `v0.1.0` is the historical
-first public preview and does not contain this rewrite. The policy and runnable
-PostgreSQL asset are substantial, but the included asset does not yet
+`v0.3.0` is the current release. It builds on the single-project baseline from
+`v0.2.0` with neutral public administration routes, immutable system roles, and
+stricter hierarchy and concurrency controls. `v0.1.0` is the historical first
+public preview and does not contain the single-project rewrite. The policy and
+runnable PostgreSQL asset are substantial, but the included asset does not yet
 implement the complete PostgreSQL-session plus Redis active-JTI adapter described
 by the Skill. Do not represent it as production-ready until its documented
 identity-provider assumptions and PostgreSQL/Redis integration tests are complete
@@ -57,7 +59,7 @@ the current stable single-project release, ask Codex:
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.2.0/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.3.0/skills/fastapi-templates-xtn
 ```
 
 To install the historical `v0.1.0` preview instead, use its immutable tag:
@@ -70,7 +72,7 @@ https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.1.0/skills/fastapi-tem
 The installer places the directory in the configured user Skill location and
 stops if a directory with the same name already exists. Codex detects newly
 installed Skills automatically; restart Codex if it does not appear. Use the
-immutable `v0.2.0` tag for reproducible installation. The `main` branch may
+immutable `v0.3.0` tag for reproducible installation. The `main` branch may
 change before the next release.
 
 For repository-scoped use, copy `skills/fastapi-templates-xtn` to
@@ -127,7 +129,7 @@ python -B scripts/validate_release.py
 PostgreSQL-marked tests require the service and test database configured by
 `compose.dev.yaml`. The CI workflow runs those checks against PostgreSQL. Redis
 active-JTI support and its integration tests are planned and are not included in
-`v0.2.0`.
+`v0.3.0`.
 
 See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) before publishing a tag.
 

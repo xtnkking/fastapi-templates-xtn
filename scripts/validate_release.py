@@ -13,8 +13,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = REPO_ROOT / "skills" / "fastapi-templates-xtn"
 ASSET_ROOT = SKILL_ROOT / "assets" / "postgresql-rbac"
 EXPECTED_NAME = "fastapi-templates-xtn"
-RELEASE_VERSION = "0.2.0"
-RELEASE_DATE = "2026-09-06"
+RELEASE_VERSION = "0.3.0"
+RELEASE_DATE = "2026-09-07"
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 RELEASE_INSTALL_URL = (
     f"https://github.com/xtnkking/fastapi-templates-xtn/tree/{RELEASE_TAG}/"

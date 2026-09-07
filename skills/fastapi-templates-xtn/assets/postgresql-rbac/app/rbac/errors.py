@@ -1,5 +1,7 @@
 from fastapi import HTTPException, status
 
+_HTTP_UNPROCESSABLE_CONTENT = getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422)
+
 
 class RbacError(Exception):
     def __init__(
@@ -46,7 +48,7 @@ def not_found(reason_code: str) -> RbacError:
 def forbidden(reason_code: str) -> RbacError:
     return RbacError(
         status_code=status.HTTP_403_FORBIDDEN,
-        public_code="rbac_forbidden",
+        public_code="access_forbidden",
         reason_code=reason_code,
     )
 
@@ -69,7 +71,23 @@ def unavailable(reason_code: str) -> RbacError:
 
 def invalid_request(reason_code: str) -> RbacError:
     return RbacError(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=_HTTP_UNPROCESSABLE_CONTENT,
         public_code="invalid_request",
+        reason_code=reason_code,
+    )
+
+
+def precondition_required(reason_code: str) -> RbacError:
+    return RbacError(
+        status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+        public_code="precondition_required",
+        reason_code=reason_code,
+    )
+
+
+def precondition_failed(reason_code: str) -> RbacError:
+    return RbacError(
+        status_code=status.HTTP_412_PRECONDITION_FAILED,
+        public_code="precondition_failed",
         reason_code=reason_code,
     )

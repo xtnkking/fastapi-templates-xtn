@@ -24,9 +24,11 @@ def authorization_context(*permission_groups: set[str]) -> AuthorizationContext:
     roles = tuple(
         RoleGrant(
             role_id=uuid.uuid4(),
+            key=f"role_{index}",
             management_tier=index + 1,
             permissions=frozenset(permissions),
             delegable_permissions=frozenset(),
+            is_system=False,
             is_protected=False,
             is_owner=False,
         )
@@ -62,7 +64,8 @@ async def test_require_permissions_all_accepts_union_across_roles() -> None:
         mode="all",
     )
 
-    assert await dependency(context) is context
+    request = Request({"type": "http", "method": "GET", "headers": []})
+    assert await dependency(context, request) is context
 
 
 async def test_require_permissions_any_accepts_one_and_denies_none() -> None:
@@ -74,12 +77,43 @@ async def test_require_permissions_any_accepts_one_and_denies_none() -> None:
 
     allowed = authorization_context({PermissionKey.PROJECTS_READ.value})
     denied = authorization_context({PermissionKey.PROJECTS_UPDATE.value})
+    request = Request({"type": "http", "method": "GET", "headers": []})
 
-    assert await dependency(allowed) is allowed
+    assert await dependency(allowed, request) is allowed
     with pytest.raises(RbacError) as caught:
-        await dependency(denied)
+        await dependency(denied, request)
     assert caught.value.status_code == 403
-    assert caught.value.public_code == "rbac_forbidden"
+    assert caught.value.public_code == "access_forbidden"
+
+
+async def test_post_permission_denial_attempts_an_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = authorization_context({PermissionKey.PROJECTS_READ.value})
+    dependency = require_permissions(PermissionKey.ROLES_DELETE)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "headers": [],
+            "path": "/api/v1/roles/example/delete",
+            "route": type("Route", (), {"operation_id": "delete_role"})(),
+        }
+    )
+    write_audit = AsyncMock()
+    monkeypatch.setattr(
+        "app.rbac.dependencies._write_permission_denial_audit",
+        write_audit,
+    )
+
+    with pytest.raises(RbacError) as caught:
+        await dependency(context, request)
+
+    assert caught.value.status_code == 403
+    write_audit.assert_awaited_once_with(
+        context=context,
+        action="api.delete_role",
+    )
 
 
 def test_require_permissions_rejects_empty_and_invalid_configuration() -> None:
@@ -98,7 +132,7 @@ async def test_http_authentication_failures_return_bearer_challenge(
     request_headers = {} if authorization is None else {"Authorization": authorization}
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/rbac/me", headers=request_headers)
+        response = await client.get("/api/v1/me/access", headers=request_headers)
 
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"

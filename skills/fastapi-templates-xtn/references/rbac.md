@@ -7,8 +7,8 @@ relationships, and other row-level conditions remain separate policy inputs.
 For executable PostgreSQL code, use
 [postgresql-rbac-implementation.md](postgresql-rbac-implementation.md) and copy
 the linked asset as one coherent unit. It includes tables, dependencies, user and
-role administration, Owner-only delegation control, migrations, and negative and
-concurrency tests.
+role administration, `super_admin`-only delegation control, migrations, and
+negative and concurrency tests.
 
 ## Define The Policy First
 
@@ -31,7 +31,7 @@ Use this normalized single-project model:
 - `users` store identity status, protection, token revocation version, and the
   per-user authorization version;
 - `roles` have a globally unique stable key, explicit status, management tier,
-  version, and protected/system/Owner flags;
+  version, and protected/system/super-admin flags;
 - `permissions` form the stable capability catalog;
 - `user_roles` join users to roles and are unique on `(user_id, role_id)`;
 - `role_permissions` join roles to permissions and record the explicit
@@ -48,6 +48,14 @@ the relevant authorization version. Start without explicit deny, wildcard
 permissions, or role inheritance. Add them only with a documented precedence
 model and tests for conflicts and cycles.
 
+Seed immutable `super_admin`, `admin`, and `user` system roles at tiers `1000`,
+`500`, and `0`. Only `super_admin` is protected/owner authority; `is_system` must
+not make every `admin` or `user` holder protected. Every normally created user
+receives the mandatory `user` assignment in its creation transaction. Runtime
+APIs cannot change the three role definitions or grants, cannot disable or delete
+them, cannot grant `super_admin` outside the dedicated transfer, and cannot
+unbind `user`.
+
 ## Permission Keys And Roles
 
 - Define permission keys as stable code constants, for example
@@ -55,12 +63,13 @@ model and tests for conflicts and cycles.
 - Endpoint checks depend on permission keys, not display names such as `admin`.
 - Separate administrative effects. `roles:assign` may attach an existing role;
   `roles:create`, `roles:update`, `roles:delete`, and
-  `roles:permissions:update` govern role definitions.
+  `roles:permissions:bind` or `roles:permissions:unbind` govern distinct role
+  definition effects.
 - Define delegable permissions explicitly. Possessing or assigning a permission
   does not imply authority to grant it. A role being assigned or changed must not
   contain authority outside the actor's delegable set.
-- Treat system Owner and break-glass operations as explicit trust boundaries. Do
-  not hide a universal bypass behind an ordinary role name.
+- Treat the sole `super_admin` and break-glass operations as explicit trust
+  boundaries. Do not hide a universal bypass behind an ordinary role name.
 - Treat permission-key renames as data migrations; never silently reinterpret an
   existing key.
 
@@ -210,17 +219,24 @@ route-level check cannot replace the transaction-local decision.
 ## Privileged Mutations
 
 - Apply [administrative hierarchy](administrative-hierarchy.md) to identity
-  administration, role changes, delegation, system ownership, and self-elevation.
+  administration, role changes, delegation, super-admin transfer, and
+  self-elevation.
 - Use dedicated request models with `extra="forbid"` and an allowlist of mutable
   fields.
 - Require the exact operation capability. Assignment, role lifecycle, permission
-  replacement, delegation, and ownership transfer are separate effects.
-- For assignment or permission replacement, calculate complete proposed
+  binding, permission unbinding, delegation, and transfer are separate effects.
+- For assignment or permission changes, calculate complete proposed
   authority and require it to remain within the actor's delegable authority.
-- Protect system roles and the final Owner from ordinary rename, deletion,
-  replacement, or revocation.
-- Bootstrap the first Owner through an explicit one-time auditable operation;
-  never promote the first registered user implicitly.
+- Protect the immutable `super_admin`, `admin`, and `user` role definitions, the
+  mandatory `user` assignment, and the sole `super_admin` holder from ordinary
+  rename, disablement, deletion, grant changes, or revocation.
+- Bootstrap the first `super_admin` through the explicit offline transaction in
+  the PostgreSQL implementation; never promote the first registered user or
+  insert a bare assignment implicitly.
+- Keep the public authorization API on neutral `/api/v1` resource paths. Do not
+  expose `rbac` in public paths or OpenAPI metadata, and use only `GET` and
+  action-specific `POST` for the baseline administration contract. Internal
+  packages may retain `app.rbac`.
 
 ## Avoid Authorization Bypasses
 

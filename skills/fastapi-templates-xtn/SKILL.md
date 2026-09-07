@@ -22,9 +22,9 @@ baseline when the product has not already made conflicting choices.
 - Preserve the selected database, identity provider, package manager, module
   boundaries, and deployment model unless changing one is requested.
 - Keep async handlers free of blocking work. Do not add background workers or
-  another architecture layer without a product need. An active
-  JTI registry requested for token revocation is a valid Redis need; keep it
-  separate from any RBAC permission cache.
+  another architecture layer without a product need. An active JTI registry
+  requested for token revocation is a valid Redis need; keep it separate from
+  any authorization-permission cache.
 
 ## Load Only What The Task Needs
 
@@ -94,21 +94,38 @@ Unless existing product decisions conflict, keep these defaults:
 - Use stable, exact `resource:action` positive grants. Active roles union
   permissions and take the maximum tier. Do not add deny rules, wildcards, role
   inheritance, scope languages, or a permission cache to the baseline.
+- Seed the immutable system roles `super_admin`, `admin`, and `user` at tiers
+  `1000`, `500`, and `0`. They cannot be disabled, soft-deleted, renamed,
+  re-ranked, or have their grants changed through public administration APIs.
+  Every normally registered or provisioned user receives `user` in the same
+  PostgreSQL transaction and cannot lose it through the role-unbind API. Never
+  accept an initial role from a public registration body. Permanently reserve
+  the legacy `owner` key so a custom role cannot collide with upgrade or
+  downgrade history.
 - Apply capability, ownership, and row policy consistently to detail, list,
   search, count, export, bulk, and nested operations. Keep ownership and row
   policy separate from RBAC.
 - Larger tiers are higher. Compare complete current and proposed multi-role
   authority: ordinary actors manage only strictly lower authority. Deny peer,
   higher, incomparable, and protected targets, plus direct and indirect
-  self-elevation. System Owner alone uses tier `1000`; ordinary roles use
-  `0..999`.
+  self-elevation. The sole `super_admin` uses tier `1000`; `admin` uses `500`;
+  custom roles use `1..999`, while strict dominance limits an `admin` to roles
+  below `500`.
 - Keep role assignment, role definition, permission replacement, delegation, and
-  ownership transfer as separate capabilities. `can_delegate` is an explicit
-  subset; new roles start non-delegable; only Owner changes delegation; delegation
-  control and ownership transfer cannot be delegated.
+  super-admin transfer as separate capabilities. `can_delegate` is an explicit
+  subset; new roles start with no permissions; only `super_admin` changes
+  delegation; delegation control and transfer cannot be delegated. The seeded
+  `admin` may manage strictly lower users and custom roles within its explicit
+  delegation ceiling, but cannot delete roles, change system roles, change
+  delegation policy, or transfer `super_admin`.
 - Privileged bodies use `extra="forbid"` and never accept ownership, protection,
   delegation, or mutable authorization-version fields. Protect system
-  roles, the final Owner, bootstrap, and break-glass paths explicitly.
+  roles, the final `super_admin`, bootstrap, and break-glass paths explicitly.
+- Keep the authorization mechanism private to the implementation. Public paths,
+  OpenAPI tags, operation IDs, application titles, and error codes must not use
+  `rbac`; use resource routes under `/api/v1` and a neutral code such as
+  `access_forbidden`. The baseline administration API uses only `GET` and
+  `POST`. Internal modules such as `app.rbac` may remain.
 - In JWTs, `sub` is the only user identity claim and is the canonical UUIDv4
   string of immutable `users.id`; never put username, email, display name, roles,
   permissions, tier, status, protection flags, or versions in the payload.
@@ -133,9 +150,15 @@ the mutation, all version increments, the allowed audit, and any outbox rows
 together. On denial, roll back the whole attempt before writing a denied audit in
 a separate transaction. A route check, old JWT, cached context, or earlier ORM
 read cannot replace this decision. Follow [atomic authorization consistency](references/atomic-consistency.md).
-Full-set or status replacement commands also require a post-lock `If-Match`
-check so one authorized administrator cannot silently overwrite another's newer
-decision.
+Role update, lifecycle, deletion, and permission or delegation bind/unbind
+commands require a strong `If-Match` validator checked after locks and
+authoritative reload. Return `428` when a required precondition is missing,
+`412` when it is stale, and reserve `409` for a server-detected concurrency
+conflict so one authorized administrator cannot silently overwrite another's
+newer role decision. Build the successful response body and ETag from the same
+immutable snapshot before releasing those locks. User role bind/unbind remains
+an incremental, idempotent,
+single-transaction command and does not require a user ETag in this baseline.
 PostgreSQL and Redis are not one ACID boundary: persist authoritative session
 state and any revocation outbox in PostgreSQL, fail closed during partial
 activation, and never recreate a missing Redis allowlist entry from a JWT.
@@ -159,10 +182,12 @@ activation, and never recreate a missing Redis allowlist entry from a JWT.
   production defaults or runtime `create_all()` migration substitute.
 - Migrations work from empty and supported prior revisions. The result includes
   executable models, user-role constraints, permission seed, authorization
-  service, transactional administration, Owner-only delegation, auditing, and
-  identity integration points.
+  service, all thirteen minimum permission/role/user administration endpoints,
+  transactional administration, `super_admin`-only delegation, three immutable
+  system-role definitions, default `user` assignment, one-time bootstrap,
+  auditing, and identity integration points.
 - PostgreSQL tests cover positive and negative policy, rollback, low-to-high and
-  peer denial, self-elevation, protected and Owner invariants, committed
+  peer denial, self-elevation, protected and `super_admin` invariants, committed
   revocation, concurrent assignments, role-assignment constraints, and IDOR behavior.
 - JWT tests cover minimal claims, UUIDv4 `sub`/`jti`, Redis allowlist mismatch and
   outage, refresh separation, and revocation races. Schema inspection proves no

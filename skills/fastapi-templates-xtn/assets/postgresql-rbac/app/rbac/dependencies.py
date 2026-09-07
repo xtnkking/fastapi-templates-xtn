@@ -1,3 +1,4 @@
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Literal
@@ -7,17 +8,40 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_session
+from app.database import SessionFactory, get_session
 from app.rbac.domain import AuthorizationContext, PermissionKey, Principal
 from app.rbac.errors import RbacError, forbidden, unauthenticated, unavailable
-from app.rbac.models import AuthorizationState, User
+from app.rbac.models import AuthorizationAuditEvent, AuthorizationState, User
 from app.rbac.queries import load_authority_snapshot
 from app.rbac.security import decode_access_token
 from app.settings import Settings, get_settings
 
 bearer = HTTPBearer(auto_error=False)
+logger = logging.getLogger(__name__)
 SessionDependency = Annotated[AsyncSession, Depends(get_session)]
 SettingsDependency = Annotated[Settings, Depends(get_settings)]
+
+
+async def _write_permission_denial_audit(
+    *,
+    context: AuthorizationContext,
+    action: str,
+) -> None:
+    async with SessionFactory() as audit_session:
+        async with audit_session.begin():
+            audit_session.add(
+                AuthorizationAuditEvent(
+                    actor_user_id=context.principal.user_id,
+                    target_user_id=None,
+                    target_role_id=None,
+                    action=action,
+                    decision="denied",
+                    reason_code="missing_required_permission",
+                    before_state=None,
+                    after_state=None,
+                    request_id=context.request_id,
+                )
+            )
 
 
 async def get_current_principal(
@@ -86,6 +110,7 @@ def require_permissions(
             AuthorizationContext,
             Depends(get_authorization_context),
         ],
+        request: Request,
     ) -> AuthorizationContext:
         allowed = (
             required_keys <= context.permissions
@@ -93,6 +118,24 @@ def require_permissions(
             else bool(required_keys & context.permissions)
         )
         if not allowed:
+            if request.method == "POST":
+                route = request.scope.get("route")
+                operation_id = getattr(route, "operation_id", None)
+                action = (
+                    f"api.{operation_id}"
+                    if isinstance(operation_id, str) and operation_id
+                    else "api.protected_write"
+                )
+                try:
+                    await _write_permission_denial_audit(
+                        context=context,
+                        action=action,
+                    )
+                except Exception:
+                    logger.exception(
+                        "failed to persist denied access-control audit",
+                        extra={"audit_action": action},
+                    )
             raise forbidden("missing_required_permission")
         return context
 

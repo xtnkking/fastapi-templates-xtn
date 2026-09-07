@@ -33,15 +33,17 @@ Use this checklist for the first public preview and subsequent releases.
 - [ ] Keep Issues enabled. Close external pull requests according to
   `CONTRIBUTING.md`.
 
-## Release v0.2.0
+## Release v0.3.0
 
 - [ ] Review the staged diff and confirm the XTN copyright year and upstream
   commit.
-- [ ] Create the `v0.2.0` tag only after CI passes. A cryptographically signed
+- [ ] Create the `v0.3.0` tag only after CI passes. A cryptographically signed
   tag is recommended when a portable key-management process is in place, but
   it is not required to publish the release.
-- [ ] Publish `v0.2.0` as a GitHub release. Mark the single-project RBAC rewrite
-  as breaking and describe the active-JTI adapter as planned, not implemented.
+- [ ] Publish `v0.3.0` as a GitHub release. Mark the public route and HTTP-method
+  changes as breaking; highlight the immutable system roles, offline first
+  `super_admin` bootstrap, and ETag/`If-Match` controls. Describe the active-JTI
+  adapter as planned, not implemented.
 - [ ] Attach a SHA-256 checksum if a release archive is uploaded manually.
 - [ ] Verify installation from the public tagged GitHub tree URL in a clean
   Codex environment.
