@@ -45,6 +45,14 @@ def alembic_config() -> Config:
     return config
 
 
+async def recreate_database_at_revision(config: Config, revision: str) -> None:
+    # Downgrading 0002 preserves its super_admin as a legacy owner. Rebuild the
+    # schema so upgrade tests start from data that could genuinely exist at 0001.
+    await engine.dispose()
+    await asyncio.to_thread(command.downgrade, config, "base")
+    await asyncio.to_thread(command.upgrade, config, revision)
+
+
 async def test_clean_migration_seeds_catalog_state_and_system_roles() -> None:
     config = alembic_config()
     await engine.dispose()
@@ -82,8 +90,7 @@ async def test_clean_migration_seeds_catalog_state_and_system_roles() -> None:
 
 async def test_upgrade_renames_owner_and_backfills_mandatory_user_role() -> None:
     config = alembic_config()
-    await engine.dispose()
-    await asyncio.to_thread(command.downgrade, config, "0001_single_project_rbac")
+    await recreate_database_at_revision(config, "0001_single_project_rbac")
     legacy_owner_id = uuid.uuid4()
     owner_user_id = uuid.uuid4()
     ordinary_user_id = uuid.uuid4()
@@ -164,8 +171,7 @@ async def test_upgrade_rejects_multiple_legacy_owner_holders_and_rolls_back(
     legacy_key: str,
 ) -> None:
     config = alembic_config()
-    await engine.dispose()
-    await asyncio.to_thread(command.downgrade, config, "0001_single_project_rbac")
+    await recreate_database_at_revision(config, "0001_single_project_rbac")
     legacy_owner_id = uuid.uuid4()
     holder_ids = (uuid.uuid4(), uuid.uuid4())
     try:
@@ -273,8 +279,7 @@ async def test_migration_seeds_exact_super_admin_grants() -> None:
 
 async def test_upgrade_refuses_reserved_admin_key_collision() -> None:
     config = alembic_config()
-    await engine.dispose()
-    await asyncio.to_thread(command.downgrade, config, "0001_single_project_rbac")
+    await recreate_database_at_revision(config, "0001_single_project_rbac")
     try:
         collision_id = uuid.uuid4()
         async with engine.begin() as connection:

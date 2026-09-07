@@ -143,11 +143,8 @@ async def test_database_rejects_physical_system_role_deletion() -> None:
             select(Role).where(Role.key == SystemRoleKey.ADMIN.value)
         )
         assert role is not None
-        await session.execute(
-            delete(RolePermission).where(RolePermission.role_id == role.id)
-        )
-        await session.delete(role)
         with pytest.raises(IntegrityError):
+            await session.execute(delete(Role).where(Role.id == role.id))
             await session.commit()
 
 
@@ -216,7 +213,7 @@ async def test_database_rejects_a_second_super_admin_assignment(
             UserRole(
                 user_id=world.users["blank"].id,
                 role_id=super_admin_role.id,
-                assigned_by_user_id=world.users["super_admin"].id,
+                assigned_by_user_id=world.users["owner"].id,
             )
         )
         with pytest.raises(IntegrityError):

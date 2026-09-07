@@ -249,15 +249,37 @@ async def test_admin_binds_lower_role_atomically_and_audits(
     assert audit.decision == "allowed"
 
 
-@pytest.mark.parametrize("actor", ["junior", "lower"])
+async def test_delegated_junior_admin_can_manage_a_strictly_lower_user(
+    client: AsyncClient,
+    world: World,
+    access_token: AccessToken,
+) -> None:
+    response = await client.post(
+        f"/api/v1/users/{world.users['blank'].id}/roles/bind",
+        json={"role_ids": [str(world.roles["viewer"].id)]},
+        headers=headers(access_token, world, "junior"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["changed"] is True
+
+
+@pytest.mark.parametrize(
+    ("actor", "target"),
+    [
+        pytest.param("junior", "manager", id="lower-tier-actor"),
+        pytest.param("lower", "blank", id="missing-management-capability"),
+    ],
+)
 async def test_lower_authority_cannot_manage_users(
     client: AsyncClient,
     world: World,
     access_token: AccessToken,
     actor: str,
+    target: str,
 ) -> None:
     response = await client.post(
-        f"/api/v1/users/{world.users['blank'].id}/roles/bind",
+        f"/api/v1/users/{world.users[target].id}/roles/bind",
         json={"role_ids": [str(world.roles["viewer"].id)]},
         headers=headers(access_token, world, actor),
     )
