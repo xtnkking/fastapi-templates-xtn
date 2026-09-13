@@ -261,7 +261,7 @@ async def test_issuer_registers_exact_minimal_token_before_returning() -> None:
     }
     assert expires_at == str(claims.expires_at)
     assert version == "7"
-    assert maximum == settings.max_active_sessions_per_user
+    assert maximum == str(settings.max_active_sessions_per_user)
     assert mock.eval.await_args.kwargs == {}
 
 

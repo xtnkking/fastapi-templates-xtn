@@ -167,7 +167,7 @@ class CaptchaService:
                     owner,
                     str(captcha_id),
                     record,
-                    CAPTCHA_TTL_SECONDS,
+                    str(CAPTCHA_TTL_SECONDS),
                     self._prefix(),
                 ),
             )

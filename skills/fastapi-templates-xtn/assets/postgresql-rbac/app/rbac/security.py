@@ -316,7 +316,7 @@ async def issue_access_token(
                     str(claims.expires_at),
                     "",
                     str(user_token_version),
-                    settings.max_active_sessions_per_user,
+                    str(settings.max_active_sessions_per_user),
                 ),
             )
         except RedisError as exc:

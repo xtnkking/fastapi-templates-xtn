@@ -101,7 +101,7 @@ async def test_first_window_and_denial_share_original_ttl() -> None:
     assert "redis.call('INCR', KEYS[1])" in FIXED_WINDOW_SCRIPT
     assert "redis.call('EXPIRE', KEYS[1], window)" in FIXED_WINDOW_SCRIPT
     assert redis.eval.call_args.args[1] == 1
-    assert redis.eval.call_args.args[-2:] == (2, 300)
+    assert redis.eval.call_args.args[-2:] == ("2", "300")
 
 
 @pytest.mark.asyncio

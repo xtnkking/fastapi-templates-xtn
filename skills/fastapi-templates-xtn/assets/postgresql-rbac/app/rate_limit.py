@@ -170,7 +170,11 @@ async def check_rate_limit(
         raw = await cast(
             Awaitable[object],
             redis.eval(
-                FIXED_WINDOW_SCRIPT, 1, key, policy.limit, policy.window_seconds
+                FIXED_WINDOW_SCRIPT,
+                1,
+                key,
+                str(policy.limit),
+                str(policy.window_seconds),
             ),
         )
     except RedisError as exc:
