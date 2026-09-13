@@ -81,6 +81,7 @@ async def test_issue_stores_only_digests_and_returns_separate_public_result() ->
     assert eval_mock.await_args is not None
     issue_args = eval_mock.await_args.args
     assert issue_args[1] == 3
+    assert all(isinstance(value, str) for value in issue_args[2:])
     keys = issue_args[2:5]
     assert all("person" not in str(key).casefold() for key in keys)
     assert all("example" not in str(key).casefold() for key in keys)
@@ -104,7 +105,7 @@ async def test_wrong_candidates_always_reach_atomic_attempt_counter() -> None:
             )
 
     assert eval_mock.await_count == 5
-    assert all(call.args[10] == 5 for call in eval_mock.await_args_list)
+    assert all(call.args[10] == "5" for call in eval_mock.await_args_list)
 
 
 async def test_expired_challenge_has_distinct_safe_error() -> None:

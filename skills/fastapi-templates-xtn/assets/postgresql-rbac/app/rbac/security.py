@@ -240,7 +240,7 @@ async def issue_access_token(
                         claims,
                         user_token_version=user_token_version,
                     ),
-                    claims.expires_at,
+                    str(claims.expires_at),
                 ),
             )
         except RedisError as exc:

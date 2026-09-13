@@ -372,7 +372,7 @@ _EMAIL_PATTERN: Final = re.compile(r"^[^@\s]+@[^@\s]+$")
 _SMS_PATTERN: Final = re.compile(r"^\+[1-9][0-9]{6,14}$")
 _NAMESPACE_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9:_-]{0,79}$")
 _EnumT = TypeVar("_EnumT", bound=StrEnum)
-_RedisArgument = str | bytes | int | float
+_RedisArgument = str | int
 
 
 def normalize_verification_target(
@@ -623,7 +623,9 @@ class VerificationService:
         *values: _RedisArgument,
     ) -> object:
         try:
-            command = self._redis.eval(script, number_of_keys, *values)
+            command = self._redis.eval(
+                script, number_of_keys, *(str(value) for value in values)
+            )
             return await cast(Awaitable[object], command)
         except RedisError:
             # Redis exceptions can contain connection details; do not expose the cause.

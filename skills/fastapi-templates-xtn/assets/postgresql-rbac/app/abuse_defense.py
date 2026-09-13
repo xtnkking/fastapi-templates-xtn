@@ -262,7 +262,7 @@ class AbuseDefenseService:
         try:
             return await cast(
                 Awaitable[object],
-                self._redis.eval(script, 1, key, *arguments),
+                self._redis.eval(script, 1, key, *(str(value) for value in arguments)),
             )
         except RedisError:
             raise RateLimitUnavailable("abuse-defense store is unavailable") from None

@@ -391,7 +391,7 @@ async def check_rate_limits(
     if len(set(keys)) != len(keys):
         raise ValueError("rate-limit batch checks must resolve to unique keys")
     policy_arguments = tuple(
-        value
+        str(value)
         for check in checks_tuple
         for value in (
             check.policy.burst_microtokens,

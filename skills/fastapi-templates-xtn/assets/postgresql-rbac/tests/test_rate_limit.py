@@ -174,7 +174,7 @@ async def test_check_parses_allowed_and_denied_results() -> None:
     assert "redis.call('TIME')" in TOKEN_BUCKET_SCRIPT
     assert first_call[1] == 1
     assert "U0000000001" not in first_call[2]
-    assert first_call[3:] == (20_000_000, 120_000_000, 60_000)
+    assert first_call[3:] == ("20000000", "120000000", "60000")
 
 
 async def test_batch_parses_each_bucket_and_longest_retry() -> None:
@@ -222,12 +222,12 @@ async def test_batch_parses_each_bucket_and_longest_retry() -> None:
     assert "all" not in call[2]
     assert "203.0.113.42" not in call[3]
     assert call[4:] == (
-        20_000_000,
-        120_000_000,
-        60_000,
-        5_000_000,
-        30_000_000,
-        60_000,
+        "20000000",
+        "120000000",
+        "60000",
+        "5000000",
+        "30000000",
+        "60000",
     )
 
 

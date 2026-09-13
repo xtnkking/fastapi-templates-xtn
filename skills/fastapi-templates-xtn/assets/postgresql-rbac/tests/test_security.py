@@ -246,7 +246,7 @@ async def test_issuer_registers_exact_minimal_token_before_returning() -> None:
         "token_version": 7,
         "typ": "access",
     }
-    assert expires_at == claims.expires_at
+    assert expires_at == str(claims.expires_at)
     assert mock.eval.await_args.kwargs == {}
 
 

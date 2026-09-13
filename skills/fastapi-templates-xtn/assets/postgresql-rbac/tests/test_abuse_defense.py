@@ -188,7 +188,8 @@ async def test_failure_counter_uses_configured_finite_retention() -> None:
 
     await service.record_login_failure("person@example.test")
 
-    assert redis.eval.await_args.args[3] == 86_400
+    assert redis.eval.await_args.args[3] == "86400"
+    assert all(isinstance(value, str) for value in redis.eval.await_args.args[2:])
 
 
 async def test_failure_store_errors_fail_closed_without_details() -> None:
