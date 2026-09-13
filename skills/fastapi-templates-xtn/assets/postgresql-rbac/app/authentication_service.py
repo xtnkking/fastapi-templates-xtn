@@ -6,13 +6,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import and_, func, select
-from sqlalchemy.engine import Row
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy.sql import Select
 
 from app.abuse_flow import IdentityAbuseFlow, InvalidLoginCredentialsError
+from app.api_contract import BusinessCode
 from app.audit import AuditSource
 from app.database import SessionFactory
 from app.observability import safe_exception_metadata, safe_log
@@ -20,7 +19,6 @@ from app.password_models import (
     AccountSecurityActorType,
     AccountSecurityAuditEvent,
     AccountSecurityAuditOutcome,
-    PasswordCredential,
 )
 from app.passwords import (
     PasswordHashError,
@@ -39,7 +37,7 @@ from app.rbac.errors import (
     not_found,
     unavailable,
 )
-from app.rbac.models import User
+from app.rbac.models import RbacState, User
 from app.rbac.policy import (
     decide_user_password_reset,
     is_administrative_user_visible,
@@ -56,6 +54,31 @@ from app.rbac.queries import (
 logger = logging.getLogger(__name__)
 
 
+def _password_policy_response(exc: PasswordPolicyError) -> RbacError:
+    messages = {
+        "password_same_as_user_name": "密码不能与用户名相同",
+        "password_common_or_weak": "密码过于简单，请更换",
+    }
+    message = messages.get(exc.reason_code)
+    if message is None:
+        return invalid_request(exc.reason_code)
+    return RbacError(
+        status_code=400,
+        business_code=BusinessCode.BAD_REQUEST,
+        public_message=message,
+        reason_code=exc.reason_code,
+    )
+
+
+def _username_exists() -> RbacError:
+    return RbacError(
+        status_code=409,
+        business_code=BusinessCode.CONFLICT,
+        public_message="用户名已被占用",
+        reason_code="user_identity_exists",
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AuthenticatedPasswordUser:
     user_id: uuid.UUID
@@ -67,18 +90,16 @@ class AuthenticatedPasswordUser:
 class _PasswordSnapshot:
     user_id: uuid.UUID
     user_name: str | None
-    email: str | None
     is_active: bool
     is_deleted: bool
     token_version: int
-    credential_id: uuid.UUID | None
     password_hash: str | None
-    credential_version: int | None
+    password_changed_at: datetime | None
     must_change_password: bool
 
     @property
     def identity_values(self) -> tuple[str, ...]:
-        return tuple(value for value in (self.user_name, self.email) if value)
+        return (self.user_name,) if self.user_name is not None else ()
 
 
 class LocalAuthenticationService:
@@ -91,6 +112,49 @@ class LocalAuthenticationService:
     ) -> None:
         self._session_factory = session_factory
         self._password_manager = manager
+
+    async def registration_enabled(self) -> bool:
+        async with self._session_factory() as session:
+            enabled = await session.scalar(
+                select(RbacState.public_registration_enabled).where(
+                    RbacState.scope == "global"
+                )
+            )
+        if enabled is None:
+            raise unavailable("registration_setting_unavailable")
+        return bool(enabled)
+
+    async def set_registration_enabled(
+        self, *, context: AuthorizationContext, enabled: bool
+    ) -> bool:
+        async with self._session_factory() as session:
+            async with session.begin():
+                state = await lock_rbac_state(session)
+                await lock_users(session, {context.principal.user_id})
+                actor = await require_current_actor(
+                    session,
+                    actor_user_id=context.principal.user_id,
+                    token_version=context.principal.token_version,
+                )
+                if not actor.is_super_admin or (
+                    PermissionKey.REGISTRATION_CONFIGURE.value not in actor.permissions
+                ):
+                    raise forbidden("registration_setting_requires_super_admin")
+                if state.public_registration_enabled != enabled:
+                    state.public_registration_enabled = enabled
+                    session.add(
+                        self._account_event(
+                            action="account_security.registration.setting_updated",
+                            outcome=AccountSecurityAuditOutcome.SUCCEEDED,
+                            reason_code="registration_setting_updated",
+                            actor_type=AccountSecurityActorType.USER,
+                            actor_user_id=context.principal.user_id,
+                            target_user_id=None,
+                            source=context.audit_source,
+                            request_id=context.request_id,
+                        )
+                    )
+        return enabled
 
     async def register(
         self,
@@ -108,24 +172,29 @@ class LocalAuthenticationService:
                     identity_values=(user_name,),
                 )
             except PasswordPolicyError as exc:
-                raise invalid_request(exc.reason_code) from exc
+                raise _password_policy_response(exc) from exc
 
             try:
                 async with self._session_factory() as session:
                     async with session.begin():
+                        state = await lock_rbac_state(session)
+                        if not state.public_registration_enabled:
+                            raise RbacError(
+                                status_code=403,
+                                business_code=BusinessCode.ACCESS_FORBIDDEN,
+                                public_message="暂未开放注册",
+                                reason_code="public_registration_closed",
+                            )
                         user = await create_user_with_default_role(
                             session,
                             user_name=user_name,
                             request_id=request_id,
                         )
-                        session.add(
-                            PasswordCredential(
-                                user_id=user.id,
-                                password_hash=password_hash,
-                                version=1,
-                                must_change_password=False,
-                                created_by_user_id=None,
-                            )
+                        await self._rotate_password(
+                            session,
+                            user=user,
+                            password_hash=password_hash,
+                            must_change_password=False,
                         )
                         session.add(
                             self._account_event(
@@ -142,7 +211,11 @@ class LocalAuthenticationService:
                 return user.id
             except IntegrityError as exc:
                 if self._is_identity_conflict(exc):
-                    raise conflict("user_identity_exists") from exc
+                    raise _username_exists() from exc
+                raise
+            except RbacError as exc:
+                if exc.reason_code == "user_identity_exists":
+                    raise _username_exists() from exc
                 raise
 
         if abuse_flow is None:
@@ -152,6 +225,65 @@ class LocalAuthenticationService:
             normalized_identifier=user_name,
             registration_action=registration_action,
         )
+
+    async def create_user_by_administrator(
+        self,
+        *,
+        context: AuthorizationContext,
+        user_name: str,
+        temporary_password: str,
+    ) -> uuid.UUID:
+        try:
+            password_hash = await self._password_manager.hash_new_password(
+                temporary_password, identity_values=(user_name,)
+            )
+        except PasswordPolicyError as exc:
+            raise _password_policy_response(exc) from exc
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    await lock_rbac_state(session)
+                    await lock_users(session, {context.principal.user_id})
+                    actor = await require_current_actor(
+                        session,
+                        actor_user_id=context.principal.user_id,
+                        token_version=context.principal.token_version,
+                    )
+                    if PermissionKey.USERS_CREATE.value not in actor.permissions:
+                        raise forbidden("missing_operation_permission")
+                    user = await create_user_with_default_role(
+                        session,
+                        user_name=user_name,
+                        assigned_by_user_id=context.principal.user_id,
+                        request_id=context.request_id,
+                    )
+                    await self._rotate_password(
+                        session,
+                        user=user,
+                        password_hash=password_hash,
+                        must_change_password=True,
+                    )
+                    session.add(
+                        self._account_event(
+                            action="account_security.registration.admin_created",
+                            outcome=AccountSecurityAuditOutcome.SUCCEEDED,
+                            reason_code="temporary_password_set",
+                            actor_type=AccountSecurityActorType.USER,
+                            actor_user_id=context.principal.user_id,
+                            target_user_id=user.id,
+                            source=context.audit_source,
+                            request_id=context.request_id,
+                        )
+                    )
+            return user.id
+        except IntegrityError as exc:
+            if self._is_identity_conflict(exc):
+                raise _username_exists() from exc
+            raise
+        except RbacError as exc:
+            if exc.reason_code == "user_identity_exists":
+                raise _username_exists() from exc
+            raise
 
     async def authenticate(
         self,
@@ -182,8 +314,6 @@ class LocalAuthenticationService:
     async def change_password(
         self,
         *,
-        abuse_flow: IdentityAbuseFlow | None,
-        client_ip: str,
         context: AuthorizationContext,
         current_password: str,
         new_password: str,
@@ -195,8 +325,6 @@ class LocalAuthenticationService:
             current_password=current_password,
             action="account_security.password.changed",
             target_user_id=context.principal.user_id,
-            abuse_flow=abuse_flow,
-            client_ip=client_ip,
         )
         try:
             new_hash = await self._password_manager.hash_new_password(
@@ -204,7 +332,7 @@ class LocalAuthenticationService:
                 identity_values=actor_snapshot.identity_values,
             )
         except PasswordPolicyError as exc:
-            raise invalid_request(exc.reason_code) from exc
+            raise _password_policy_response(exc) from exc
 
         async with self._session_factory() as session:
             async with session.begin():
@@ -218,8 +346,7 @@ class LocalAuthenticationService:
                     or not self._same_identity(user, actor_snapshot)
                 ):
                     raise forbidden("current_credential_changed")
-                credential = await self._lock_live_credential(session, user.id)
-                if not self._same_credential(credential, actor_snapshot):
+                if not self._same_password_state(user, actor_snapshot):
                     raise forbidden("current_credential_changed")
 
                 await self._rotate_password(
@@ -227,7 +354,6 @@ class LocalAuthenticationService:
                     user=user,
                     password_hash=new_hash,
                     must_change_password=False,
-                    created_by_user_id=user.id,
                 )
                 user.token_version += 1
                 session.add(
@@ -247,35 +373,20 @@ class LocalAuthenticationService:
     async def reset_user_password(
         self,
         *,
-        abuse_flow: IdentityAbuseFlow | None,
-        client_ip: str,
         context: AuthorizationContext,
         target_user_id: uuid.UUID,
-        current_password: str,
         temporary_password: str,
     ) -> bool:
-        actor_snapshot = await self._reauthenticate_actor(
-            context=context,
-            current_password=current_password,
-            action="account_security.password.admin_reset",
-            target_user_id=target_user_id,
-            abuse_flow=abuse_flow,
-            client_ip=client_ip,
-        )
-
         try:
             async with self._session_factory() as session:
                 async with session.begin():
                     target_user = await self._lock_authorized_reset_target(
                         session,
                         context=context,
-                        actor_snapshot=actor_snapshot,
                         target_user_id=target_user_id,
                     )
                     target_identity_values = tuple(
-                        value
-                        for value in (target_user.user_name, target_user.email)
-                        if value
+                        value for value in (target_user.user_name,) if value
                     )
         except RbacError as exc:
             await self._write_client_denial(
@@ -294,7 +405,7 @@ class LocalAuthenticationService:
                 identity_values=target_identity_values,
             )
         except PasswordPolicyError as exc:
-            raise invalid_request(exc.reason_code) from exc
+            raise _password_policy_response(exc) from exc
 
         try:
             async with self._session_factory() as session:
@@ -302,27 +413,23 @@ class LocalAuthenticationService:
                     target_user = await self._lock_authorized_reset_target(
                         session,
                         context=context,
-                        actor_snapshot=actor_snapshot,
                         target_user_id=target_user_id,
                     )
                     try:
                         validate_new_password(
                             temporary_password,
                             identity_values=tuple(
-                                value
-                                for value in (target_user.user_name, target_user.email)
-                                if value
+                                value for value in (target_user.user_name,) if value
                             ),
                         )
                     except PasswordPolicyError as exc:
-                        raise invalid_request(exc.reason_code) from exc
+                        raise _password_policy_response(exc) from exc
 
                     await self._rotate_password(
                         session,
                         user=target_user,
                         password_hash=temporary_hash,
                         must_change_password=True,
-                        created_by_user_id=context.principal.user_id,
                     )
                     target_user.token_version += 1
                     session.add(
@@ -373,7 +480,7 @@ class LocalAuthenticationService:
             if snapshot is None:
                 raise InvalidLoginCredentialsError()
         else:
-            snapshot = await abuse_flow.authenticate(
+            snapshot = await abuse_flow.complete_temporary_password_reset(
                 client_ip=client_ip,
                 normalized_identifier=user_name,
                 verify_real_or_dummy_credentials=verify_temporary,
@@ -385,7 +492,7 @@ class LocalAuthenticationService:
                 identity_values=snapshot.identity_values,
             )
         except PasswordPolicyError as exc:
-            raise invalid_request(exc.reason_code) from exc
+            raise _password_policy_response(exc) from exc
 
         async with self._session_factory() as session:
             async with session.begin():
@@ -398,12 +505,11 @@ class LocalAuthenticationService:
                     or not self._same_identity(user, snapshot)
                 ):
                     raise InvalidLoginCredentialsError()
-                credential = await self._lock_live_credential(session, user.id)
-                if credential is None or not self._same_credential(
-                    credential, snapshot
-                ):
+                if not self._same_login_user_state(
+                    user, snapshot
+                ) or not self._same_password_state(user, snapshot):
                     raise InvalidLoginCredentialsError()
-                if not credential.must_change_password:
+                if not user.must_change_password:
                     raise InvalidLoginCredentialsError()
 
                 await self._rotate_password(
@@ -411,7 +517,6 @@ class LocalAuthenticationService:
                     user=user,
                     password_hash=new_hash,
                     must_change_password=False,
-                    created_by_user_id=user.id,
                 )
                 user.token_version += 1
                 session.add(
@@ -440,7 +545,7 @@ class LocalAuthenticationService:
                 temporary_password
             )
         except PasswordPolicyError as exc:
-            raise invalid_request(exc.reason_code) from exc
+            raise _password_policy_response(exc) from exc
 
         async with self._session_factory() as session:
             async with session.begin():
@@ -463,17 +568,16 @@ class LocalAuthenticationService:
                     validate_new_password(
                         temporary_password,
                         identity_values=tuple(
-                            value for value in (user.user_name, user.email) if value
+                            value for value in (user.user_name,) if value
                         ),
                     )
                 except PasswordPolicyError as exc:
-                    raise invalid_request(exc.reason_code) from exc
+                    raise _password_policy_response(exc) from exc
                 await self._rotate_password(
                     session,
                     user=user,
                     password_hash=temporary_hash,
                     must_change_password=True,
-                    created_by_user_id=None,
                 )
                 user.token_version += 1
                 session.add(
@@ -497,8 +601,6 @@ class LocalAuthenticationService:
         current_password: str,
         action: str,
         target_user_id: uuid.UUID,
-        abuse_flow: IdentityAbuseFlow | None,
-        client_ip: str,
     ) -> _PasswordSnapshot:
         async def verify_current_password() -> _PasswordSnapshot | None:
             snapshot = await self._load_snapshot_by_user_id(context.principal.user_id)
@@ -509,6 +611,7 @@ class LocalAuthenticationService:
             if (
                 snapshot is None
                 or not verification
+                or snapshot.password_hash is None
                 or snapshot.is_deleted
                 or not snapshot.is_active
                 or snapshot.must_change_password
@@ -518,16 +621,9 @@ class LocalAuthenticationService:
             return snapshot
 
         try:
-            if abuse_flow is None:
-                verified_snapshot = await verify_current_password()
-                if verified_snapshot is None:
-                    raise InvalidLoginCredentialsError()
-            else:
-                verified_snapshot = await abuse_flow.authenticate(
-                    client_ip=client_ip,
-                    normalized_identifier=str(context.principal.user_id),
-                    verify_real_or_dummy_credentials=verify_current_password,
-                )
+            verified_snapshot = await verify_current_password()
+            if verified_snapshot is None:
+                raise InvalidLoginCredentialsError()
         except InvalidLoginCredentialsError as exc:
             await self._write_denied_event(
                 action=action,
@@ -545,7 +641,6 @@ class LocalAuthenticationService:
         session: AsyncSession,
         *,
         context: AuthorizationContext,
-        actor_snapshot: _PasswordSnapshot,
         target_user_id: uuid.UUID,
     ) -> User:
         await lock_rbac_state(session)
@@ -553,18 +648,6 @@ class LocalAuthenticationService:
             session,
             {context.principal.user_id, target_user_id},
         )
-        actor_user = users.get(context.principal.user_id)
-        if (
-            actor_user is None
-            or not actor_user.is_active
-            or actor_user.token_version != context.principal.token_version
-            or not self._same_identity(actor_user, actor_snapshot)
-        ):
-            raise forbidden("current_credential_changed")
-        actor_credential = await self._lock_live_credential(session, actor_user.id)
-        if not self._same_credential(actor_credential, actor_snapshot):
-            raise forbidden("current_credential_changed")
-
         actor = await require_current_actor(
             session,
             actor_user_id=context.principal.user_id,
@@ -605,6 +688,8 @@ class LocalAuthenticationService:
         if (
             snapshot is None
             or not verification.verified
+            or verification.used_dummy
+            or snapshot.password_hash is None
             or snapshot.is_deleted
             or not snapshot.is_active
             or (require_temporary and not snapshot.must_change_password)
@@ -622,33 +707,27 @@ class LocalAuthenticationService:
             async with session.begin():
                 users = await lock_users(session, {snapshot.user_id})
                 user = users.get(snapshot.user_id)
-                credential = await self._lock_live_credential(session, snapshot.user_id)
                 if (
                     user is None
                     or not self._same_login_user_state(user, snapshot)
-                    or not self._same_credential_episode(credential, snapshot)
+                    or user.must_change_password != snapshot.must_change_password
                 ):
                     return None
-                assert credential is not None
-                if require_temporary and not credential.must_change_password:
+                if require_temporary and not user.must_change_password:
                     return None
-                if credential.password_hash == snapshot.password_hash:
+                if user.password_hash == snapshot.password_hash:
                     if replacement_hash is not None:
-                        # The password is unchanged. Upgrade only its encoding after
-                        # rechecking the exact credential under the row lock.
-                        credential.password_hash = replacement_hash
+                        # A hash-parameter upgrade is not a password change.
+                        user.password_hash = replacement_hash
                     return AuthenticatedPasswordUser(
                         user_id=user.id,
                         token_version=user.token_version,
-                        must_change_password=credential.must_change_password,
+                        must_change_password=user.must_change_password,
                     )
 
-                if replacement_hash is None or credential.password_hash is None:
+                if replacement_hash is None or user.password_hash is None:
                     return None
-                concurrent_rehash_snapshot = self._snapshot_from_models(
-                    user,
-                    credential,
-                )
+                concurrent_rehash_snapshot = self._snapshot_from_user(user)
 
         assert concurrent_rehash_snapshot is not None
         concurrent_verification = await self._verify_password_details(
@@ -666,26 +745,21 @@ class LocalAuthenticationService:
             async with session.begin():
                 users = await lock_users(session, {snapshot.user_id})
                 user = users.get(snapshot.user_id)
-                credential = await self._lock_live_credential(session, snapshot.user_id)
                 if (
                     user is None
                     or not self._same_login_user_state(
                         user,
                         concurrent_rehash_snapshot,
                     )
-                    or not self._same_credential(
-                        credential,
-                        concurrent_rehash_snapshot,
-                    )
+                    or not self._same_password_state(user, concurrent_rehash_snapshot)
                 ):
                     return None
-                assert credential is not None
-                if require_temporary and not credential.must_change_password:
+                if require_temporary and not user.must_change_password:
                     return None
                 return AuthenticatedPasswordUser(
                     user_id=user.id,
                     token_version=user.token_version,
-                    must_change_password=credential.must_change_password,
+                    must_change_password=user.must_change_password,
                 )
 
     async def _verify_temporary_snapshot(
@@ -702,6 +776,7 @@ class LocalAuthenticationService:
         if (
             snapshot is None
             or not verified
+            or snapshot.password_hash is None
             or snapshot.is_deleted
             or not snapshot.is_active
             or not snapshot.must_change_password
@@ -736,83 +811,28 @@ class LocalAuthenticationService:
         user_name: str,
     ) -> _PasswordSnapshot | None:
         async with self._session_factory() as session:
-            row = (
-                await session.execute(
-                    self._snapshot_statement().where(User.user_name == user_name)
-                )
-            ).one_or_none()
-            return self._snapshot_from_row(row)
+            user = await session.scalar(select(User).where(User.user_name == user_name))
+            return self._snapshot_from_user(user) if user is not None else None
 
     async def _load_snapshot_by_user_id(
         self,
         user_id: uuid.UUID,
     ) -> _PasswordSnapshot | None:
         async with self._session_factory() as session:
-            row = (
-                await session.execute(
-                    self._snapshot_statement().where(User.id == user_id)
-                )
-            ).one_or_none()
-            return self._snapshot_from_row(row)
+            user = await session.get(User, user_id)
+            return self._snapshot_from_user(user) if user is not None else None
 
     @staticmethod
-    def _snapshot_statement() -> Select[tuple[User, PasswordCredential]]:
-        return select(User, PasswordCredential).outerjoin(
-            PasswordCredential,
-            and_(
-                PasswordCredential.user_id == User.id,
-                PasswordCredential.deleted_at.is_(None),
-            ),
-        )
-
-    @staticmethod
-    def _snapshot_from_row(
-        row: Row[tuple[User, PasswordCredential]] | None,
-    ) -> _PasswordSnapshot | None:
-        if row is None:
-            return None
-        user = row[0]
-        credential = cast(PasswordCredential | None, row[1])
-        return LocalAuthenticationService._snapshot_from_models(user, credential)
-
-    @staticmethod
-    def _snapshot_from_models(
-        user: User,
-        credential: PasswordCredential | None,
-    ) -> _PasswordSnapshot:
+    def _snapshot_from_user(user: User) -> _PasswordSnapshot:
         return _PasswordSnapshot(
             user_id=user.id,
             user_name=user.user_name,
-            email=user.email,
             is_active=user.is_active,
             is_deleted=user.deleted_at is not None,
             token_version=user.token_version,
-            credential_id=credential.id if credential is not None else None,
-            password_hash=(
-                credential.password_hash if credential is not None else None
-            ),
-            credential_version=(credential.version if credential is not None else None),
-            must_change_password=(
-                credential.must_change_password if credential is not None else False
-            ),
-        )
-
-    @staticmethod
-    async def _lock_live_credential(
-        session: AsyncSession,
-        user_id: uuid.UUID,
-    ) -> PasswordCredential | None:
-        return cast(
-            PasswordCredential | None,
-            await session.scalar(
-                select(PasswordCredential)
-                .where(
-                    PasswordCredential.user_id == user_id,
-                    PasswordCredential.deleted_at.is_(None),
-                )
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            ),
+            password_hash=user.password_hash,
+            password_changed_at=user.password_changed_at,
+            must_change_password=user.must_change_password,
         )
 
     @staticmethod
@@ -820,7 +840,6 @@ class LocalAuthenticationService:
         return (
             user.id == snapshot.user_id
             and user.user_name == snapshot.user_name
-            and user.email == snapshot.email
             and user.deleted_at is None
         )
 
@@ -830,29 +849,15 @@ class LocalAuthenticationService:
             LocalAuthenticationService._same_identity(user, snapshot)
             and user.is_active == snapshot.is_active
             and user.token_version == snapshot.token_version
+            and user.password_changed_at == snapshot.password_changed_at
         )
 
     @staticmethod
-    def _same_credential_episode(
-        credential: PasswordCredential | None,
-        snapshot: _PasswordSnapshot,
-    ) -> bool:
+    def _same_password_state(user: User, snapshot: _PasswordSnapshot) -> bool:
         return (
-            credential is not None
-            and credential.id == snapshot.credential_id
-            and credential.version == snapshot.credential_version
-            and credential.must_change_password == snapshot.must_change_password
-        )
-
-    @staticmethod
-    def _same_credential(
-        credential: PasswordCredential | None,
-        snapshot: _PasswordSnapshot,
-    ) -> bool:
-        return (
-            LocalAuthenticationService._same_credential_episode(credential, snapshot)
-            and credential is not None
-            and credential.password_hash == snapshot.password_hash
+            user.password_hash is not None
+            and user.password_hash == snapshot.password_hash
+            and user.must_change_password == snapshot.must_change_password
         )
 
     @staticmethod
@@ -862,42 +867,13 @@ class LocalAuthenticationService:
         user: User,
         password_hash: str,
         must_change_password: bool,
-        created_by_user_id: uuid.UUID | None,
-    ) -> PasswordCredential:
-        old_credential = await LocalAuthenticationService._lock_live_credential(
-            session,
-            user.id,
-        )
-        latest_version = cast(
-            int | None,
-            await session.scalar(
-                select(func.max(PasswordCredential.version)).where(
-                    PasswordCredential.user_id == user.id
-                )
-            ),
-        )
+    ) -> None:
         changed_at = cast(
             datetime, await session.scalar(select(func.statement_timestamp()))
         )
-        next_version = (latest_version or 0) + 1
-        if old_credential is not None:
-            old_credential.password_hash = None
-            old_credential.must_change_password = False
-            old_credential.deleted_at = changed_at
-            old_credential.deleted_by_user_id = created_by_user_id
-            # Release the partial unique index before adding the next episode.
-            await session.flush()
-
-        credential = PasswordCredential(
-            user_id=user.id,
-            password_hash=password_hash,
-            version=next_version,
-            must_change_password=must_change_password,
-            created_by_user_id=created_by_user_id,
-            password_changed_at=changed_at,
-        )
-        session.add(credential)
-        return credential
+        user.password_hash = password_hash
+        user.must_change_password = must_change_password
+        user.password_changed_at = changed_at
 
     @staticmethod
     def _is_identity_conflict(exc: IntegrityError) -> bool:
@@ -913,7 +889,7 @@ class LocalAuthenticationService:
             ),
             None,
         )
-        return constraint_name in {"uq_users_email", "uq_users_user_name"}
+        return constraint_name == "uq_users_user_name"
 
     @staticmethod
     def _account_event(

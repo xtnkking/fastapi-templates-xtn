@@ -5,16 +5,11 @@ from enum import StrEnum
 from typing import Final
 
 from sqlalchemy import (
-    BigInteger,
-    Boolean,
     CheckConstraint,
     DateTime,
-    ForeignKey,
     Index,
     SmallInteger,
     String,
-    UniqueConstraint,
-    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -49,123 +44,6 @@ def _require_uuid4(value: uuid.UUID, *, field: str) -> uuid.UUID:
     if not isinstance(value, uuid.UUID) or value.version != 4:
         raise ValueError(f"{field} must be UUIDv4")
     return value
-
-
-class PasswordCredential(Base):
-    __tablename__ = "user_password_credentials"
-    __table_args__ = (
-        CheckConstraint(
-            "id::text ~ "
-            "'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'",
-            name="id_uuid4",
-        ),
-        CheckConstraint("version >= 1", name="version_positive"),
-        CheckConstraint(
-            "password_hash IS NULL OR password_hash ~ "
-            "'^\\$argon2id\\$v=19\\$m=[1-9][0-9]*,t=[1-9][0-9]*,"
-            "p=[1-9][0-9]*\\$[A-Za-z0-9+/]{16,}\\$"
-            "[A-Za-z0-9+/]{16,}$'",
-            name="password_hash_shape",
-        ),
-        CheckConstraint(
-            "(deleted_at IS NULL AND password_hash IS NOT NULL) OR "
-            "(deleted_at IS NOT NULL AND password_hash IS NULL)",
-            name="live_hash_or_tombstone",
-        ),
-        CheckConstraint(
-            "deleted_at IS NULL OR NOT must_change_password",
-            name="tombstone_not_change_required",
-        ),
-        CheckConstraint(
-            "deleted_by_user_id IS NULL OR deleted_at IS NOT NULL",
-            name="deleted_actor_requires_timestamp",
-        ),
-        CheckConstraint(
-            "password_changed_at >= created_at",
-            name="password_changed_after_created",
-        ),
-        UniqueConstraint(
-            "user_id",
-            "version",
-            name="uq_user_password_credentials_user_version",
-        ),
-        Index(
-            "uq_user_password_credentials_live_user",
-            "user_id",
-            unique=True,
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-        Index(
-            "ix_user_password_credentials_user_created",
-            "user_id",
-            "created_at",
-        ),
-        Index("ix_user_password_credentials_deleted_at", "deleted_at"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-        server_default=text("gen_random_uuid()"),
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey(
-            "users.id",
-            name="fk_user_password_credentials_user_id_users",
-            ondelete="RESTRICT",
-        ),
-        nullable=False,
-    )
-    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey(
-            "users.id",
-            name="fk_user_password_credentials_created_by_user_id_users",
-            ondelete="RESTRICT",
-        ),
-        nullable=True,
-    )
-    password_hash: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    version: Mapped[int] = mapped_column(
-        BigInteger,
-        nullable=False,
-        default=1,
-        server_default="1",
-    )
-    must_change_password: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=False,
-        server_default="false",
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-    password_changed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    deleted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey(
-            "users.id",
-            name="fk_user_password_credentials_deleted_by_user_id_users",
-            ondelete="RESTRICT",
-        ),
-        nullable=True,
-    )
-
-    @validates("id")
-    def validate_id(self, _key: str, value: uuid.UUID) -> uuid.UUID:
-        return _require_uuid4(value, field="password credential ID")
 
 
 class AccountSecurityAuditEvent(Base):

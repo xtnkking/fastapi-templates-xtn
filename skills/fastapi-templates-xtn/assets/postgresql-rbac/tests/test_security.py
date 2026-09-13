@@ -233,12 +233,25 @@ async def test_issuer_registers_exact_minimal_token_before_returning() -> None:
     assert payload["exp"] - payload["iat"] == 3600
     assert payload["sub"] == str(user_id)
     mock.eval.assert_awaited_once()
-    script, key_count, key, value, expires_at = mock.eval.await_args.args
-    assert key_count == 1
+    (
+        script,
+        key_count,
+        key,
+        index,
+        version_key,
+        value,
+        expires_at,
+        _,
+        version,
+        maximum,
+    ) = mock.eval.await_args.args
+    assert key_count == 3
     assert "redis.call('TIME')" in script
     assert "'NX', 'EX', ttl_seconds" in script
     assert "redis.call('PEXPIREAT', KEYS[1], expires_at * 1000)" in script
     assert str(claims.token_id) not in key
+    assert str(user_id) not in index
+    assert str(user_id) not in version_key
     assert json.loads(value) == {
         "exp": claims.expires_at,
         "iat": claims.issued_at,
@@ -247,6 +260,8 @@ async def test_issuer_registers_exact_minimal_token_before_returning() -> None:
         "typ": "access",
     }
     assert expires_at == str(claims.expires_at)
+    assert version == "7"
+    assert maximum == settings.max_active_sessions_per_user
     assert mock.eval.await_args.kwargs == {}
 
 
@@ -288,8 +303,8 @@ async def test_configured_scope_uses_the_same_active_jti_lifecycle() -> None:
         issuer=settings.jwt_issuer,
         options={"strict_aud": True},
     )
-    key, record = mock.eval.await_args.args[2:4]
-    mock.get.return_value = record
+    key, record = mock.eval.await_args.args[2], mock.eval.await_args.args[5]
+    mock.eval.return_value = record
 
     version = await require_active_jti(redis, claims=claims, settings=settings)
     mock.eval.return_value = 1
@@ -302,8 +317,8 @@ async def test_configured_scope_uses_the_same_active_jti_lifecycle() -> None:
 
     assert set(payload) == REQUIRED_ACCESS_CLAIMS | OPTIONAL_ACCESS_SCOPE_CLAIMS
     assert payload["sub"] == str(user_id)
-    mock.get.assert_awaited_once_with(key)
-    assert mock.eval.await_count == 2
+    assert mock.eval.await_args.args[2] == key
+    assert mock.eval.await_count == 3
 
 
 async def test_maximum_configured_scope_stays_within_bearer_limit() -> None:
@@ -379,6 +394,26 @@ async def test_issuer_does_not_return_after_duplicate_retry_is_exhausted() -> No
     assert mock.eval.await_count == 2
 
 
+async def test_issuer_rejects_a_stale_token_version_without_retry() -> None:
+    redis, mock = redis_mock()
+    mock.eval.return_value = -2
+
+    with pytest.raises(RbacError) as caught:
+        await issue_access_token(
+            redis,
+            user_id=uuid.uuid4(),
+            user_token_version=0,
+            settings=get_settings(),
+        )
+
+    assert caught.value.status_code == 401
+    mock.eval.assert_awaited_once()
+    script = mock.eval.await_args.args[0]
+    assert script.index("parsed_version > incoming_version") < script.index(
+        "'SET', KEYS[1]"
+    )
+
+
 async def test_issuer_maps_redis_failure_to_service_unavailable() -> None:
     redis, mock = redis_mock()
     mock.eval.side_effect = RedisConnectionError("unavailable")
@@ -426,19 +461,19 @@ async def _issued_claims_and_record() -> tuple[Settings, AccessTokenClaims, str]
     return (
         settings,
         decode_access_token(token, settings),
-        issuer_mock.eval.await_args.args[3],
+        issuer_mock.eval.await_args.args[5],
     )
 
 
 async def test_active_jti_returns_server_side_version_without_extending_ttl() -> None:
     settings, claims, record = await _issued_claims_and_record()
     redis, mock = redis_mock()
-    mock.get.return_value = record
+    mock.eval.return_value = record
 
     version = await require_active_jti(redis, claims=claims, settings=settings)
 
     assert version == 4
-    mock.get.assert_awaited_once()
+    mock.eval.assert_awaited_once()
     mock.set.assert_not_awaited()
     mock.expire.assert_not_awaited()
 
@@ -459,7 +494,7 @@ async def test_missing_or_mismatched_active_jti_is_unauthenticated(
         payload["unexpected"] = True
 
     redis, mock = redis_mock()
-    mock.get.return_value = json.dumps(
+    mock.eval.return_value = json.dumps(
         payload,
         sort_keys=True,
         separators=(",", ":"),
@@ -477,7 +512,7 @@ async def test_active_jti_miss_or_malformed_record_is_unauthenticated(
 ) -> None:
     settings, claims, _record = await _issued_claims_and_record()
     redis, mock = redis_mock()
-    mock.get.return_value = value
+    mock.eval.return_value = value
 
     with pytest.raises(RbacError) as caught:
         await require_active_jti(redis, claims=claims, settings=settings)
@@ -488,7 +523,7 @@ async def test_active_jti_miss_or_malformed_record_is_unauthenticated(
 async def test_active_jti_read_failure_is_service_unavailable() -> None:
     settings, claims, _record = await _issued_claims_and_record()
     redis, mock = redis_mock()
-    mock.get.side_effect = RedisConnectionError("unavailable")
+    mock.eval.side_effect = RedisConnectionError("unavailable")
 
     with pytest.raises(RbacError) as caught:
         await require_active_jti(redis, claims=claims, settings=settings)
@@ -509,8 +544,9 @@ async def test_logout_deletes_only_the_current_hashed_jti_key() -> None:
     )
 
     mock.eval.assert_awaited_once()
-    _script, key_count, key, expected = mock.eval.await_args.args
-    assert key_count == 1
+    _script, key_count, key, index, expected = mock.eval.await_args.args
+    assert key_count == 2
+    assert "auth:sessions:" in index
     assert str(claims.token_id) not in key
     assert expected == record
 

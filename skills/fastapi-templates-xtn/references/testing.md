@@ -83,32 +83,38 @@ When the project uses local passwords, load and test the complete contract in
 [Local password authentication](local-password-authentication.md). A password
 hasher or an isolated login-flow mock is not a completed authentication system.
 
-Prove the product questions were answered once: identity/login input,
-registration mode, recovery proof and channel, simultaneous-device policy, and
-existing-account enrollment. Then cover the bundled baseline end to end:
+Prove the product questions were answered once: username case comparison,
+password composition, simultaneous-login maximum, and existing-account
+enrollment. Then cover the bundled baseline end to end:
 
-- default settings do not register `POST /api/v1/auth/register` and omit it from
-  OpenAPI, while an explicitly enabled setting registers exactly that `POST`;
+- public registration is initially enabled but a persisted super-admin-only
+  switch rejects new registrations after closure, including stale page forms;
+  authorized administrator creation remains available; `GET` and `POST` on
+  `/api/v1/auth/registration/status` respectively read and change the switch,
+  with the latter restricted to the current `super_admin`;
 - settings require `APP_ENVIRONMENT` with no code default even when limiting is
   enabled, and reject `RATE_LIMIT_ENABLED=false` for every environment except
   the explicit `dev`, `development`, `local`, `test`, and `testing` escape hatch;
 - Argon2id parameters, off-event-loop execution, the per-worker concurrency
-  bound, creation versus login input limits, common-password/identifier checks,
+  bound, creation versus login input limits, reserved username and three
+  simple password-pattern checks,
   and corrupted stored-hash handling;
-- one live `user_password_credentials` episode per user, fresh UUIDv4 on every
-  rotation, a version above the maximum historical episode even when no live
-  credential remains, cleared hashes on tombstones, no hard delete, and no
-  password resurrection after user restore;
+- nullable `users.password_hash` and `users.password_changed_at`, non-null
+  `users.must_change_password=false` by default, and unchanged
+  `users.token_version`; password-state checks, cleared hash/timestamp/temporary
+  flag on user soft deletion, and no password resurrection after restore;
 - uniform `401001` plus real-or-dummy Argon2 work for unknown, wrong-password,
   disabled, deleted, and credential-less login states;
 - public registration creates only the mandatory `user` role and commits the
-  user, role binding, credential, versions, and both required audits atomically;
+  user, role binding, password state, versions, and both required audits atomically;
 - login issues no Token before successful Redis active-JTI registration, and a
   correct temporary credential returns the password-change-required contract
   without a Token;
-- self change requires the current password; administrator reset requires the
-  actor's current password, `users:password:reset`, and the complete strict-lower
-  visibility/delegation policy; and sole-super-admin reset is offline only;
+- the five required graphical-CAPTCHA scenes are correctly isolated and each
+  challenge is single-use on a wrong or right answer; self change requires its
+  current password, while administrator reset needs the exact capability,
+  CAPTCHA, and strict-lower policy, not the actor's password again;
+  sole-super-admin reset remains offline only;
 - temporary reset completion is one-time, issues no Token, and successful
   change/reset increments `users.token_version` so two independently issued old
   Tokens both fail their next authentication;
@@ -117,7 +123,9 @@ existing-account enrollment. Then cover the bundled baseline end to end:
 - allowed account-security audit failure rolls back the password mutation,
   denied-audit failure preserves the original rejection, and no response,
   OpenAPI example, log, Redis key, or audit contains a password, hash, Token,
-  JTI, username, email, raw IP, or request body; and
+  JTI, username, raw IP, or request body;
+- password-change counts come from succeeded account-security events for the
+  target and the four password-change/reset actions, excluding registration;
 - every password response is `Cache-Control: no-store`, password schema fields
   are `writeOnly`, and the public contract exposes only the intended `GET` and
   `POST` routes.
@@ -131,37 +139,34 @@ tests alone.
 
 When the delivered surface uses Redis admission, first prove that the generated
 settings exactly match the centralized values accepted by the user under
-[Rate limiting and abuse-control quotas](rate-limiting.md). Apply the optional
-verification rows only when the user explicitly selected that feature. Test
+[Rate limiting and abuse-control quotas](rate-limiting.md). Graphical CAPTCHA
+is required in five scenes; email/SMS or MFA is not part of this asset. Test
 policy selection separately from the Redis algorithm: a correctly constructed
 but unwired policy does not protect a route.
 
 Unit-test validation, key construction, policy selection, result parsing, and
 HTTP response composition. Also run the Lua behavior against the supported real
-Redis version; a mocked `eval` cannot prove server time, TTL, atomicity, Cluster
+Redis version; a mocked `eval` cannot prove expiry, atomicity, Cluster
 slot behavior, or concurrency.
 
 | Surface | Required proof |
 | --- | --- |
-| Token Bucket core | Continuous integer-microtoken refill, one-token cost, Redis `TIME`, finite TTL, and configured burst/refill semantics |
-| Batch decision | One to 16 unique buckets, stable result order, longest retry, and no key mutation or TTL refresh when any bucket denies |
-| Concurrency | Accepted calls never exceed currently available tokens and no partial quota is consumed |
-| Key privacy | All batch keys share the static namespace hash slot; raw IP, account, user, target, HMAC digest, and complete key never reach logs or responses |
-| API composition | Coarse global/IP middleware and the intended actor/route policy both run; `OPTIONS` and health exclusions match the documented deployment contract |
-| Login defense | IP/pair/global are the only hard admission limits; the failure-risk signal increments atomically, has finite retention, clears on success, and never blocks correct credentials by itself |
-| Login orchestration | `IdentityAbuseFlow.authenticate` admits first, invokes one real-or-dummy credential callback, records one failure for `None`, clears state before returning a verified value, and the application Token issuer is invoked only afterward |
-| Registration | IP, target, pair, and global checks run together before product side effects |
+| Fixed-window core | One per-business key, atomic first `INCR`/`EXPIRE`/remaining PTTL, finite TTL, full quota restored at expiry |
+| Concurrency | No more than the configured number of calls are admitted inside one window; no global or cross-business bucket exists |
+| Key privacy | Raw IP, account, user, target, HMAC digest, and complete key never reach logs or responses |
+| API composition | Each protected operation invokes its own named per-actor dependency; no coarse all-API middleware runs |
+| Login defense | Trusted IP for that business is the only quota subject; no account-only, pair, global, or login-failure risk counter exists |
+| Login orchestration | `IdentityAbuseFlow.authenticate` admits first, invokes one real-or-dummy credential callback, maps `None` to generic denial, and the Token issuer runs only afterward |
+| Registration | One per-IP registration check runs before product side effects |
 | Registration orchestration | `IdentityAbuseFlow.register` never invokes `registration_action` after a denial or unavailable Redis decision |
-| Optional verification disabled | No verification secret, purpose, channel, provider, field, or route is required by a username-and-password-only product |
-| Optional verification send | When selected, target cooldown, target-average Token Bucket, IP, pair, channel, and global checks run together; tests prove the accepted starting credits and gradual daily-average refill rather than a hard arbitrary-24-hour maximum |
-| Optional verification submit | When selected, IP, target, pair, and global checks precede the per-challenge attempt counter |
-| Optional challenge state | No plaintext target/code/raw challenge ID in Redis; resend replacement, matching cancellation, expiry, final wrong attempt, and exactly one concurrent successful consume |
-| Optional delivery failure | Only the matching challenge is cancelled, quota is not refunded, and provider detail is absent from response and logs |
+| Graphical CAPTCHA | Fixed scenes `login`, `register`, `admin_create`, `admin_reset`, `self_change`; public `/api/v1/auth/captcha` versus authenticated `/api/v1/me/captcha`; per-scene issuance quota, expiry, wrong-answer consume, owner binding, atomic one-winner refresh/submit, safe image response |
+| Rejected CAPTCHA scene | Valid scene at the wrong issue endpoint or parsed invalid CAPTCHA body: one independent 10-per-five-minute rejection quota keyed on trusted IP or authenticated actor, no image or normal-scene quota consumed, `429001` on excess and `503001` for unavailable limiter authority; admitted private invalid bodies still complete normal identity validation before `422`, while invalid JSON syntax fails before authentication dependencies; no global bucket |
+| Optional delivery extensions | Email/SMS/MFA are not bundled and need a future product decision and tests |
 
 For a real limiter denial, assert HTTP `429`, `429001`, `Cache-Control: no-store`,
-the equal body/header request ID, correctly rounded-up `Retry-After`, and the
-three rate-limit headers. A login-failure risk count is not a limiter result and
-must not create a `429` or any rate-limit header by itself.
+the equal body/header request ID and correctly rounded-up `Retry-After` from
+the remaining fixed-window TTL. If exposing the optional RateLimit headers,
+verify they describe this window, not a Token Bucket refill.
 
 For missing Redis, timeout, Redis command error, malformed script result, or
 invalid stored state, assert HTTP `503`, `503001`, `Cache-Control: no-store`, no
@@ -202,7 +207,7 @@ POST /api/v1/users/{user_id}/roles/unbind
 For each route, cover missing credentials (`401`), a current `user` without the
 capability (`403`), the exact capability gate, a concealed object (`404`), input
 validation, and its positive path. Capability success alone does not satisfy a
-write test; also prove the strict hierarchy, delegable-set, protected-target,
+write test; also prove the strict hierarchy, actor-held permission, protected-target,
 affected-user, system-role, and self-elevation decisions. Prove an early denied
 `POST` attempts a safe audit, and prove the service's locked capability recheck
 returns `403001` before `404001` or `409002` to an unprivileged or newly revoked
@@ -215,12 +220,12 @@ version can affect the response. Once capability passes, self, peer, higher, and
 protected user or role targets return the same `404001` body as an unknown ID.
 User-role bind/unbind must also return `404001` when any requested role ID is
 hidden or unknown and must not partially change the visible subset. Only a
-visible target that fails delegation, affected-user, system-role, self-elevation,
+visible target that fails grant authority, affected-user, system-role, self-elevation,
 or another operation-specific decision returns `403001`. Cover the service
 directly so an alternate route cannot bypass this ordering, then repeat
 representative user and role writes through the public API.
 
-Role update, enable, disable, delete, permission, and delegation commands require
+Role update, enable, disable, delete, and permission commands require
 a nonnegative strict JSON integer body `expected_version`. Test missing, string,
 float, boolean, and negative values as `422001`; test an unauthorized stale write
 as `403001`, an authorized stale write as `409002`, current success, and two
@@ -272,28 +277,27 @@ Also test:
 - leaked resource IDs and IDOR attempts through every lookup variant;
 - mass-assignment attempts for roles, permissions, `super_admin` status, and
   system flags;
-- self-escalation, unauthorized delegation, system-role mutation, and removal of
-  the final `super_admin`;
+- self-escalation, granting permissions the actor does not hold, system-role
+  mutation, and removal of the final `super_admin`;
 - attempts to use `roles:assign` to create a role or replace its permissions, and
-  attempts to assign a role outside the actor's explicit delegable set;
+  attempts to assign a role outside the actor's own authority;
 - immutable `super_admin`, `admin`, and `user` role keys, tiers, flags,
-  lifecycle, permission composition, and delegation composition through every
-  route and direct service entry point;
+  lifecycle, and permission composition through every route and direct service
+  entry point;
 - normal registration, administrator creation, identity synchronization, and
   import paths atomically assigning `user`, with public role selection and
   `user` unbind attempts rejected;
-- the chosen email/`user_name` fields, per-flow requiredness, accepted login
-  input, shared normalization, database uniqueness under concurrency,
-  cross-column ambiguity rejection for an either-identifier login input, and
-  both sides of the chosen reuse-after-soft-delete policy; existing-project work
-  must prove those choices were preserved unless migration was requested;
+- the required username-only new-project baseline, mandatory trim and ASCII
+  validation, selected case rule, permanent reservation of deleted names, and
+  database uniqueness under concurrent registration; existing-project work
+  must preserve its chosen identity contract unless a change was requested;
 - `user` denied on every management endpoint; `admin` allowed only for strictly
   lower users and custom roles, and denied for role deletion, system-role
-  mutation, delegation changes, `super_admin` transfer, peers, and higher targets;
+  mutation, online `super_admin` handover, peers, and higher targets;
 - management writes returning `403001` before lookup when capability is absent,
   returning non-leaking `404001` for self, peer, higher, protected, unknown, or
   hidden requested-role targets after capability passes, and reserving `403001`
-  for visible targets outside delegation or affected-authority policy;
+  for visible targets outside actor-held grant or affected-authority policy;
 - administrative user and role lists, counts, searches, details, exports, and
   nested reads showing all non-deleted targets only to `super_admin`; every other
   administrator sees only strictly lower, non-protected targets, cannot see
@@ -305,8 +309,8 @@ Also test:
   than post-commit request-session reloads, with nested `assigned_role_ids`
   filtered to the actor's visible roles;
 - ordinary role binding unable to grant `super_admin`, `admin` assignment or
-  revocation requiring the current `super_admin`, and `super_admin` transfer
-  leaving exactly one holder;
+  revocation requiring the current `super_admin`, and no online route to
+  transfer the sole `super_admin`;
 - the operator-run PostgreSQL bootstrap script accepting only immutable
   `users.id`, requiring an existing live active identity with `user`, assigning
   only `super_admin`, updating the user
@@ -328,7 +332,8 @@ Also test:
 - the 10-live-role limit counting mandatory `user`, any `super_admin`, and
   disabled-role bindings while excluding tombstones; cover the tenth success,
   eleventh rejection, an idempotent bind when already full, unbind then reuse,
-  bootstrap, transfer, direct SQL, and a concurrent race for the tenth slot;
+  bootstrap, offline handover, direct SQL, and a concurrent race for the tenth
+  slot;
 - targets whose ordinary role hides an additional peer, higher, protected, or
   incomparable role, proving authorization uses the complete multi-role snapshot;
 - shared-role edits involving suspended or inactive assignees whose assignments
@@ -412,8 +417,13 @@ that they are dedicated to these tests. The fixture verifies the actual
 PostgreSQL database and empty schema before Alembic runs, and reads Redis
 `DBSIZE` before any test key cleanup. Migration tests downgrade to `base`, so
 never point these variables at a database or Redis holding valuable data.
-If a prior run left objects or keys, recreate the disposable targets instead
-of bypassing the guard. Ordinary unit tests do not require these settings.
+The Redis-only CAPTCHA/session test needs a third initially empty disposable
+`TEST_CAPTCHA_REDIS_URL` whose logical database number differs from both
+integration Redis targets; it deliberately leaves its own test keys, so it
+must not make a later integration target nonempty. CI uses logical DBs 14,
+15, and 0 across two Redis services. If a prior run left objects or keys,
+recreate the disposable targets instead of bypassing the guard. Ordinary unit
+tests do not require these settings.
 
 ## Completion Evidence
 

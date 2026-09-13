@@ -29,14 +29,13 @@ DECLARE
     candidate_role_count integer;
     assigned_super_admin boolean;
     permission_keys text[];
-    delegable_permission_keys text[];
     expected_permission_keys constant text[] := ARRAY[
         'permissions:read',
         'projects:read',
         'projects:update',
+        'registration:configure',
         'roles:assign',
         'roles:create',
-        'roles:delegation:update',
         'roles:delete',
         'roles:permissions:bind',
         'roles:permissions:unbind',
@@ -44,25 +43,10 @@ DECLARE
         'roles:revoke',
         'roles:status:update',
         'roles:update',
-        'super_admin:transfer',
+        'users:create',
         'users:password:reset',
         'users:read',
-        'users:status:update'
-    ]::text[];
-    expected_delegable_permission_keys constant text[] := ARRAY[
-        'permissions:read',
-        'projects:read',
-        'projects:update',
-        'roles:assign',
-        'roles:create',
-        'roles:delete',
-        'roles:permissions:bind',
-        'roles:permissions:unbind',
-        'roles:read',
-        'roles:revoke',
-        'roles:status:update',
-        'roles:update',
-        'users:read',
+        'users:sessions:revoke',
         'users:status:update'
     ]::text[];
 BEGIN
@@ -190,18 +174,6 @@ BEGIN
       AND p.deleted_at IS NULL;
     IF permission_keys <> expected_permission_keys THEN
         RAISE EXCEPTION 'super_admin permission grants do not match the versioned allowlist';
-    END IF;
-
-    SELECT coalesce(array_agg(p.key ORDER BY p.key), ARRAY[]::text[])
-    INTO delegable_permission_keys
-    FROM role_permissions AS rp
-    JOIN permissions AS p ON p.id = rp.permission_id
-    WHERE rp.role_id = super_admin_role_id
-      AND rp.deleted_at IS NULL
-      AND p.deleted_at IS NULL
-      AND rp.can_delegate;
-    IF delegable_permission_keys <> expected_delegable_permission_keys THEN
-        RAISE EXCEPTION 'super_admin delegable grants do not match the versioned allowlist';
     END IF;
 
     IF EXISTS (

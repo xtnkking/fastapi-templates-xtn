@@ -7,7 +7,7 @@ relationships, and other row-level conditions remain separate policy inputs.
 For executable PostgreSQL code, use
 [postgresql-rbac-implementation.md](postgresql-rbac-implementation.md) and copy
 the linked asset as one coherent unit. It includes tables, dependencies, user and
-role administration, `super_admin`-only delegation control, migrations, and
+role administration, offline-only super-admin handover, migrations, and
 negative and concurrency tests.
 
 ## Define The Policy First
@@ -15,14 +15,13 @@ negative and concurrency tests.
 Before writing models, list:
 
 - principals and their active or disabled states;
-- for greenfield authentication, the selected `users` storage fields and the
-  separately selected login-input contract from
+- for greenfield authentication, the username/password contract from
   [Identity and soft-delete lifecycle](identity-soft-delete.md);
 - protected resources and any ownership or row-level boundaries;
 - actions such as `read`, `create`, `update`, `delete`, `approve`, or `manage`;
 - stable permission keys in `resource:action` form;
 - which roles bundle those permissions;
-- delegation, bootstrap, revocation, and audit requirements.
+- grant bounds, offline bootstrap, revocation, and audit requirements.
 
 Do not infer sensitive policy from route names. Record a small permission matrix
 and turn it into tests.
@@ -31,7 +30,7 @@ and turn it into tests.
 
 Use this normalized single-project model:
 
-- `users` store the selected identity fields, identity lifecycle, protection,
+- `users` store the required `user_name`, identity lifecycle, protection,
   token revocation version, and the per-user authorization version;
 - `roles` have a globally unique stable key, explicit status, management tier,
   version, and protected/system/super-admin flags;
@@ -40,8 +39,7 @@ Use this normalized single-project model:
   episode may exist for `(user_id, role_id)`, and each user may have at most 10
   live episodes in total;
 - `role_permissions` are non-sequentially identified grant episodes; only one
-  live episode may exist for `(role_id, permission_id)`, and it records the
-  explicit `can_delegate` subset;
+  live episode may exist for `(role_id, permission_id)`;
 - `rbac_state` contains exactly one global guard row and the shared
   authorization epoch; it is RBAC coordination metadata, not Token state;
 - `rbac_audit_events` capture actor, target, action, decision, reason, trusted
@@ -50,7 +48,7 @@ Use this normalized single-project model:
 
 `rbac_audit_events` is deliberately limited to RBAC administration and its
 authorization decisions: role lifecycle, role-permission bindings, user-role
-bindings, protected user status changes, and super-admin transfer or bootstrap.
+bindings, protected user status changes, and offline super-admin handover or bootstrap.
 It is not a JWT, Token-session, login, or general application activity log. Add
 separately named audit models when the product needs those different event types.
 Follow [Audit module](audit-module.md) for its complete schema, payload safety,
@@ -76,16 +74,15 @@ authority; `is_system` must not make every `admin` or `user` holder protected.
 Every normally created user receives the mandatory `user` assignment in its
 creation transaction. Runtime
 APIs cannot change the three role definitions or grants, cannot disable or delete
-them, cannot grant `super_admin` outside the dedicated transfer, and cannot
+them, cannot grant `super_admin` outside guarded offline SQL, and cannot
 unbind `user`.
 
 ## Identity And Deletion Lifecycle
 
-For a greenfield service, first ask whether `users` stores `email`, `user_name`,
-or both. Then separately resolve per-flow requiredness, login input,
-normalization, database uniqueness, cross-field ambiguity, and whether a deleted
-identity's value may be reused. Existing services retain their chosen contract
-unless the user requests a migration. JWT `sub` and the
+For a new service use required `user_name` and password, trim edges, validate
+3..32 ASCII letters/digits/underscores, and reserve deleted usernames forever.
+Ask whether username case matters. Existing services retain their chosen contract
+unless the user requests a change. JWT `sub` and the
 first-super-admin bootstrap always use immutable `users.id`, never a login
 identifier.
 
@@ -109,10 +106,10 @@ storage, purge-exception, restore, and test contract.
   `roles:create`, `roles:update`, `roles:delete`, and
   `roles:permissions:bind` or `roles:permissions:unbind` govern distinct role
   definition effects.
-- Define delegable permissions explicitly. Possessing or assigning a permission
-  does not imply authority to grant it. A role being assigned or changed must not
-  contain authority outside the actor's delegable set.
-- Treat the sole `super_admin` and break-glass operations as explicit trust
+- Grant only permissions the actor currently holds, and only to strictly lower
+  manageable users/roles; enforce all affected-user and no-self-elevation rules.
+  Do not add a separate `can_delegate` subsystem or online management API.
+- Treat the sole `super_admin` as an explicit trust
   boundaries. Do not hide a universal bypass behind an ordinary role name.
 - Treat permission-key renames as data migrations; never silently reinterpret an
   existing key.
@@ -278,15 +275,16 @@ route-level check cannot replace the transaction-local decision.
 ## Privileged Mutations
 
 - Apply [administrative hierarchy](administrative-hierarchy.md) to identity
-  administration, role changes, delegation, super-admin transfer, and
-  self-elevation.
+  administration, role changes, and offline super-admin handover; no online
+  transfer route is permitted. Enforce strict anti-self-elevation checks.
 - Use dedicated request models with `extra="forbid"` and an allowlist of mutable
   fields.
 - Require the exact operation capability. Assignment, role lifecycle, permission
-  binding, permission unbinding, delegation, and transfer are separate effects.
+  binding, and permission unbinding are separate effects.
 - For assignment or permission changes, calculate complete proposed
-  authority and require it to remain within the actor's delegable authority.
-- For every role bind, bootstrap, and super-admin transfer, calculate the target's
+  authority and require every newly granted permission to be currently held
+  by the actor, with strict hierarchy and no affected-user escalation.
+- For every role bind, bootstrap, and offline super-admin handover, calculate the target's
   complete proposed live assignment set after the global guard and row locks are
   held. Reject a final total above 10 as one atomic conflict. Enforce the same
   invariant in PostgreSQL so direct SQL and concurrent service writers cannot
@@ -296,8 +294,9 @@ route-level check cannot replace the transaction-local decision.
   rename, disablement, deletion, grant changes, or revocation.
 - Bootstrap the first `super_admin` through the explicit offline transaction in
   the PostgreSQL implementation, targeting an existing immutable `users.id`;
-  never promote the first registered user, select the holder by email or
-  `user_name`, or insert a bare assignment implicitly.
+  never promote the first registered user, select the holder by
+  `user_name`, or insert a bare assignment implicitly. Later changes use the
+  guarded audited offline handover script, never an HTTP command.
 - Keep the public authorization API on neutral `/api/v1` resource paths. Do not
   expose `rbac` in public paths or OpenAPI metadata, and use only `GET` and
   action-specific `POST` for the baseline administration contract. Internal

@@ -122,10 +122,12 @@ async def clean_database(migrated_database: None) -> AsyncIterator[None]:
                     Permission.key.not_in(tuple(item.value for item in PermissionKey))
                 )
             )
-            await connection.execute(text("TRUNCATE TABLE user_password_credentials"))
             await connection.execute(text("DELETE FROM users"))
             await connection.execute(
-                text("UPDATE rbac_state SET epoch = 0 WHERE scope = 'global'")
+                text(
+                    "UPDATE rbac_state SET epoch = 0, "
+                    "public_registration_enabled = true WHERE scope = 'global'"
+                )
             )
         keys = [
             key
@@ -185,7 +187,9 @@ async def world() -> World:
             assert set(system_roles) == {item.value for item in SystemRoleKey}
 
             users = {
-                name: User(email=f"{name}@example.test")
+                name: User(
+                    user_name="platform_owner" if name == "super_admin" else name
+                )
                 for name in (
                     "super_admin",
                     "manager",
@@ -222,9 +226,9 @@ async def world() -> World:
                     name="Viewer",
                     management_tier=20,
                 ),
-                "nondelegable": Role(
-                    key="nondelegable",
-                    name="Nondelegable",
+                "auditor": Role(
+                    key="auditor",
+                    name="Auditor",
                     management_tier=30,
                 ),
             }
@@ -239,16 +243,12 @@ async def world() -> World:
             def grant(
                 role_name: str,
                 keys: set[str],
-                *,
-                delegable: set[str] | None = None,
             ) -> list[RolePermission]:
                 role = roles[role_name]
-                delegable = delegable or set()
                 return [
                     RolePermission(
                         role_id=role.id,
                         permission_id=permissions[key].id,
-                        can_delegate=key in delegable,
                     )
                     for key in keys
                 ]
@@ -261,11 +261,10 @@ async def world() -> World:
                         PermissionKey.ROLES_REVOKE.value,
                         PermissionKey.PROJECTS_READ.value,
                     },
-                    delegable={PermissionKey.PROJECTS_READ.value},
                 )
                 + grant("higher", {PermissionKey.PROJECTS_READ.value})
                 + grant("viewer", {PermissionKey.PROJECTS_READ.value})
-                + grant("nondelegable", {PermissionKey.USERS_READ.value})
+                + grant("auditor", {PermissionKey.USERS_READ.value})
             )
 
             assignments = tuple((user_name, "user") for user_name in users) + (

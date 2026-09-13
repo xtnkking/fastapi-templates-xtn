@@ -11,7 +11,6 @@ from alembic import command
 from app.database import SessionFactory, engine
 from app.rbac.domain import (
     PERMISSION_CATALOG,
-    SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS,
     SUPER_ADMIN_PERMISSION_KEYS,
     SYSTEM_ROLE_SPECS,
     SystemRoleKey,
@@ -75,6 +74,7 @@ async def test_clean_migration_seeds_catalog_state_and_system_roles() -> None:
 
         assert state is not None
         assert state.epoch == 2
+        assert state.public_registration_enabled is True
         assert revision == "0004_password_auth"
         assert role_limit_trigger_count == 1
         assert permission_keys == {item.value for item in PERMISSION_CATALOG}
@@ -122,9 +122,9 @@ async def test_upgrade_preserves_custom_owner_key_and_backfills_base_role() -> N
         async with engine.begin() as connection:
             await connection.execute(
                 sa.text(
-                    "INSERT INTO users (id, email) VALUES "
-                    "(:custom_owner_holder_id, 'custom-owner@example.test'), "
-                    "(:ordinary_user_id, 'ordinary-user@example.test')"
+                    "INSERT INTO users (id, user_name) VALUES "
+                    "(:custom_owner_holder_id, 'custom_owner'), "
+                    "(:ordinary_user_id, 'ordinary_user')"
                 ),
                 {
                     "custom_owner_holder_id": custom_owner_holder_id,
@@ -202,6 +202,7 @@ async def test_upgrade_preserves_custom_owner_key_and_backfills_base_role() -> N
         assert users[custom_owner_holder_id].authz_version == 1
         assert users[ordinary_user_id].authz_version == 1
         assert state is not None and state.epoch == 2
+        assert state.public_registration_enabled is True
     finally:
         await engine.dispose()
         await asyncio.to_thread(command.upgrade, config, "head")
@@ -215,7 +216,7 @@ async def test_migration_seeds_exact_super_admin_grants() -> None:
         assert role is not None
         grants = (
             await session.execute(
-                select(Permission.key, RolePermission.can_delegate)
+                select(Permission.key)
                 .select_from(RolePermission)
                 .join(Permission, Permission.id == RolePermission.permission_id)
                 .where(RolePermission.role_id == role.id)
@@ -223,9 +224,6 @@ async def test_migration_seeds_exact_super_admin_grants() -> None:
         ).all()
 
     assert {row.key for row in grants} == SUPER_ADMIN_PERMISSION_KEYS
-    assert {row.key for row in grants if row.can_delegate} == (
-        SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS
-    )
 
 
 @pytest.mark.parametrize("system_key", tuple(item.value for item in SystemRoleKey))

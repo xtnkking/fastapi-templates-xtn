@@ -224,28 +224,26 @@ The local Redis limiter has two different outcomes. Do not merge them:
 
 | Outcome | HTTP/code | Required headers | Forbidden headers |
 | --- | --- | --- | --- |
-| A trustworthy Token Bucket decision denies the request | `429` / `429001` | `X-Request-ID`, `Cache-Control: no-store`, integer `Retry-After` | None of the required headers may be omitted |
+| A trustworthy fixed-window decision denies the request | `429` / `429001` | `X-Request-ID`, `Cache-Control: no-store`, integer `Retry-After` | None of the required headers may be omitted |
 | Limiter or verification authority is missing, unavailable, times out, or returns malformed state | `503` / `503001` | `X-Request-ID`, `Cache-Control: no-store` | `Retry-After` |
 
-For a Token Bucket decision, both allowed responses and `429` also carry:
+For a fixed-window decision, both allowed responses and `429` may carry:
 
 ```text
-RateLimit-Limit: <burst capacity>
-RateLimit-Remaining: <whole tokens remaining>
-RateLimit-Reset: <seconds until this bucket is full>
+RateLimit-Limit: <window maximum>
+RateLimit-Remaining: <requests remaining in this window>
+RateLimit-Reset: <seconds until this window expires>
 ```
 
-`RateLimit-Reset` is a relative duration, not a timestamp. A denied bucket adds:
+`RateLimit-Reset` is a relative duration, not a timestamp. A denied limit adds:
 
 ```text
-Retry-After: <max(1, ceil(retry_after_ms / 1000))>
+Retry-After: <max(1, remaining window TTL in seconds)>
 ```
 
-When several buckets deny atomically, use the one with the longest wait for the
-public headers and do not reveal which subject dimension caused the denial. A
-login-failure risk signal is not a quota decision: it never returns `429` or
-creates `Retry-After`, `RateLimit-Limit`, `RateLimit-Remaining`, or
-`RateLimit-Reset` by itself.
+Each protected operation checks only its own business/subject key. There is no
+cross-business, global, or username-specific bucket. Do not reveal the private
+subject in headers or errors.
 
 The bodies retain the ordinary four-field envelope:
 
@@ -270,7 +268,7 @@ The bodies retain the ordinary four-field envelope:
 A `503001` means no trustworthy admission or verification decision was made. It
 must fail closed and must not call the protected handler. Do not turn it into a
 fake quota denial, expose a Redis/provider error, or guess a retry duration.
-When the limiter middleware itself cannot decide, it has no bucket result to
+When the per-route limiter cannot decide, it has no quota result to
 publish. If an earlier layer already admitted a request, its ordinary
 `RateLimit-*` headers may remain on a later downstream `503`; those headers
 describe the successful earlier admission and never authorize `Retry-After`.
@@ -291,13 +289,13 @@ share a stable strong `ETag` based only on resource state.
 
 For role concurrency, return the existing nonnegative `version` inside the role
 data. Require `expected_version` in each role information, lifecycle, deletion,
-permission, or delegation mutation body. After the global guard and canonical
+or permission mutation body. After the global guard and canonical
 rows are locked and the actor and affected authority are reloaded, first perform
 the complete authorization and hierarchy decision and only then compare the
 submitted strict JSON integer to the current `roles.version`. This order prevents
 an unauthorized actor from learning the current version through a `403`/`409`
 oracle. A mismatch after authorization returns HTTP `409` with business code
-`409002`; no mutation, version increment, allowed audit, or outbox row may commit.
+`409002`; no mutation, version increment, or allowed audit may commit.
 
 ```json
 {
@@ -374,7 +372,7 @@ Test the observable contract rather than only model definitions:
 - pagination defaults, maximum size, filtered `total`, deterministic ordering,
   empty pages, and the absence of extra pagination metadata are covered;
 - stale `expected_version` returns `409002` and cannot write domain rows, audit
-  success, versions, cache invalidations, or outbox records;
+  success, versions, or cache invalidations;
 - an unauthorized stale write returns its authorization failure rather than
   `409002`, and non-integer versions such as strings, floats, and booleans return
   `422001`;
@@ -385,7 +383,7 @@ Test the observable contract rather than only model definitions:
   credentials, Token/JTI values, or secret request fields; and
 - local quota denial has the documented `429001` limit headers and rounded-up
   `Retry-After`, while Redis/verification `503001` omits `Retry-After` and cannot
-  invoke protected logic; a middleware-owned outage invents no bucket result;
+  invoke protected logic; a limiter outage invents no quota result;
   and
 - OpenAPI documents the closed envelope and page schemas, numeric code, UUID
   request ID header, actual error statuses and rate-limit headers, and required strict

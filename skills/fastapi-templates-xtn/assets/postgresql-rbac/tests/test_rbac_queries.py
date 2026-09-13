@@ -56,7 +56,6 @@ async def test_batch_authority_loader_uses_one_select_for_multiple_users() -> No
             is_protected=False,
             is_super_admin=False,
             permission_key="projects:read",
-            can_delegate=True,
         ),
         SimpleNamespace(
             user_id=second_user.id,
@@ -67,7 +66,6 @@ async def test_batch_authority_loader_uses_one_select_for_multiple_users() -> No
             is_protected=False,
             is_super_admin=False,
             permission_key="projects:update",
-            can_delegate=False,
         ),
     )
 
@@ -79,9 +77,6 @@ async def test_batch_authority_loader_uses_one_select_for_multiple_users() -> No
 
     execute.assert_awaited_once()
     assert snapshots[first_user.id].permissions == frozenset({"projects:read"})
-    assert snapshots[first_user.id].delegable_permissions == frozenset(
-        {"projects:read"}
-    )
     assert snapshots[first_user.id].authz_version == 5
     assert snapshots[second_user.id].permissions == frozenset({"projects:update"})
     assert not snapshots[second_user.id].user_is_active
@@ -115,12 +110,10 @@ async def test_batch_role_grant_loader_uses_one_select_for_multiple_roles() -> N
         SimpleNamespace(
             role_id=roles[0].id,
             permission_key="projects:read",
-            can_delegate=False,
         ),
         SimpleNamespace(
             role_id=roles[1].id,
             permission_key="projects:update",
-            can_delegate=True,
         ),
     )
 
@@ -129,7 +122,6 @@ async def test_batch_role_grant_loader_uses_one_select_for_multiple_roles() -> N
     execute.assert_awaited_once()
     assert grants[roles[0].id].permissions == frozenset({"projects:read"})
     assert grants[roles[1].id].permissions == frozenset({"projects:update"})
-    assert grants[roles[1].id].delegable_permissions == frozenset({"projects:update"})
 
 
 async def test_super_admin_holder_loader_returns_the_complete_live_set() -> None:

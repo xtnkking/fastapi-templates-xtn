@@ -14,7 +14,6 @@ def test_user_response_separates_assigned_and_effective_authority() -> None:
         effective_role_ids=(base_role_id,),
         effective_management_tier=0,
         effective_permissions=(),
-        effective_delegable_permissions=(),
         authz_version=3,
     )
 
@@ -28,7 +27,6 @@ def test_user_response_separates_assigned_and_effective_authority() -> None:
         "effective_role_ids",
         "effective_management_tier",
         "effective_permissions",
-        "effective_delegable_permissions",
     } <= properties.keys()
     assert {
         "role_ids",

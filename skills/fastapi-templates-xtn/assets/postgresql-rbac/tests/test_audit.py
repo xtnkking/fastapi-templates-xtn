@@ -41,13 +41,10 @@ def test_audit_state_accepts_bounded_json_and_normalizes_protocol_values() -> No
 
 
 def test_audit_state_accepts_fixed_password_reset_permission_identifier() -> None:
-    state = sanitize_audit_state(
-        {"permissions": ["users:password:reset"], "delegable_permissions": []}
-    )
+    state = sanitize_audit_state({"permissions": ["users:password:reset"]})
 
     assert state == {
         "permissions": ["users:password:reset"],
-        "delegable_permissions": [],
     }
 
 

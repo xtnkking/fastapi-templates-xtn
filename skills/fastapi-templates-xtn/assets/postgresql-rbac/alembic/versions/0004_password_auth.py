@@ -1,4 +1,4 @@
-"""Add local-password credentials and account-security audit.
+"""Add user-local password state and account-security audit.
 
 Revision ID: 0004_password_auth
 Revises: 0003_business_audit
@@ -34,114 +34,46 @@ def upgrade() -> None:
         sa.text("SELECT scope FROM rbac_state WHERE scope = 'global' FOR UPDATE")
     )
 
-    op.create_table(
-        "user_password_credentials",
+    op.add_column(
+        "rbac_state",
         sa.Column(
-            "id",
-            postgresql.UUID(as_uuid=True),
-            server_default=sa.text("gen_random_uuid()"),
+            "public_registration_enabled",
+            sa.Boolean(),
+            server_default=sa.text("true"),
             nullable=False,
         ),
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("created_by_user_id", postgresql.UUID(as_uuid=True), nullable=True),
-        sa.Column("password_hash", sa.String(length=512), nullable=True),
-        sa.Column(
-            "version", sa.BigInteger(), server_default=sa.text("1"), nullable=False
-        ),
+    )
+
+    op.add_column("users", sa.Column("password_hash", sa.String(512), nullable=True))
+    op.add_column(
+        "users",
         sa.Column(
             "must_change_password",
             sa.Boolean(),
             server_default=sa.text("false"),
             nullable=False,
         ),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.Column(
-            "password_changed_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("deleted_by_user_id", postgresql.UUID(as_uuid=True), nullable=True),
-        sa.CheckConstraint(
-            "id::text ~ "
-            "'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'",
-            name=op.f("ck_user_password_credentials_id_uuid4"),
-        ),
-        sa.CheckConstraint(
-            "version >= 1",
-            name=op.f("ck_user_password_credentials_version_positive"),
-        ),
-        sa.CheckConstraint(
-            "password_hash IS NULL OR password_hash ~ "
-            "'^\\$argon2id\\$v=19\\$m=[1-9][0-9]*,t=[1-9][0-9]*,"
-            "p=[1-9][0-9]*\\$[A-Za-z0-9+/]{16,}\\$"
-            "[A-Za-z0-9+/]{16,}$'",
-            name=op.f("ck_user_password_credentials_password_hash_shape"),
-        ),
-        sa.CheckConstraint(
-            "(deleted_at IS NULL AND password_hash IS NOT NULL) OR "
-            "(deleted_at IS NOT NULL AND password_hash IS NULL)",
-            name=op.f("ck_user_password_credentials_live_hash_or_tombstone"),
-        ),
-        sa.CheckConstraint(
-            "deleted_at IS NULL OR NOT must_change_password",
-            name=op.f("ck_user_password_credentials_tombstone_not_change_required"),
-        ),
-        sa.CheckConstraint(
-            "deleted_by_user_id IS NULL OR deleted_at IS NOT NULL",
-            name=op.f("ck_user_password_credentials_deleted_actor_requires_timestamp"),
-        ),
-        sa.CheckConstraint(
-            "password_changed_at >= created_at",
-            name=op.f("ck_user_password_credentials_password_changed_after_created"),
-        ),
-        sa.ForeignKeyConstraint(
-            ["user_id"],
-            ["users.id"],
-            name=op.f("fk_user_password_credentials_user_id_users"),
-            ondelete="RESTRICT",
-        ),
-        sa.ForeignKeyConstraint(
-            ["created_by_user_id"],
-            ["users.id"],
-            name=op.f("fk_user_password_credentials_created_by_user_id_users"),
-            ondelete="RESTRICT",
-        ),
-        sa.ForeignKeyConstraint(
-            ["deleted_by_user_id"],
-            ["users.id"],
-            name=op.f("fk_user_password_credentials_deleted_by_user_id_users"),
-            ondelete="RESTRICT",
-        ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_user_password_credentials")),
-        sa.UniqueConstraint(
-            "user_id",
-            "version",
-            name=op.f("uq_user_password_credentials_user_version"),
-        ),
     )
-    op.create_index(
-        "uq_user_password_credentials_live_user",
-        "user_password_credentials",
-        ["user_id"],
-        unique=True,
-        postgresql_where=sa.text("deleted_at IS NULL"),
+    op.add_column("users", sa.Column("password_changed_at", sa.DateTime(timezone=True)))
+    op.create_check_constraint(
+        op.f("ck_users_password_hash_shape"),
+        "users",
+        "password_hash IS NULL OR password_hash ~ "
+        "'^\\$argon2id\\$v=19\\$m=[1-9][0-9]*,t=[1-9][0-9]*,"
+        "p=[1-9][0-9]*\\$[A-Za-z0-9+/]{16,}\\$"
+        "[A-Za-z0-9+/]{16,}$'",
     )
-    op.create_index(
-        "ix_user_password_credentials_user_created",
-        "user_password_credentials",
-        ["user_id", "created_at"],
+    op.create_check_constraint(
+        op.f("ck_users_password_state_coherent"),
+        "users",
+        "(password_hash IS NULL AND password_changed_at IS NULL "
+        "AND NOT must_change_password) OR "
+        "(password_hash IS NOT NULL AND password_changed_at IS NOT NULL)",
     )
-    op.create_index(
-        "ix_user_password_credentials_deleted_at",
-        "user_password_credentials",
-        ["deleted_at"],
+    op.create_check_constraint(
+        op.f("ck_users_deleted_user_no_password"),
+        "users",
+        "deleted_at IS NULL OR password_hash IS NULL",
     )
 
     op.create_table(
@@ -306,15 +238,15 @@ def upgrade() -> None:
     connection.execute(
         sa.text(
             "INSERT INTO role_permissions "
-            "(role_id, permission_id, can_delegate, assigned_by_user_id) "
-            "SELECT roles.id, permissions.id, false, NULL "
+            "(role_id, permission_id, assigned_by_user_id) "
+            "SELECT roles.id, permissions.id, NULL "
             "FROM roles CROSS JOIN permissions "
             "WHERE roles.key = ANY(:role_keys) "
             "AND roles.is_system AND roles.deleted_at IS NULL "
             "AND permissions.key = :permission_key "
             "AND permissions.deleted_at IS NULL "
             "ON CONFLICT (role_id, permission_id) WHERE deleted_at IS NULL "
-            "DO UPDATE SET can_delegate = false"
+            "DO NOTHING"
         ),
         {
             "role_keys": list(PASSWORD_RESET_SYSTEM_ROLES),
@@ -353,6 +285,16 @@ def downgrade() -> None:
     connection.execute(
         sa.text("SELECT scope FROM rbac_state WHERE scope = 'global' FOR UPDATE")
     )
+    # Pending deferred triggers from data changes prevent ALTER TABLE on users.
+    op.drop_constraint(
+        op.f("ck_users_deleted_user_no_password"), "users", type_="check"
+    )
+    op.drop_constraint(op.f("ck_users_password_state_coherent"), "users", type_="check")
+    op.drop_constraint(op.f("ck_users_password_hash_shape"), "users", type_="check")
+    op.drop_column("users", "password_changed_at")
+    op.drop_column("users", "must_change_password")
+    op.drop_column("users", "password_hash")
+    op.drop_column("rbac_state", "public_registration_enabled")
     connection.execute(
         sa.text(
             "UPDATE users SET authz_version = authz_version + 1 "
@@ -405,4 +347,3 @@ def downgrade() -> None:
     )
     op.execute("DROP FUNCTION IF EXISTS reject_account_security_audit_mutation()")
     op.drop_table("account_security_audit_events")
-    op.drop_table("user_password_credentials")

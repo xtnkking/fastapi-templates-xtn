@@ -51,7 +51,6 @@ def authorization_context(*permission_groups: set[str]) -> AuthorizationContext:
             key=f"role_{index}",
             management_tier=index + 1,
             permissions=frozenset(permissions),
-            delegable_permissions=frozenset(),
             is_system=False,
             is_protected=False,
             is_super_admin=False,
@@ -238,7 +237,7 @@ async def test_bearer_size_limit_runs_before_redis_lookup() -> None:
         del app.state.redis
 
     assert caught.value.status_code == 401
-    redis.get.assert_not_awaited()
+    redis.eval.assert_not_awaited()
 
 
 async def test_redis_outage_prevents_postgresql_authority_query() -> None:
@@ -252,7 +251,7 @@ async def test_redis_outage_prevents_postgresql_authority_query() -> None:
         settings=settings,
     )
     redis.reset_mock()
-    redis.get.side_effect = RedisConnectionError("registry unavailable")
+    redis.eval.side_effect = RedisConnectionError("registry unavailable")
     session = AsyncMock()
 
     async def override_session() -> AsyncIterator[AsyncSession]:
@@ -273,7 +272,7 @@ async def test_redis_outage_prevents_postgresql_authority_query() -> None:
 
     assert response.status_code == 503
     assert_error_response(response, BusinessCode.SERVICE_UNAVAILABLE)
-    redis.get.assert_awaited_once()
+    redis.eval.assert_awaited_once()
     session.scalar.assert_not_awaited()
 
 

@@ -404,36 +404,15 @@ request. There is no correctness dependency on scanning keys or deleting Token
 rows.
 
 Use the same lock order as other identity and authorization writers. The
-included asset exposes `POST /api/v1/auth/logout-all` and implements the core
-command as follows:
-
-```python
-class AccessTokenRevocationService:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
-        self._session_factory = session_factory
-
-    async def revoke_all_for_current_user(
-        self,
-        *,
-        context: AuthorizationContext,
-    ) -> None:
-        user_id = context.principal.user_id
-        async with self._session_factory() as session:
-            async with session.begin():
-                await lock_rbac_state(session)
-                user = (await lock_users(session, {user_id})).get(user_id)
-                if (
-                    user is None
-                    or not user.is_active
-                    or user.token_version != context.principal.token_version
-                ):
-                    raise InvalidCredential
-                user.token_version += 1
-```
-
-The route uses the full authorization-context dependency before calling this
-service. It never accepts a target user ID: an ordinary user may revoke only the
-current account's Tokens. Keep Redis I/O outside the PostgreSQL transaction.
+included asset does not expose `/api/v1/auth/logout-all` to ordinary users.
+`POST /api/v1/auth/logout` compares and deletes only the presented active JTI.
+Only a separately authorized administrator may force a strictly lower target
+out: first lock `rbac_state`, reload and compare complete actor/target authority,
+then increment the target's `users.token_version` and write the security audit
+in the same PostgreSQL transaction. Do not perform Redis I/O while holding
+those locks, and do not allow a caller to target itself, a peer, or a higher user.
+The per-user Redis index stores JTI registration times and a bound user version;
+stale-version entries do not count towards the project-chosen active-login cap.
 
 ## Redis Lifecycle
 
@@ -455,8 +434,8 @@ atomic Redis 5.0+ `SET NX EX` / `PEXPIREAT` registration before return,
 Redis-first request validation,
 PostgreSQL user-version comparison, and logout. It adds no individual PostgreSQL
 Token table or migration. It also validates the HS256 secret at startup, bounds
-input and output Tokens to 4096 bytes, and provides separate current-Token and
-account-wide logout endpoints. The immutable `v0.3.0` tag predates this
+  input and output Tokens to 4096 bytes, and provides current-Token logout plus
+  authorized lower-target administrative session revocation. The immutable `v0.3.0` tag predates this
 implementation and must not be described as containing it.
 
 Before adapting or shipping the current asset:
@@ -475,7 +454,7 @@ Before adapting or shipping the current asset:
    `sub`/type/`iat`/`exp`/user-version binding when adapting code.
 6. Run the full verification matrix from
    [JWT access-token security](jwt-session-security.md), including confirmed
-   logout, account-wide logout, weak-secret and Token-size rejection, in-flight
+   current logout, administrator revocation, weak-secret and Token-size rejection, in-flight
    request, failover, and signing-key compromise cases.
 
 Do not call the `Unreleased` worktree production-ready until its final Redis and

@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 from app.rbac.domain import (
-    NON_DELEGABLE_CONTROL_PERMISSIONS,
     SUPER_ADMIN_PERMISSION_KEYS,
     AuthoritySnapshot,
     PermissionKey,
@@ -25,37 +24,23 @@ def deny(reason_code: str) -> PolicyDecision:
     return PolicyDecision(allowed=False, reason_code=reason_code)
 
 
-def _target_is_within_delegation(
+def _target_is_within_actor_authority(
     actor: AuthoritySnapshot,
     target: AuthoritySnapshot,
 ) -> bool:
-    if actor.is_super_admin:
-        return (
-            target.permissions <= SUPER_ADMIN_PERMISSION_KEYS
-            and target.delegable_permissions <= SUPER_ADMIN_PERMISSION_KEYS
-        )
     return (
         target.permissions <= SUPER_ADMIN_PERMISSION_KEYS
-        and target.delegable_permissions <= SUPER_ADMIN_PERMISSION_KEYS
-        and target.permissions <= actor.delegable_permissions
-        and target.delegable_permissions <= actor.delegable_permissions
+        and target.permissions <= actor.permissions
     )
 
 
-def _role_is_within_delegation(
+def _role_is_within_actor_authority(
     actor: AuthoritySnapshot,
     role: RoleGrant,
 ) -> bool:
-    if actor.is_super_admin:
-        return (
-            role.permissions <= SUPER_ADMIN_PERMISSION_KEYS
-            and role.delegable_permissions <= SUPER_ADMIN_PERMISSION_KEYS
-        )
     return (
         role.permissions <= SUPER_ADMIN_PERMISSION_KEYS
-        and role.delegable_permissions <= SUPER_ADMIN_PERMISSION_KEYS
-        and role.permissions <= actor.delegable_permissions
-        and role.delegable_permissions <= actor.delegable_permissions
+        and role.permissions <= actor.permissions
     )
 
 
@@ -108,8 +93,8 @@ def _affected_subjects_are_manageable(
             return deny("affected_subject_not_manageable")
         if actor.management_tier <= subject.management_tier:
             return deny("affected_subject_not_strictly_lower")
-        if not _target_is_within_delegation(actor, subject):
-            return deny("delegation_ceiling_exceeded")
+        if not _target_is_within_actor_authority(actor, subject):
+            return deny("permission_ceiling_exceeded")
     return allow()
 
 
@@ -138,13 +123,13 @@ def decide_role_change(
 
     for role in changed_roles:
         if role.key == SystemRoleKey.SUPER_ADMIN.value or role.is_protected:
-            return deny("super_admin_requires_transfer")
+            return deny("super_admin_assignment_offline_only")
         if operation == "unbind" and role.key == SystemRoleKey.USER.value:
             return deny("default_user_role_required")
         if role.key == SystemRoleKey.ADMIN.value and not actor.is_super_admin:
             return deny("super_admin_required")
-        if not _role_is_within_delegation(actor, role):
-            return deny("delegation_ceiling_exceeded")
+        if not _role_is_within_actor_authority(actor, role):
+            return deny("permission_ceiling_exceeded")
         if actor.management_tier <= role.management_tier:
             return deny("role_not_strictly_lower")
 
@@ -152,10 +137,10 @@ def decide_role_change(
         return deny("target_not_strictly_lower")
     if actor.management_tier <= target_after.management_tier:
         return deny("target_not_strictly_lower")
-    if not _target_is_within_delegation(actor, target_before):
-        return deny("delegation_ceiling_exceeded")
-    if not _target_is_within_delegation(actor, target_after):
-        return deny("delegation_ceiling_exceeded")
+    if not _target_is_within_actor_authority(actor, target_before):
+        return deny("permission_ceiling_exceeded")
+    if not _target_is_within_actor_authority(actor, target_after):
+        return deny("permission_ceiling_exceeded")
     return allow()
 
 
@@ -197,8 +182,8 @@ def decide_role_administration(
         return deny("indirect_self_change_forbidden")
     if actor.management_tier <= changed_role.management_tier:
         return deny("role_not_strictly_lower")
-    if not _role_is_within_delegation(actor, changed_role):
-        return deny("delegation_ceiling_exceeded")
+    if not _role_is_within_actor_authority(actor, changed_role):
+        return deny("permission_ceiling_exceeded")
     return _affected_subjects_are_manageable(actor=actor, affected=affected)
 
 
@@ -225,43 +210,14 @@ def decide_role_permissions_change(
         return deny("indirect_self_change_forbidden")
     if actor.management_tier <= changed_role_before.management_tier:
         return deny("role_not_strictly_lower")
-    if not _role_is_within_delegation(actor, changed_role_before):
-        return deny("delegation_ceiling_exceeded")
+    if not _role_is_within_actor_authority(actor, changed_role_before):
+        return deny("permission_ceiling_exceeded")
     if not permission_keys_after <= SUPER_ADMIN_PERMISSION_KEYS:
         return deny("permission_outside_control_plane")
-    if not permission_keys_after <= actor.delegable_permissions:
-        return deny("delegation_ceiling_exceeded")
-    return _affected_subjects_are_manageable(
-        actor=actor,
-        affected=affected_after,
-    )
-
-
-def decide_role_delegation_change(
-    *,
-    actor: AuthoritySnapshot,
-    changed_role_before: RoleGrant,
-    delegable_permission_keys_after: frozenset[str],
-    actor_holds_role: bool,
-    affected_after: tuple[AuthoritySnapshot, ...],
-) -> PolicyDecision:
-    basic = _basic_actor_check(actor, PermissionKey.ROLES_DELEGATION_UPDATE)
-    if basic is not None:
-        return basic
-    if not actor.is_super_admin:
-        return deny("super_admin_required")
-    if changed_role_before.is_system:
-        return deny("system_role_immutable")
-    if actor_holds_role:
-        return deny("indirect_self_change_forbidden")
-    if actor.management_tier <= changed_role_before.management_tier:
-        return deny("role_not_strictly_lower")
-    if not delegable_permission_keys_after <= changed_role_before.permissions:
-        return deny("delegation_requires_role_permission")
-    if delegable_permission_keys_after & NON_DELEGABLE_CONTROL_PERMISSIONS:
-        return deny("protected_delegation_forbidden")
-    if not delegable_permission_keys_after <= actor.delegable_permissions:
-        return deny("delegation_ceiling_exceeded")
+    if PermissionKey.REGISTRATION_CONFIGURE.value in permission_keys_after:
+        return deny("system_only_permission")
+    if not permission_keys_after <= actor.permissions:
+        return deny("permission_ceiling_exceeded")
     return _affected_subjects_are_manageable(
         actor=actor,
         affected=affected_after,
@@ -284,8 +240,8 @@ def decide_user_status_change(
         return deny("protected_subject")
     if actor.management_tier <= target_before.management_tier:
         return deny("target_not_strictly_lower")
-    if not _target_is_within_delegation(actor, target_before):
-        return deny("delegation_ceiling_exceeded")
+    if not _target_is_within_actor_authority(actor, target_before):
+        return deny("permission_ceiling_exceeded")
     return allow()
 
 
@@ -304,25 +260,25 @@ def decide_user_password_reset(
         return deny("protected_subject")
     if actor.management_tier <= target_before.management_tier:
         return deny("target_not_strictly_lower")
-    if not _target_is_within_delegation(actor, target_before):
-        return deny("delegation_ceiling_exceeded")
+    if not _target_is_within_actor_authority(actor, target_before):
+        return deny("permission_ceiling_exceeded")
     return allow()
 
 
-def decide_super_admin_transfer(
+def decide_user_sessions_revoke(
     *,
     actor: AuthoritySnapshot,
     target_before: AuthoritySnapshot,
 ) -> PolicyDecision:
-    basic = _basic_actor_check(actor, PermissionKey.SUPER_ADMIN_TRANSFER)
+    basic = _basic_actor_check(actor, PermissionKey.USERS_SESSIONS_REVOKE)
     if basic is not None:
         return basic
-    if not actor.is_super_admin:
-        return deny("actor_is_not_super_admin")
-    if not target_before.user_is_active:
-        return deny("target_inactive")
     if actor.user_id == target_before.user_id:
-        return deny("self_transfer_forbidden")
+        return deny("self_management_forbidden")
     if target_before.is_protected:
-        return deny("protected_target")
+        return deny("protected_subject")
+    if actor.management_tier <= target_before.management_tier:
+        return deny("target_not_strictly_lower")
+    if not _target_is_within_actor_authority(actor, target_before):
+        return deny("permission_ceiling_exceeded")
     return allow()

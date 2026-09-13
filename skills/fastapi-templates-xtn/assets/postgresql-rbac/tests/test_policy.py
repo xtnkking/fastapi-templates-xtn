@@ -1,9 +1,7 @@
 import uuid
 
 from app.rbac.domain import (
-    ADMIN_DELEGABLE_PERMISSION_KEYS,
     ADMIN_PERMISSION_KEYS,
-    SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS,
     SUPER_ADMIN_PERMISSION_KEYS,
     AuthoritySnapshot,
     PermissionKey,
@@ -14,10 +12,9 @@ from app.rbac.policy import (
     decide_role_administration,
     decide_role_change,
     decide_role_create,
-    decide_role_delegation_change,
     decide_role_permissions_change,
-    decide_super_admin_transfer,
     decide_user_password_reset,
+    decide_user_sessions_revoke,
     decide_user_status_change,
     is_administrative_role_visible,
     is_administrative_user_visible,
@@ -30,7 +27,6 @@ def role(
     key: str,
     tier: int,
     permissions: frozenset[str] = frozenset(),
-    delegable: frozenset[str] = frozenset(),
     system: bool = False,
     protected: bool = False,
     super_admin: bool = False,
@@ -40,7 +36,6 @@ def role(
         key=key,
         management_tier=tier,
         permissions=permissions,
-        delegable_permissions=delegable,
         is_system=system,
         is_protected=protected,
         is_super_admin=super_admin,
@@ -67,7 +62,6 @@ SUPER_ADMIN = role(
     key=SystemRoleKey.SUPER_ADMIN.value,
     tier=1000,
     permissions=SUPER_ADMIN_PERMISSION_KEYS,
-    delegable=SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS,
     system=True,
     protected=True,
     super_admin=True,
@@ -77,7 +71,6 @@ ADMIN = role(
     key=SystemRoleKey.ADMIN.value,
     tier=500,
     permissions=ADMIN_PERMISSION_KEYS,
-    delegable=ADMIN_DELEGABLE_PERMISSION_KEYS,
     system=True,
 )
 USER = role(3, key=SystemRoleKey.USER.value, tier=0, system=True)
@@ -132,7 +125,7 @@ def test_administrative_role_visibility_is_strictly_downward_for_admin() -> None
         )
 
 
-def test_admin_can_bind_a_delegable_lower_role() -> None:
+def test_admin_can_bind_a_lower_role_whose_permissions_it_holds() -> None:
     actor = authority(10, ADMIN)
     target_before = authority(11, USER)
     target_after = target_before.with_role(VIEWER)
@@ -195,7 +188,7 @@ def test_super_admin_role_cannot_use_the_ordinary_bind_path() -> None:
     )
 
     assert not decision.allowed
-    assert decision.reason_code == "super_admin_requires_transfer"
+    assert decision.reason_code == "super_admin_assignment_offline_only"
 
 
 def test_mandatory_user_role_cannot_be_unbound() -> None:
@@ -322,28 +315,42 @@ def test_system_role_permissions_cannot_be_changed() -> None:
     assert decision.reason_code == "system_role_immutable"
 
 
-def test_only_super_admin_can_change_delegation() -> None:
+def test_cannot_grant_permission_actor_does_not_have() -> None:
     admin = authority(10, ADMIN)
-    super_admin = authority(11, SUPER_ADMIN)
-    desired = frozenset({PermissionKey.PROJECTS_READ.value})
-
-    denied = decide_role_delegation_change(
+    denied = decide_role_permissions_change(
+        operation="bind",
         actor=admin,
         changed_role_before=VIEWER,
-        delegable_permission_keys_after=desired,
+        permission_keys_after=frozenset({PermissionKey.ROLES_DELETE.value}),
         actor_holds_role=False,
         affected_after=(),
     )
-    allowed = decide_role_delegation_change(
-        actor=super_admin,
+
+    allowed = decide_role_permissions_change(
+        operation="bind",
+        actor=admin,
         changed_role_before=VIEWER,
-        delegable_permission_keys_after=desired,
+        permission_keys_after=frozenset({PermissionKey.PROJECTS_READ.value}),
         actor_holds_role=False,
         affected_after=(),
     )
 
     assert not denied.allowed
+    assert denied.reason_code == "permission_ceiling_exceeded"
     assert allowed.allowed
+
+
+def test_registration_switch_capability_is_reserved_for_the_system_role() -> None:
+    decision = decide_role_permissions_change(
+        operation="bind",
+        actor=authority(10, SUPER_ADMIN),
+        changed_role_before=VIEWER,
+        permission_keys_after=frozenset({PermissionKey.REGISTRATION_CONFIGURE.value}),
+        actor_holds_role=False,
+        affected_after=(),
+    )
+    assert not decision.allowed
+    assert decision.reason_code == "system_only_permission"
 
 
 def test_admin_can_change_status_only_for_a_strictly_lower_user() -> None:
@@ -389,19 +396,15 @@ def test_super_admin_cannot_reset_own_password_through_management_api() -> None:
     assert decision.reason_code == "self_management_forbidden"
 
 
-def test_super_admin_transfer_requires_current_super_admin_and_another_user() -> None:
-    super_admin = authority(10, SUPER_ADMIN)
-    target = authority(11, USER)
-
-    assert decide_super_admin_transfer(
-        actor=super_admin,
-        target_before=target,
+def test_admin_revokes_only_strictly_lower_users_sessions() -> None:
+    admin = authority(10, ADMIN)
+    assert decide_user_sessions_revoke(
+        actor=admin, target_before=authority(11, USER)
     ).allowed
-    assert not decide_super_admin_transfer(
-        actor=authority(12, ADMIN),
-        target_before=target,
+    assert not decide_user_sessions_revoke(actor=admin, target_before=admin).allowed
+    assert not decide_user_sessions_revoke(
+        actor=admin, target_before=authority(12, ADMIN)
     ).allowed
-    assert not decide_super_admin_transfer(
-        actor=super_admin,
-        target_before=super_admin,
+    assert not decide_user_sessions_revoke(
+        actor=authority(13, USER), target_before=authority(11, USER)
     ).allowed

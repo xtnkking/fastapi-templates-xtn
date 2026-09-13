@@ -1,6 +1,5 @@
 import uuid
 from types import SimpleNamespace
-from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -52,82 +51,59 @@ def request_for(
 
 
 @pytest.mark.parametrize(
-    ("method", "operation_id", "expected_policy"),
+    ("method", "operation_id", "limit"),
     [
-        ("GET", "list_roles", "management_read"),
-        ("GET", "get_permission", "management_read"),
-        ("GET", "get_my_access", "authenticated_read"),
-        ("POST", "create_role", "authorization_write"),
-        ("POST", "update_role", "authorization_write"),
-        ("POST", "disable_role", "authorization_write"),
-        ("POST", "enable_role", "authorization_write"),
-        ("POST", "delete_role", "authorization_write"),
-        ("POST", "bind_role_permissions", "authorization_write"),
-        ("POST", "unbind_role_permissions", "authorization_write"),
-        ("POST", "bind_role_delegable_permissions", "authorization_write"),
-        ("POST", "unbind_role_delegable_permissions", "authorization_write"),
-        ("POST", "bind_user_roles", "authorization_write"),
-        ("POST", "unbind_user_roles", "authorization_write"),
-        ("POST", "disable_user", "authorization_write"),
-        ("POST", "enable_user", "authorization_write"),
-        ("POST", "reset_user_password", "authorization_write"),
-        ("POST", "logout_all_access_tokens", "logout_all"),
-        ("POST", "transfer_super_admin", "super_admin_transfer"),
-        ("POST", "logout_current_access_token", None),
-        ("POST", "create_invoice", "ordinary_write"),
-        ("PUT", "replace_profile", "ordinary_write"),
+        ("GET", "list_roles", 300),
+        ("GET", "get_permission", 300),
+        ("GET", "get_my_access", 600),
+        ("POST", "create_role", 60),
+        ("POST", "reset_user_password", 60),
+        ("POST", "create_user", 60),
+        ("POST", "update_registration_policy", 60),
+        ("POST", "force_logout_user", 60),
+        ("POST", "logout_current_access_token", 120),
+        ("POST", "create_invoice", 120),
     ],
 )
-def test_actor_policy_classifies_route_operations(
+def test_each_operation_gets_its_own_key_and_class_quota(
     method: str,
     operation_id: str,
-    expected_policy: str | None,
+    limit: int,
 ) -> None:
     policy = actor_policy_for(
         request_for(method=method, operation_id=operation_id),
         enabled_settings(),
     )
+    assert policy.name == operation_id
+    assert policy.limit == limit
+    assert policy.window_seconds == 60
 
-    assert (None if policy is None else policy.name) == expected_policy
 
-
+@pytest.mark.asyncio
 async def test_allowed_actor_check_hides_user_id_in_redis_key() -> None:
     actor = principal()
     settings = enabled_settings()
     redis_mock = AsyncMock()
-    redis_mock.eval.return_value = [1, 0, 1, 299, 0, 1_000]
+    redis_mock.eval.return_value = [1, 60000]
     request = request_for(
         method="GET",
         operation_id="get_my_access",
         rate_limit_redis=redis_mock,
     )
-
     await enforce_principal_rate_limit(request, actor, settings)
-
-    redis_mock.eval.assert_awaited_once()
-    awaited = redis_mock.eval.await_args
-    assert awaited is not None
-    redis_key = awaited.args[2]
-    assert isinstance(redis_key, str)
-    assert redis_key.startswith(
-        f"rl:v1:{{{settings.rate_limit_namespace}}}:authenticated_read:actor:"
+    key = redis_mock.eval.await_args.args[2]
+    assert key.startswith(
+        f"rl:v2:{{{settings.rate_limit_namespace}}}:get_my_access:actor:"
     )
-    assert str(actor.user_id) not in redis_key
-    stored_result = cast(RateLimitResult, request.state.actor_rate_limit_result)
-    assert stored_result.allowed is True
-    assert stored_result.remaining == 299
+    assert str(actor.user_id) not in key
+    assert request.state.actor_rate_limit_result.remaining == 599
 
 
+@pytest.mark.asyncio
 async def test_denied_actor_check_raises_rate_limit_exceeded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    denied = RateLimitResult(
-        allowed=False,
-        limit=30,
-        remaining=0,
-        retry_after_ms=750,
-        reset_after_ms=60_000,
-    )
+    denied = RateLimitResult(False, 60, 0, 750, 750)
     check = AsyncMock(return_value=denied)
     monkeypatch.setattr(dependency_module, "check_bucket", check)
     request = request_for(
@@ -135,58 +111,44 @@ async def test_denied_actor_check_raises_rate_limit_exceeded(
         operation_id="bind_role_permissions",
         rate_limit_redis=object(),
     )
-
     with pytest.raises(RateLimitExceeded) as caught:
-        await enforce_principal_rate_limit(
-            request,
-            principal(),
-            enabled_settings(),
-        )
-
-    assert caught.value.policy_name == "authorization_write"
+        await enforce_principal_rate_limit(request, principal(), enabled_settings())
+    assert caught.value.policy_name == "bind_role_permissions"
     assert caught.value.result is denied
-    assert getattr(request.state, "actor_rate_limit_result", None) is None
-    check.assert_awaited_once()
 
 
+@pytest.mark.asyncio
 async def test_rate_limit_store_failure_fails_closed_as_503(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    check = AsyncMock(
-        side_effect=RateLimitUnavailable("private Redis endpoint is unavailable")
-    )
+    check = AsyncMock(side_effect=RateLimitUnavailable("private Redis endpoint"))
     monkeypatch.setattr(dependency_module, "check_bucket", check)
     request = request_for(
         method="POST",
-        operation_id="transfer_super_admin",
+        operation_id="bind_role_permissions",
         rate_limit_redis=object(),
     )
-
     with pytest.raises(RbacError) as caught:
-        await enforce_principal_rate_limit(
-            request,
-            principal(),
-            enabled_settings(),
-        )
-
+        await enforce_principal_rate_limit(request, principal(), enabled_settings())
     assert caught.value.status_code == 503
     assert caught.value.business_code == BusinessCode.SERVICE_UNAVAILABLE
-    assert caught.value.reason_code == "rate_limit_registry_unavailable"
     assert "private Redis endpoint" not in str(caught.value)
-    assert getattr(request.state, "actor_rate_limit_result", None) is None
-    check.assert_awaited_once()
 
 
-async def test_current_token_logout_skips_actor_bucket(
+@pytest.mark.asyncio
+async def test_missing_operation_id_fails_closed() -> None:
+    request = request_for(method="POST", operation_id="", rate_limit_redis=object())
+    with pytest.raises(RbacError) as caught:
+        await enforce_principal_rate_limit(request, principal(), enabled_settings())
+    assert caught.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_captcha_private_scenes_do_not_share_generic_write_quota(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     check = AsyncMock()
     monkeypatch.setattr(dependency_module, "check_bucket", check)
-    request = request_for(
-        method="POST",
-        operation_id="logout_current_access_token",
-    )
-
+    request = request_for(method="POST", operation_id="create_authenticated_captcha")
     await enforce_principal_rate_limit(request, principal(), enabled_settings())
-
     check.assert_not_awaited()

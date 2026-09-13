@@ -250,7 +250,7 @@ async def test_redis_failure_logs_once_before_503_conversion(
     redis = AsyncMock()
     error = RedisConnectionError("redis://user:password@example.test/0")
     if operation == "require":
-        redis.get.side_effect = error
+        redis.eval.side_effect = error
     else:
         redis.eval.side_effect = error
     log = Mock(return_value=True)

@@ -1,6 +1,6 @@
 ---
 name: fastapi-templates-xtn
-description: Build or harden single-project FastAPI services that require PostgreSQL RBAC, strict administrative hierarchy, complete Argon2id username/password authentication and recovery, minimal Redis-gated Access Tokens, centralized Redis Token Bucket rate limiting, password-login abuse defense, optional verification extensions, non-sequential identifiers, transactionally consistent authorization writes, structured operational logging, and separate durable RBAC, account-security, and business audits. Use for new or existing FastAPI RBAC work; do not select for FastAPI tasks with no authorization requirement.
+description: Build or harden single-project FastAPI services with PostgreSQL RBAC, strict administrative hierarchy, username/password authentication and five purpose-bound graphical CAPTCHA flows, Redis-gated Access Tokens, per-business Redis fixed-window limits, non-sequential identifiers, atomic authorization writes, structured logging, and durable audits. Use for FastAPI RBAC work, not services without authorization requirements.
 ---
 
 # FastAPI Templates XTN
@@ -19,19 +19,17 @@ baseline when the product has not already made conflicting choices.
 - Determine whether the task is greenfield or extends an existing service.
 - Inspect Python and dependency versions, settings, database and migrations,
   identity provider, package layout, transaction ownership, and tests.
-- For greenfield authentication, first ask whether `users` stores `email`,
-  `user_name`, or both. Separately settle requiredness, login input,
-  normalization, uniqueness, cross-namespace ambiguity, and post-deletion reuse
-  before modeling users. Preserve an existing project's identity contract unless
-  changing it is requested.
+- For a new service use `user_name` and password, not email login or recovery.
+  Trim username edges and require 3..32 ASCII letters, digits, or underscores;
+  reserve deleted names. Ask whether username comparison is case-sensitive.
+  Preserve an existing project's identity contract unless changing it is requested.
 - Before generating local-password routes, ask the authentication business
   questions from [Local password authentication](references/local-password-authentication.md)
-  once, in one batch. At minimum settle the login identifier, registration mode,
-  recovery proof/channel, simultaneous-device policy, and existing-account
-  enrollment. Show the recommended answers and accept `全部接受` / `Accept all`
-  or only the listed overrides. These are product decisions that change public
-  behavior; do not ask the user to choose Argon2 parameters, transaction lock
-  order, dummy-hash behavior, secret redaction, or whether old Tokens are revoked.
+  once, in one batch. Settle username case sensitivity, password composition,
+  simultaneous-login maximum, and existing-account enrollment. Show the
+  recommended answers and accept `全部接受` / `Accept all` or listed overrides.
+  Do not ask the user to choose Argon2 parameters, transaction lock order,
+  dummy-hash behavior, secret redaction, or whether old Tokens are revoked.
   If an existing product has already answered a question, preserve that answer
   and ask only the unresolved items.
   A general instruction to proceed, or `全部接受` sent before the complete batch
@@ -50,13 +48,13 @@ baseline when the product has not already made conflicting choices.
   `全部接受` / `Accept all`, or list only values to change. Do not write the
   affected code before an answer, and do not make the user choose the fixed
   atomic algorithm, private key shape, or `429`/`503` contract.
-- A username-and-password service is the complete authentication baseline; it
-  does not require CAPTCHA, email/SMS codes, or MFA. Keep every such enhancement
-  disabled unless the user explicitly selects it. Only then show that
-  enhancement's defaults and settle its identity field, purpose, provider, and
-  recovery contract. An email field alone is not consent to email verification.
-  Keep public registration absent from routing and OpenAPI by default as well;
-  enable it only when the user explicitly selects self-service registration.
+- New services require purpose-bound graphical CAPTCHA for login, registration,
+  administrator user creation/reset, and self password change. Each is valid for
+  five minutes and consumed on every submission, correct or not. Registration is
+  available by default, with a persisted, super-admin-only server-side switch.
+  Email/SMS codes, email recovery, and MFA are not bundled defaults; add only
+  when requested. Existing products keep their established contracts unless
+  the user requests a change.
 - Preserve the selected database, identity provider, package manager, module
   boundaries, and deployment model unless changing one is requested.
 - For a new production deployment, ask whether a professional operations team
@@ -89,9 +87,9 @@ Start with this file and choose the narrowest primary reference:
 | JWT payload, signing, Redis active-JTI validation, login, logout, or token revocation | [JWT access-token security](references/jwt-session-security.md) |
 | Concrete JWT/Redis code or adapting the included token adapter | [JWT access-token security](references/jwt-session-security.md), then [JWT implementation shapes](references/jwt-session-implementation.md) |
 | Username/password registration or login, password hashing, password change, administrator reset, temporary credentials, or account recovery | [Local password authentication](references/local-password-authentication.md) |
-| Redis Token Bucket policies, API admission, abuse quotas, trusted client IP, limiter keys, `429`, or limiter `503` | [Rate limiting and abuse-control quotas](references/rate-limiting.md) |
-| Login/registration `IdentityAbuseFlow` or a non-blocking login-failure risk signal | [Rate limiting and abuse-control quotas](references/rate-limiting.md), then [Verification and abuse defense](references/verification-and-abuse-defense.md) |
-| Explicitly requested CAPTCHA, email/SMS code, MFA, delivery, consumption, or verification abuse defense | [Rate limiting and abuse-control quotas](references/rate-limiting.md), then [Verification and abuse defense](references/verification-and-abuse-defense.md) |
+| Redis fixed-window policies, API admission, abuse quotas, trusted client IP, limiter keys, `429`, or limiter `503` | [Rate limiting and abuse-control quotas](references/rate-limiting.md) |
+| Login/registration `IdentityAbuseFlow` or required graphical CAPTCHA | [Rate limiting and abuse-control quotas](references/rate-limiting.md), then [Verification and abuse defense](references/verification-and-abuse-defense.md) |
+| Explicitly requested email/SMS or MFA extension | [Verification and abuse defense](references/verification-and-abuse-defense.md) |
 | Login-identifier selection, user lifecycle, soft deletion, restore, or RBAC bind/unbind storage | [Identity and soft-delete lifecycle](references/identity-soft-delete.md) |
 | Identifier policy, prefixed business IDs, UUID models, sequence avoidance, or public ID review | [Identifier policy](references/identifier-policy.md) |
 | Concrete sequential-ID migration or identifier backfill | [Identifier policy](references/identifier-policy.md), then [Migrations](references/migrations.md) |
@@ -188,7 +186,7 @@ Unless existing product decisions conflict, keep these defaults:
   10 live role bindings. Disabled roles still count, and tombstones do not count.
   The mandatory `user` assignment and any `super_admin` assignment both count.
   Enforce the final live total after authoritative locks in every service path,
-  including bootstrap and transfer, and again in PostgreSQL so direct SQL and
+  including bootstrap and offline handover, and again in PostgreSQL so direct SQL and
   concurrent writers cannot exceed the limit.
   In the bundled fresh baseline, this database guard belongs to `0001` and
   `0004_password_auth` is the sole migration head. The password revision is the
@@ -233,13 +231,12 @@ Unless existing product decisions conflict, keep these defaults:
   as an unknown ID; apply this to every role ID in a bind or unbind request too.
   Only a visible target that fails delegation, affected-user, system-role, or
   another operation-specific policy returns `403001`.
-- Keep role assignment, role definition, permission replacement, delegation, and
-  super-admin transfer as separate capabilities. `can_delegate` is an explicit
-  subset; new roles start with no permissions; only `super_admin` changes
-  delegation; delegation control and transfer cannot be delegated. The seeded
-  `admin` may manage strictly lower users and custom roles within its explicit
-  delegation ceiling, but cannot delete roles, change system roles, change
-  delegation policy, or transfer `super_admin`.
+- Keep role assignment, role definition, and permission replacement as separate
+  capabilities. New roles start with no permissions. A grantor may grant only
+  permissions it currently holds and must still pass strict hierarchy and
+  complete affected-user anti-escalation checks. Do not add an independent
+  `can_delegate` subsystem. The seeded `admin` manages strictly lower users
+  and custom roles, but cannot delete or change system roles.
 - Initialize the first `super_admin` only after the intended person has an
   existing account with the mandatory `user` role. Tell the user to personally
   run the supplied PostgreSQL `sql/bootstrap_super_admin.sql` from a trusted
@@ -248,11 +245,15 @@ Unless existing product decisions conflict, keep these defaults:
   bootstrap route, or execute an ad hoc bare assignment. The script owns one guarded transaction,
   refuses a different existing holder, increments authorization versions only
   when the binding changes, and audits the result.
+- Exactly one `super_admin` holds office. Never expose an online transfer route,
+  permission, or quota. A later change is performed only by an authorized
+  operator using the supplied guarded PostgreSQL handover script: one transaction
+  checks both user IDs, swaps the assignment, updates versions, and audits it.
 - Privileged bodies use `extra="forbid"` and never accept super-admin status,
   protection, delegation, or caller-selected current authorization-version fields. A
   required `expected_version` is only an optimistic concurrency condition and
   never chooses the stored version. Protect system roles, the final
-  `super_admin`, bootstrap, and break-glass paths explicitly.
+  `super_admin` and bootstrap paths explicitly.
 - Keep the authorization mechanism private to the implementation. Public paths,
   OpenAPI tags, operation IDs, application titles, and errors must not use
   `rbac`; use resource routes under `/api/v1` and the numeric business-code
@@ -296,8 +297,12 @@ Unless existing product decisions conflict, keep these defaults:
   rolled back, and never record an uncertain commit as failed. Follow
   [Business audit module](references/business-audit-module.md).
 - Keep rate-limit policy in one typed configuration module. The bundled asset
-  uses continuously refilled Redis Token Buckets, HMAC-private subjects, Redis
-  server time, and one all-or-nothing Lua decision for every applicable bucket.
+  uses a Redis Lua fixed window: one per-business subject counter with atomic
+  `INCR`, first-use `EXPIRE`, and remaining TTL; never share a quota across all
+  users, all IPs, or unrelated operations. Anonymous authentication uses trusted
+  IP; authenticated operations use the server-authenticated user ID. Redis keys
+  use HMAC-private subjects. Expose editable defaults in settings,
+  `.env.example`, and the asset README.
   A valid denial is `429001` with `Retry-After`; missing, failed, or malformed
   Redis authority is fail-closed `503001` without `Retry-After`. Keep limiter
   Redis outside PostgreSQL transactions and prefer a separately operated
@@ -311,50 +316,44 @@ Unless existing product decisions conflict, keep these defaults:
   `APP_ENVIRONMENT` is explicitly `dev`, `development`, `local`, `test`, or
   `testing`; it intentionally bypasses API admission and `IdentityAbuseFlow` and
   is only for isolated local work or tests.
-- Keep the password-login baseline usable without any verification channel. Its
-  only hard login-admission limits are trusted IP, trusted IP plus normalized
-  account, and global traffic. The expiring per-account failure count is only a
-  private risk signal: it never denies an attempt by itself, never creates an
-  account-wide `429`, and never prevents correct credentials from being checked.
-  Do not add an account-only lock or waiting period that an attacker can trigger
-  for another person.
-- CAPTCHA, email/SMS codes, and MFA are optional product features and are off by
-  default. Add one only after the user explicitly requests it. When none is
-  selected, do not require an email or phone field, verification HMAC key,
-  purpose/channel allowlist, provider, or verification route.
-  The complete asset keeps its tested email/SMS modules dormant; for a
-  username/password-only product, leave `VERIFICATION_ENABLED=false` and do not
-  ask the user whether to delete those files. Their presence is not a product
-  requirement and must not expose any verification API.
+- Require graphical CAPTCHA in five fixed scenes, with an atomic one-use Redis
+  consume on every answer (including wrong purpose/owner). Refresh invalidates
+  the old image only when new issuance succeeds. For an authenticated scene bind
+  the challenge to the current canonical user ID, not a supplied target ID.
+  Each scene has its own issuance quota (10 per five minutes by default).
+  Optional email/SMS and MFA integrations require an explicit project request;
+  the baseline needs no delivery provider or email/phone field.
 - Route product-owned login and registration callbacks through the bundled
   `IdentityAbuseFlow`; do not reconstruct its ordering in a route. Credential
   callbacks return a verified value or `None`, perform real-or-dummy credential
   work, and never issue a Token. Token issuance starts only after the flow has
   admitted the attempt, recorded success, and returned. A registration callback
   runs only after every registration bucket admits it.
-- Keep public self-registration absent from both routing and OpenAPI unless the
-  product owner explicitly selected it. The bundled asset defaults
-  `PUBLIC_REGISTRATION_ENABLED=false`; enabling the setting registers exactly
-  the registration router and does not permit caller-selected roles.
+- Keep public registration available by default but check the persisted
+  registration switch again in the creating transaction. A public read returns
+  only `registration_enabled`; only the current `super_admin` may change it.
+  Closing it leaves administrator user creation and existing login unaffected.
+  Neither path permits caller-selected initial roles: both bind only `user`.
 - Use the bundled local-password baseline when the project selects passwords:
-  Argon2id runs outside the event loop; live hashes use credential episodes whose
-  retired rows are soft-deleted with the hash cleared; unknown users perform the
+  Argon2id runs outside the event loop; the nullable hash and password state live
+  on `users`, and user soft deletion clears the hash; unknown users perform the
   same class of Argon2 verification against a process dummy hash; and public
   login failures do not reveal whether the user, credential, or account status
   caused rejection. Self-service password change verifies the current password.
   Administrator recovery creates a temporary credential only for a strictly
-  lower, visible, non-protected user and requires the administrator's current
-  password again. Successful change, reset, or reset completion rotates the
-  credential, increments `users.token_version`, and writes its account-security
+  lower, visible, non-protected user and requires graphical CAPTCHA, not the
+  administrator's current password again. Self password change requires both
+  the old password and CAPTCHA. Successful change, reset, or reset completion replaces the
+  user hash, increments `users.token_version`, and writes its account-security
   audit in one PostgreSQL transaction. It never issues a replacement Token.
-  Username alone is not ownership proof: without an explicitly verified recovery
-  channel, use human verification plus administrator reset, and reserve sole
+  There is no anonymous forgot-password endpoint: use human verification plus
+  administrator reset, and reserve sole
   `super_admin` recovery for the offline operator command. Follow
   [Local password authentication](references/local-password-authentication.md).
 - By default, an Access Token contains exactly `sub`, `jti`, `iat`, `exp`, and
   `token_type`. `sub` is the only user identity claim and is the canonical string
   of the project's immutable `users.id`, whether a validated prefixed ID or
-  UUIDv4; the selected email/`user_name` login policy never changes that subject.
+  UUIDv4; the selected `user_name` login policy never changes that subject.
   Add `iss` and `aud` only as a pair after the plain-language explanation and the
   user's explicit consent. When enabled, issue and validate both exactly; when
   disabled, reject either as an unexpected claim. Silence is not agreement, and
@@ -371,8 +370,13 @@ Unless existing product decisions conflict, keep these defaults:
   repetitive, low-diversity, whitespace-containing, or control-character HS256
   secrets at startup; never fall back to an insecure default. Bound both encoded
   and presented Access Tokens to 4096 bytes. Current-Token logout removes only
-  the exact Redis JTI; account-wide logout increments `users.token_version` in
-  PostgreSQL and does not scan Redis. Follow
+  the exact Redis JTI. Ordinary users may invoke only current-Token logout;
+  an administrator with the exact capability may revoke a strictly lower user's
+  sessions by incrementing `users.token_version` in PostgreSQL after a locked
+  authority recheck and account-security audit. Ask the project owner to set a
+  maximum active-session count; Redis atomically evicts the oldest session only
+  on successful issuance. The index tracks logins and times, not physical
+  devices. Follow
   [JWT access-token security](references/jwt-session-security.md).
 - Use HTTP `401`/business `401001` for invalid, expired, missing, or revoked
   credentials; `403`/`403001` for a visible but forbidden action;
@@ -392,7 +396,7 @@ the mutation, all version increments, and the allowed audit together. On denial,
 roll back the whole attempt before writing a denied audit in
 a separate transaction. A route check, old JWT, cached context, or earlier ORM
 read cannot replace this decision. Follow [atomic authorization consistency](references/atomic-consistency.md).
-Role update, lifecycle, deletion, and permission or delegation bind/unbind
+Role update, lifecycle, deletion, and permission bind/unbind
 commands require `expected_version` in the JSON body and compare it with
 `roles.version` only after locks, authoritative reload, and the complete policy
 and hierarchy decision. An unauthorized caller receives `403001` without learning
@@ -409,13 +413,14 @@ limit for direct and concurrent writers.
 Redis is outside the PostgreSQL authorization transaction. Never perform Redis
 I/O while holding authorization locks, and never recreate a missing active-JTI
 entry from a JWT. Account-wide Token revocation increments
-`users.token_version`; each request compares it with the version bound in Redis
+  `users.token_version`; each request compares it with the version bound in Redis
 while loading the existing user and RBAC state. Do not add PostgreSQL Token rows
 or a Token-cleanup database queue.
 
 ## Implementation Workflow
 
-1. For greenfield work, settle the complete login-identifier contract. Then
+1. For greenfield work, settle username case sensitivity, password composition,
+   simultaneous-session count, and any legacy-account enrollment. Then
    define actors, protected resources, stable capabilities, row-level rules,
    administrative effects, expected failure responses, and which operations
    require RBAC or business audit. For business audit, define the action catalog,
@@ -442,16 +447,14 @@ apply only the matrix for the delivered surfaces. At minimum:
 - verify the fixed system roles, 10-live-role limit, strict read/write hierarchy,
   soft-delete lifecycle, transaction/audit coupling, response contract, Redis
   active-JTI gate, and both Token-revocation scopes end to end;
-- for every delivered limiter surface, run real-Redis tests for Token Bucket
-  refill, batch all-or-nothing behavior, longest retry, TTL, Redis time, key
-  privacy, and concurrent admission; prove the login failure signal is atomic,
-  expires, clears on success, and never blocks correct credentials by itself;
-  also prove `429001`/`503001` headers and fail-closed limiter behavior;
-- only when the user selected a verification feature, test its challenge
-  replacement, single-use consumption, provider boundary, and failure contract;
+- for every delivered limiter surface, run real-Redis fixed-window tests for
+  atomic first-use TTL, expiry, key privacy, concurrent admission, no global
+  quota, trusted-IP failure, and `429001`/`503001` headers;
+- test the five graphical-CAPTCHA scenes, owner/purpose isolation, atomic
+  replacement and single-use consumption (including wrong answers and races);
 - prove `IdentityAbuseFlow` never calls credential or registration callbacks
-  after admission denial/unavailability, records exactly one login failure for
-  `None`, clears failure state before returning success, and keeps the product
+  after admission denial/unavailability, maps a `None` credential to one generic
+  failure, and keeps the product
   Token issuer outside the credential callback and after the successful return;
 - test proxy detection and the country catalog only when the user requested
   those optional features, using their own reference checklists; and

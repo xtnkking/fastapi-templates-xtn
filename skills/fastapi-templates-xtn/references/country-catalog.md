@@ -193,11 +193,11 @@ Use the four-field response envelope and page data from
 need Redis because this catalog is small and database-backed; normal HTTP caching
 may be added only when the existing product already owns its invalidation policy.
 
-Country lookup is non-sensitive. If a registration or checkout page needs it
-before login, these two read routes may be anonymous and rate-limited; otherwise
-reuse the product's authenticated-read policy. This is a product exposure choice,
-not an RBAC implementation detail. Never return deleted rows through the ordinary
-public contract.
+Country lookup is optional business data and both read routes require login by
+default, even for a registration page. A page that must show countries before
+login needs an explicitly approved exception designed by that product, not an
+implicit anonymous API from this Skill. Apply the per-operation authenticated
+read policy and never return deleted rows.
 
 Do not expose create, update, enable, disable, delete, restore, or import routes by
 default. Prefer reviewed migrations or an operator command. If runtime management

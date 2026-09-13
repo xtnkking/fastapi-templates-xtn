@@ -23,17 +23,6 @@ MAX_OPTIONAL_JWT_SCOPE_CHARACTERS = 256
 _RATE_LIMIT_DISABLE_ENVIRONMENTS = frozenset(
     {"dev", "development", "local", "test", "testing"}
 )
-_VERIFICATION_PURPOSE_NAMES = frozenset(
-    {
-        "registration",
-        "login",
-        "password_reset",
-        "email_change",
-        "phone_change",
-        "sensitive_action",
-    }
-)
-_VERIFICATION_CHANNEL_NAMES = frozenset({"email", "sms"})
 
 
 def _is_repeated_pattern(value: str) -> bool:
@@ -63,9 +52,7 @@ class Settings(BaseSettings):
     log_include_exception_details: bool = False
     jwt_secret: SecretStr
     rate_limit_hmac_key: SecretStr
-    public_registration_enabled: bool = False
-    verification_enabled: bool = False
-    verification_code_hmac_key: SecretStr | None = None
+    max_active_sessions_per_user: int = Field(ge=1)
     jwt_issuer: str | None = None
     jwt_audience: str | None = None
     jwt_access_token_ttl_seconds: int = Field(default=3600, ge=1)
@@ -75,45 +62,14 @@ class Settings(BaseSettings):
         default="fastapi_rbac",
         pattern=r"^[a-z0-9][a-z0-9_-]{0,47}$",
     )
-    rate_limit_global_per_minute: int = Field(default=6000, ge=1)
-    rate_limit_global_burst: int = Field(default=1000, ge=1)
-    rate_limit_api_ip_per_minute: int = Field(default=1200, ge=1)
-    rate_limit_api_ip_burst: int = Field(default=200, ge=1)
-    rate_limit_anonymous_read_per_minute: int = Field(default=120, ge=1)
-    rate_limit_authenticated_read_per_minute: int = Field(default=300, ge=1)
-    rate_limit_management_read_per_minute: int = Field(default=120, ge=1)
-    rate_limit_ordinary_write_per_minute: int = Field(default=60, ge=1)
-    rate_limit_authorization_write_per_minute: int = Field(default=30, ge=1)
-    rate_limit_super_admin_transfer_per_hour: int = Field(default=3, ge=1)
-    rate_limit_logout_all_per_ten_minutes: int = Field(default=5, ge=1)
+    rate_limit_captcha_create_per_five_minutes: int = Field(default=10, ge=1)
+    rate_limit_authenticated_read_per_minute: int = Field(default=600, ge=1)
+    rate_limit_management_read_per_minute: int = Field(default=300, ge=1)
+    rate_limit_ordinary_write_per_minute: int = Field(default=120, ge=1)
+    rate_limit_authorization_write_per_minute: int = Field(default=60, ge=1)
     rate_limit_login_ip_per_five_minutes: int = Field(default=20, ge=1)
-    rate_limit_login_pair_per_fifteen_minutes: int = Field(default=5, ge=1)
-    rate_limit_login_global_per_five_minutes: int = Field(default=1000, ge=1)
-    rate_limit_login_global_burst: int = Field(default=200, ge=1)
     rate_limit_registration_ip_per_hour: int = Field(default=5, ge=1)
-    rate_limit_registration_target_per_hour: int = Field(default=3, ge=1)
-    rate_limit_registration_pair_per_hour: int = Field(default=3, ge=1)
-    rate_limit_registration_global_per_hour: int = Field(default=500, ge=1)
-    rate_limit_registration_global_burst: int = Field(default=100, ge=1)
-    rate_limit_verification_target_average_per_day: int = Field(default=5, ge=1)
-    rate_limit_verification_ip_per_hour: int = Field(default=20, ge=1)
-    rate_limit_verification_pair_per_hour: int = Field(default=5, ge=1)
-    rate_limit_verification_global_per_minute: int = Field(default=300, ge=1)
-    rate_limit_verification_global_burst: int = Field(default=50, ge=1)
-    rate_limit_verification_channel_per_minute: int = Field(default=200, ge=1)
-    rate_limit_verification_channel_burst: int = Field(default=40, ge=1)
-    rate_limit_verification_submit_ip_per_hour: int = Field(default=120, ge=1)
-    rate_limit_verification_submit_target_per_hour: int = Field(default=20, ge=1)
-    rate_limit_verification_submit_pair_per_hour: int = Field(default=10, ge=1)
-    rate_limit_verification_submit_global_per_minute: int = Field(default=3000, ge=1)
-    rate_limit_verification_submit_global_burst: int = Field(default=500, ge=1)
-    verification_send_cooldown_seconds: int = Field(default=60, ge=1)
-    verification_code_ttl_seconds: int = Field(default=300, ge=30, le=1800)
-    verification_code_length: int = Field(default=6, ge=4, le=10)
-    verification_max_attempts: int = Field(default=5, ge=1, le=10)
-    verification_enabled_purposes: str = ""
-    verification_enabled_channels: str = ""
-    login_failure_state_retention_seconds: int = Field(default=86400, ge=900)
+    rate_limit_temporary_complete_ip_per_five_minutes: int = Field(default=20, ge=1)
     redis_connect_timeout_seconds: float = Field(default=0.5, gt=0)
     redis_socket_timeout_seconds: float = Field(default=0.5, gt=0)
     sql_echo: bool = False
@@ -156,20 +112,6 @@ class Settings(BaseSettings):
         return cls._validate_security_secret(
             value,
             field_name=info.field_name or "security_secret",
-        )
-
-    @field_validator("verification_code_hmac_key")
-    @classmethod
-    def require_strong_optional_verification_secret(
-        cls,
-        value: SecretStr | None,
-        info: ValidationInfo,
-    ) -> SecretStr | None:
-        if value is None:
-            return None
-        return cls._validate_security_secret(
-            value,
-            field_name=info.field_name or "verification_code_hmac_key",
         )
 
     @staticmethod
@@ -231,26 +173,6 @@ class Settings(BaseSettings):
             )
         return normalized
 
-    @field_validator("verification_enabled_purposes")
-    @classmethod
-    def normalize_verification_purposes(cls, value: str) -> str:
-        return cls._normalize_csv_allowlist(
-            value,
-            allowed=_VERIFICATION_PURPOSE_NAMES,
-            field_name="verification_enabled_purposes",
-            allow_empty=True,
-        )
-
-    @field_validator("verification_enabled_channels")
-    @classmethod
-    def normalize_verification_channels(cls, value: str) -> str:
-        return cls._normalize_csv_allowlist(
-            value,
-            allowed=_VERIFICATION_CHANNEL_NAMES,
-            field_name="verification_enabled_channels",
-            allow_empty=True,
-        )
-
     @model_validator(mode="after")
     def require_complete_optional_token_scope(self) -> Self:
         if (
@@ -265,85 +187,17 @@ class Settings(BaseSettings):
             raise ValueError(
                 "jwt_issuer and jwt_audience must be configured together or omitted"
             )
-        enabled_purposes = frozenset(
-            item for item in self.verification_enabled_purposes.split(",") if item
-        )
-        enabled_channels = frozenset(
-            item for item in self.verification_enabled_channels.split(",") if item
-        )
-        verification_configured = bool(
-            self.verification_code_hmac_key or enabled_purposes or enabled_channels
-        )
-        if self.verification_enabled:
-            if self.verification_code_hmac_key is None:
-                raise ValueError(
-                    "verification_code_hmac_key is required when verification is "
-                    "enabled"
-                )
-            if not enabled_purposes:
-                raise ValueError(
-                    "verification_enabled_purposes is required when verification is "
-                    "enabled"
-                )
-            if not enabled_channels:
-                raise ValueError(
-                    "verification_enabled_channels is required when verification is "
-                    "enabled"
-                )
-            if (
-                "email_change" in enabled_purposes and "email" not in enabled_channels
-            ) or ("phone_change" in enabled_purposes and "sms" not in enabled_channels):
-                raise ValueError(
-                    "enabled verification purposes require their matching channel"
-                )
-        elif verification_configured:
-            raise ValueError(
-                "verification-specific settings must be omitted when verification is "
-                "disabled"
-            )
-
-        security_secrets = [
-            self.jwt_secret.get_secret_value(),
-            self.rate_limit_hmac_key.get_secret_value(),
-        ]
-        if self.verification_code_hmac_key is not None:
-            security_secrets.append(self.verification_code_hmac_key.get_secret_value())
-        if len(set(security_secrets)) != len(security_secrets):
-            raise ValueError(
-                "JWT, rate-limit, and enabled verification secrets must use "
-                "different values"
-            )
+        if (
+            self.jwt_secret.get_secret_value()
+            == self.rate_limit_hmac_key.get_secret_value()
+        ):
+            raise ValueError("JWT and rate-limit secrets must use different values")
         return self
 
     @property
     def effective_rate_limit_redis_url(self) -> str:
         """Allow an explicit small-project fallback while preferring isolation."""
         return self.rate_limit_redis_url or self.redis_url
-
-    @staticmethod
-    def _normalize_csv_allowlist(
-        value: str,
-        *,
-        allowed: frozenset[str],
-        field_name: str,
-        allow_empty: bool = False,
-    ) -> str:
-        if not isinstance(value, str):
-            raise ValueError(f"{field_name} must be a comma-separated string")
-        if allow_empty and not value.strip():
-            return ""
-        items = tuple(item.strip() for item in value.split(","))
-        if (
-            not items
-            or any(not item for item in items)
-            or len(set(items)) != len(items)
-            or any(item not in allowed for item in items)
-        ):
-            expected = ", ".join(sorted(allowed))
-            raise ValueError(
-                f"{field_name} must contain unique values selected from: {expected}"
-            )
-        return ",".join(items)
 
 
 @lru_cache

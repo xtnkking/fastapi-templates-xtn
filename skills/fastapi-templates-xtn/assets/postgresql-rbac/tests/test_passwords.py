@@ -12,7 +12,6 @@ from app.passwords import (
     ARGON2_SALT_LENGTH,
     ARGON2_TIME_COST,
     DUMMY_PASSWORD_HASH,
-    LOCAL_PASSWORD_DENYLIST_VERSION,
     PasswordHashError,
     PasswordManager,
     PasswordPolicyError,
@@ -33,10 +32,13 @@ def test_new_password_policy_preserves_the_exact_password() -> None:
     ("password", "reason_code"),
     [
         ("", "password_empty"),
-        ("short-password", "password_too_short"),
-        ("x" * 129, "password_too_long"),
-        ("passwordpassword", "password_common_or_weak"),
+        ("short", "password_too_short"),
+        ("x" * 61, "password_too_long"),
         ("a" * 15, "password_common_or_weak"),
+        ("12345678", "password_common_or_weak"),
+        ("87654321", "password_common_or_weak"),
+        ("abcdefgh", "password_common_or_weak"),
+        ("hgfedcba", "password_common_or_weak"),
         ("valid-password\nvalue", "password_contains_control_character"),
         ("valid-password-\ud800", "password_invalid_unicode"),
     ],
@@ -54,19 +56,25 @@ def test_new_password_policy_rejects_invalid_values(
 @pytest.mark.parametrize(
     ("identity", "password"),
     [
-        ("Alice", "safe-prefix-ALICE-suffix"),
-        ("alice@example.test", "long-enough-alice-secret"),
-        ("Ａlice", "long-enough-alice-secret"),
+        ("AliceName", "ALICENAME"),
+        ("MyAccount", "myaccount"),
     ],
 )
-def test_new_password_cannot_contain_login_identity(
+def test_new_password_cannot_equal_login_identity(
     identity: str,
     password: str,
 ) -> None:
     with pytest.raises(PasswordPolicyError) as caught:
         validate_new_password(password, identity_values=(identity,))
 
-    assert caught.value.reason_code == "password_contains_identity"
+    assert caught.value.reason_code == "password_same_as_user_name"
+
+
+def test_username_substring_and_nonsequential_weak_string_are_allowed() -> None:
+    assert validate_new_password(
+        "safe-AliceName-suffix", identity_values=("AliceName",)
+    )
+    assert validate_new_password("passwordpassword") == "passwordpassword"
 
 
 def test_login_validation_does_not_apply_the_new_password_policy() -> None:
@@ -78,10 +86,6 @@ def test_login_validation_rejects_invalid_unicode_as_a_policy_error() -> None:
         validate_login_password_input("candidate-\udfff")
 
     assert caught.value.reason_code == "password_invalid_unicode"
-
-
-def test_local_password_denylist_has_a_traceable_baseline_version() -> None:
-    assert LOCAL_PASSWORD_DENYLIST_VERSION == "xtn-minimal-v1"
 
 
 async def test_hash_and_verify_use_the_fixed_argon2id_profile() -> None:

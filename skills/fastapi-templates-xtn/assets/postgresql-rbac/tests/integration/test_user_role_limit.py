@@ -2,6 +2,7 @@ import asyncio
 import uuid
 from datetime import UTC, datetime
 
+import asyncpg  # type: ignore[import-untyped]
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -18,6 +19,7 @@ from app.rbac.models import RbacAuditEvent, RbacState, Role, User, UserRole
 from app.rbac.queries import load_authority_snapshot, lock_rbac_state
 from app.rbac.service import RbacService
 from tests.integration.conftest import World
+from tests.integration.test_bootstrap import _run_handover
 
 pytestmark = pytest.mark.postgresql
 
@@ -259,7 +261,7 @@ async def test_concurrent_bind_cannot_create_an_eleventh_live_role(
     assert await _live_role_count(target_id) == MAX_ROLES_PER_USER
 
 
-async def test_super_admin_transfer_rejects_a_full_target_atomically(
+async def test_operator_handover_rejects_a_full_target_atomically(
     world: World,
 ) -> None:
     target_id = world.users["blank"].id
@@ -272,7 +274,6 @@ async def test_super_admin_transfer_rejects_a_full_target_atomically(
         role_ids=role_ids,
         actor_user_id=world.users["super_admin"].id,
     )
-    context = await _super_admin_context(world, "role-limit-transfer")
 
     async with SessionFactory() as session:
         actor_before = await session.get(User, world.users["super_admin"].id)
@@ -284,14 +285,8 @@ async def test_super_admin_transfer_rejects_a_full_target_atomically(
         target_version_before = target_before.authz_version
         epoch_before = state_before.epoch
 
-    with pytest.raises(RbacError) as caught:
-        await RbacService(SessionFactory).transfer_super_admin(
-            context=context,
-            target_user_id=target_id,
-        )
-
-    assert caught.value.status_code == 409
-    assert caught.value.reason_code == "user_role_limit_exceeded"
+    with pytest.raises(asyncpg.PostgresError, match="target already has 10 live roles"):
+        await _run_handover(world.users["super_admin"].id, target_id)
     async with SessionFactory() as session:
         super_admin_role_id = await session.scalar(
             select(Role.id).where(Role.key == SystemRoleKey.SUPER_ADMIN.value)
@@ -312,8 +307,7 @@ async def test_super_admin_transfer_rejects_a_full_target_atomically(
         state_after = await session.get(RbacState, "global")
         denied_audit = await session.scalar(
             select(RbacAuditEvent).where(
-                RbacAuditEvent.request_id == "role-limit-transfer",
-                RbacAuditEvent.decision == "denied",
+                RbacAuditEvent.action == "super_admin.transfer",
             )
         )
         assert actor_after is not None and target_after is not None
@@ -322,5 +316,4 @@ async def test_super_admin_transfer_rejects_a_full_target_atomically(
     assert actor_after.authz_version == actor_version_before
     assert target_after.authz_version == target_version_before
     assert state_after.epoch == epoch_before
-    assert denied_audit is not None
-    assert denied_audit.reason_code == "user_role_limit_exceeded"
+    assert denied_audit is None

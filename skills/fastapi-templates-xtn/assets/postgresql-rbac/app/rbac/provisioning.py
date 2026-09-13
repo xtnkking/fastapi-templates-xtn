@@ -1,4 +1,4 @@
-import unicodedata
+import re
 import uuid
 
 from sqlalchemy import or_, select
@@ -10,6 +10,23 @@ from app.rbac.errors import conflict, not_found
 from app.rbac.models import RbacAuditEvent, Role, User, UserRole
 from app.rbac.queries import lock_rbac_state, lock_roles, lock_users
 
+RESERVED_USER_NAMES = frozenset(
+    {
+        "admin",
+        "administrator",
+        "root",
+        "superadmin",
+        "super_admin",
+        "sysadmin",
+        "system",
+        "support",
+        "user",
+        "test",
+        "guest",
+        "ceshi",
+    }
+)
+
 
 def _new_user_id(value: uuid.UUID | None) -> uuid.UUID:
     user_id = value or uuid.uuid4()
@@ -18,34 +35,21 @@ def _new_user_id(value: uuid.UUID | None) -> uuid.UUID:
     return user_id
 
 
-def normalize_identity(value: str | None, *, field: str) -> str | None:
-    if value is None:
-        return None
-    normalized = unicodedata.normalize("NFKC", value).strip().casefold()
-    if not normalized:
-        raise ValueError(f"{field} must not be empty when provided")
-    character_limit = 320 if field == "email" else 160
-    try:
-        encoded_length = len(normalized.encode("utf-8"))
-    except UnicodeEncodeError:
-        raise ValueError(f"{field} must contain valid Unicode") from None
-    if len(normalized) > character_limit or encoded_length > 512:
-        raise ValueError(f"{field} is too long")
-    if any(unicodedata.category(character) == "Cc" for character in normalized):
-        raise ValueError(f"{field} must not contain control characters")
+def normalize_identity(value: str | None, *, field: str) -> str:
+    if field != "user_name" or value is None:
+        raise ValueError("user_name is required")
+    normalized = value.strip()
+    if re.fullmatch(r"[A-Za-z0-9_]{3,32}", normalized) is None:
+        raise ValueError("user_name must be 3-32 ASCII letters, digits, or underscores")
+    if normalized.casefold() in RESERVED_USER_NAMES:
+        raise ValueError("reserved_user_name")
     return normalized
-
-
-def _normalize_identity(value: str | None, *, field: str) -> str | None:
-    """Backward-compatible private alias for existing adopters and tests."""
-    return normalize_identity(value, field=field)
 
 
 async def create_user_with_default_role(
     session: AsyncSession,
     *,
-    email: str | None = None,
-    user_name: str | None = None,
+    user_name: str,
     user_id: uuid.UUID | None = None,
     assigned_by_user_id: uuid.UUID | None = None,
     request_id: str = "user-provision",
@@ -54,15 +58,12 @@ async def create_user_with_default_role(
 
     The caller owns the transaction and must invoke this before taking any
     authorization locks of its own. Registration, invitations, and identity
-    synchronization should all reuse this boundary. This bundled fallback
-    accepts email, user name, or both without assigning any caller-selected role.
+    synchronization should all reuse this boundary. The identity is a user name
+    and the operation never accepts a caller-selected role.
     """
     if not session.in_transaction():
         raise RuntimeError("caller must start the provisioning transaction")
-    normalized_email = normalize_identity(email, field="email")
     normalized_user_name = normalize_identity(user_name, field="user_name")
-    if normalized_email is None and normalized_user_name is None:
-        raise ValueError("email or user_name must be provided")
     new_user_id = _new_user_id(user_id)
 
     state = await lock_rbac_state(session)
@@ -71,18 +72,13 @@ async def create_user_with_default_role(
         if assigned_by_user_id not in actors:
             raise not_found("provisioning_actor_not_found")
 
-    identity_matches = [User.id == new_user_id]
-    if normalized_email is not None:
-        identity_matches.append(User.email == normalized_email)
-    if normalized_user_name is not None:
-        identity_matches.append(User.user_name == normalized_user_name)
+    identity_matches = [User.id == new_user_id, User.user_name == normalized_user_name]
     existing = await session.scalar(select(User.id).where(or_(*identity_matches)))
     if existing is not None:
         raise conflict("user_identity_exists")
 
     user = User(
         id=new_user_id,
-        email=normalized_email,
         user_name=normalized_user_name,
         is_active=True,
         is_protected=False,

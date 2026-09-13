@@ -28,7 +28,6 @@ class _RoleAccumulator:
     is_protected: bool
     is_super_admin: bool
     permissions: set[str] = field(default_factory=set)
-    delegable_permissions: set[str] = field(default_factory=set)
 
     def freeze(self) -> RoleGrant:
         return RoleGrant(
@@ -36,7 +35,6 @@ class _RoleAccumulator:
             key=self.key,
             management_tier=self.management_tier,
             permissions=frozenset(self.permissions),
-            delegable_permissions=frozenset(self.delegable_permissions),
             is_system=self.is_system,
             is_protected=self.is_protected,
             is_super_admin=self.is_super_admin,
@@ -80,7 +78,6 @@ async def load_role_grants_for_roles(
             select(
                 RolePermission.role_id,
                 Permission.key.label("permission_key"),
-                RolePermission.can_delegate,
             )
             .join(
                 Permission,
@@ -97,8 +94,6 @@ async def load_role_grants_for_roles(
     for row in rows:
         accumulator = accumulators[row.role_id]
         accumulator.permissions.add(row.permission_key)
-        if row.can_delegate:
-            accumulator.delegable_permissions.add(row.permission_key)
 
     return {
         role_id: accumulator.freeze() for role_id, accumulator in accumulators.items()
@@ -132,7 +127,6 @@ async def load_user_access_views(
             Role.is_protected,
             Role.is_super_admin,
             Permission.key.label("permission_key"),
-            RolePermission.can_delegate,
         )
         .select_from(UserRole)
         .join(
@@ -181,8 +175,6 @@ async def load_user_access_views(
         )
         if row.permission_key is not None:
             accumulator.permissions.add(row.permission_key)
-            if row.can_delegate:
-                accumulator.delegable_permissions.add(row.permission_key)
 
     return {
         user_id: UserAccessView(
@@ -344,7 +336,6 @@ async def load_role_grants_for_user(
             Role.is_protected,
             Role.is_super_admin,
             Permission.key.label("permission_key"),
-            RolePermission.can_delegate,
         )
         .select_from(UserRole)
         .join(
@@ -382,8 +373,6 @@ async def load_role_grants_for_user(
         )
         if row.permission_key is not None:
             accumulator.permissions.add(row.permission_key)
-            if row.can_delegate:
-                accumulator.delegable_permissions.add(row.permission_key)
 
     return tuple(item.freeze() for item in accumulators.values())
 
@@ -412,7 +401,6 @@ async def load_authority_snapshots_for_users(
             Role.is_protected,
             Role.is_super_admin,
             Permission.key.label("permission_key"),
-            RolePermission.can_delegate,
         )
         .select_from(UserRole)
         .join(
@@ -455,8 +443,6 @@ async def load_authority_snapshots_for_users(
         )
         if row.permission_key is not None:
             accumulator.permissions.add(row.permission_key)
-            if row.can_delegate:
-                accumulator.delegable_permissions.add(row.permission_key)
 
     return {
         user_id: AuthoritySnapshot.build(
@@ -545,7 +531,7 @@ async def load_role_grant(
 
     rows = (
         await session.execute(
-            select(Permission.key, RolePermission.can_delegate)
+            select(Permission.key)
             .select_from(RolePermission)
             .join(
                 Permission,
@@ -565,7 +551,6 @@ async def load_role_grant(
         key=role.key,
         management_tier=role.management_tier,
         permissions=permissions,
-        delegable_permissions=frozenset(row.key for row in rows if row.can_delegate),
         is_system=role.is_system,
         is_protected=role.is_protected,
         is_super_admin=role.is_super_admin,

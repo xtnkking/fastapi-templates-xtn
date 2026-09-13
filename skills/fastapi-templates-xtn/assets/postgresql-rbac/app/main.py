@@ -39,21 +39,12 @@ from app.observability import (
 )
 from app.rate_limit import RateLimitUnavailable
 from app.rate_limit_dependencies import RateLimitExceeded
-from app.rate_limit_middleware import (
-    ApiRateLimitMiddleware,
-    semantic_rate_limit_headers,
-)
+from app.rate_limit_middleware import semantic_rate_limit_headers
 from app.rbac.api import router as access_router
 from app.rbac.errors import RbacError
 from app.redis_client import create_rate_limit_redis_client, create_redis_client
 from app.security_policies import SecurityPolicies
 from app.settings import get_settings
-from app.verification import (
-    VerificationExpiredError,
-    VerificationInvalidError,
-    VerificationUnavailableError,
-)
-from app.verification_flow import VerificationDeliveryUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -200,9 +191,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="PostgreSQL Access Control Example", lifespan=lifespan)
-for authentication_router in authentication_routers(
-    public_registration_enabled=get_settings().public_registration_enabled
-):
+for authentication_router in authentication_routers():
     app.include_router(authentication_router)
 app.include_router(access_router)
 
@@ -393,9 +382,6 @@ class RequestObservabilityMiddleware:
             release_request_context()
 
 
-# Starlette makes the last registered middleware outermost. Observability must
-# create the request ID and record the terminal 429/503 emitted by admission.
-app.add_middleware(ApiRateLimitMiddleware)
 app.add_middleware(RequestObservabilityMiddleware)
 
 
@@ -509,75 +495,6 @@ async def handle_rate_limit_unavailable(
             request,
             code=BusinessCode.SERVICE_UNAVAILABLE,
             message="服务暂时不可用",
-        ),
-        headers=request_id_headers(request, {"Cache-Control": "no-store"}),
-    )
-
-
-@app.exception_handler(VerificationUnavailableError)
-async def handle_verification_unavailable(
-    request: Request,
-    exc: VerificationUnavailableError,
-) -> JSONResponse:
-    safe_log(
-        logger,
-        logging.ERROR,
-        "dependency.verification.unavailable",
-        extra={
-            "dependency": "rate_limit_redis",
-            "dependency_operation": "verification_challenge",
-            **safe_exception_metadata(exc),
-        },
-    )
-    return JSONResponse(
-        status_code=503,
-        content=error_content(
-            request,
-            code=BusinessCode.SERVICE_UNAVAILABLE,
-            message="服务暂时不可用",
-        ),
-        headers=request_id_headers(request, {"Cache-Control": "no-store"}),
-    )
-
-
-@app.exception_handler(VerificationDeliveryUnavailableError)
-async def handle_verification_delivery_unavailable(
-    request: Request,
-    exc: VerificationDeliveryUnavailableError,
-) -> JSONResponse:
-    safe_log(
-        logger,
-        logging.ERROR,
-        "dependency.verification_delivery.unavailable",
-        extra={
-            "dependency": "verification_delivery",
-            "dependency_operation": "send_verification_code",
-            **safe_exception_metadata(exc),
-        },
-    )
-    return JSONResponse(
-        status_code=503,
-        content=error_content(
-            request,
-            code=BusinessCode.SERVICE_UNAVAILABLE,
-            message="服务暂时不可用",
-        ),
-        headers=request_id_headers(request, {"Cache-Control": "no-store"}),
-    )
-
-
-@app.exception_handler(VerificationInvalidError)
-@app.exception_handler(VerificationExpiredError)
-async def handle_verification_invalid(
-    request: Request,
-    exc: VerificationInvalidError | VerificationExpiredError,
-) -> JSONResponse:
-    return JSONResponse(
-        status_code=400,
-        content=error_content(
-            request,
-            code=BusinessCode.BAD_REQUEST,
-            message="验证码无效或已失效",
         ),
         headers=request_id_headers(request, {"Cache-Control": "no-store"}),
     )

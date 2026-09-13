@@ -22,7 +22,6 @@ PERMISSIONS: tuple[tuple[str, str], ...] = (
     ("roles:create", "Create an unprotected role"),
     ("roles:assign", "Assign an existing manageable role"),
     ("roles:revoke", "Revoke an existing manageable role"),
-    ("roles:delegation:update", "Replace delegable grants on a manageable role"),
     ("users:read", "Read users and their current authority"),
     ("users:status:update", "Activate or suspend a manageable user"),
     ("projects:read", "Read projects"),
@@ -44,8 +43,7 @@ def upgrade() -> None:
             server_default=sa.text("gen_random_uuid()"),
             nullable=False,
         ),
-        sa.Column("email", sa.String(length=320), nullable=True),
-        sa.Column("user_name", sa.String(length=160), nullable=True),
+        sa.Column("user_name", sa.String(length=32), nullable=False),
         sa.Column(
             "is_active", sa.Boolean(), server_default=sa.text("true"), nullable=False
         ),
@@ -76,14 +74,8 @@ def upgrade() -> None:
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("deleted_by_user_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.CheckConstraint(
-            "email IS NOT NULL OR user_name IS NOT NULL", name="identity_present"
-        ),
-        sa.CheckConstraint(
-            "email IS NULL OR btrim(email) <> ''", name="email_not_blank"
-        ),
-        sa.CheckConstraint(
-            "user_name IS NULL OR btrim(user_name) <> ''",
-            name="user_name_not_blank",
+            "user_name ~ '^[A-Za-z0-9_]{3,32}$'",
+            name="user_name_format",
         ),
         sa.CheckConstraint("token_version >= 0", name="token_version_nonnegative"),
         sa.CheckConstraint("authz_version >= 0", name="authz_version_nonnegative"),
@@ -101,7 +93,6 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_users"),
-        sa.UniqueConstraint("email", name="uq_users_email"),
         sa.UniqueConstraint("user_name", name="uq_users_user_name"),
     )
     op.create_index("ix_users_deleted_at", "users", ["deleted_at"])
@@ -220,12 +211,6 @@ def upgrade() -> None:
         ),
         sa.Column("role_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("permission_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column(
-            "can_delegate",
-            sa.Boolean(),
-            server_default=sa.text("false"),
-            nullable=False,
-        ),
         sa.Column("assigned_by_user_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column(
             "assigned_at",

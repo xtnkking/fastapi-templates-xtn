@@ -8,33 +8,26 @@ references as well only when implementing those corresponding boundaries.
 
 ## Choose The Identity And Login Contract Before Greenfield Work
 
-For a greenfield service, do not infer identity storage from the example asset.
-First ask whether `users` stores `email`, `user_name`, or both. Then separately
-settle what a user may submit to log in before finalizing the user model,
-registration, login, indexes, or migrations. Record all of these choices
-together:
+For a greenfield service, the baseline stores only `user_name` and logs in with
+that name and a password. Require trimming, 3..32 ASCII letters/digits/underscores,
+global uniqueness even after soft deletion, and the fixed reserved-name list in
+[Local password authentication](local-password-authentication.md). Ask only
+whether ASCII letter casing is significant, then apply that one canonical rule
+consistently to creation, lookup, and uniqueness. Preserve an existing project's
+different contract unless a change is requested. The identity decisions are:
 
 | Decision | Required answer |
 | --- | --- |
-| Stored identifiers | `email`, `user_name`, or both |
-| Creation requirement | Which selected fields are mandatory for each registration, invitation, provisioning, and import path |
-| Login input | Email only, user name only, either identifier, or another explicitly approved combination |
-| Normalization | Exact trim, Unicode, case, and email canonicalization performed before lookup and storage |
-| Uniqueness | Which canonical values are database-unique and whether uniqueness is global or only among live users |
-| Namespace overlap | Whether one login input can match both an email and a user name, and how ambiguity is made impossible |
-| Reuse after soft deletion | Permanently reserve a deleted user's identifiers, or permit reuse under an explicit recycling policy |
+| Stored identifiers | Required `user_name` only in the new-project baseline |
+| Creation requirement | Same trimmed and validated username in registration, admin creation, and trusted provisioning |
+| Login input | Username only |
+| Normalization | Trim and ASCII validation are mandatory; ask whether case is significant |
+| Uniqueness | Canonical username is globally unique in PostgreSQL |
+| Reuse after soft deletion | Permanently reserve a deleted user's username |
 
-Do not treat "both" as a complete answer. It still leaves requiredness, login
-input, normalization, uniqueness, namespace overlap, and reuse undecided. Offer a coherent
-recommendation based on the product, but let the user choose this externally
-visible identity contract.
-
-When one `login` input accepts either identifier, two independent unique
-constraints are insufficient: one user's canonical `user_name` can equal another
-user's canonical email. Default to rejecting this cross-column ambiguity. Use a
-single canonical login-key table/constraint shared by both identifier kinds,
-enforce disjoint syntaxes, or require separate explicit email and user-name
-inputs so lookup kind is never guessed. Test collision in both directions.
+Email/phone login and recovery are not part of this template. A project that
+needs them owns a separate explicit adaptation, including ambiguity and
+verification policy; do not add it to this new-project baseline.
 
 For an existing project, inspect and preserve its selected identity fields,
 normalization, login behavior, uniqueness, and reuse policy unless the user asks
@@ -51,31 +44,26 @@ Keep presentation identifiers separate from authorization identity:
 - Normalize once through a named, tested function before both write and lookup.
   Preserve a separate presentation value only when the product needs it; never
   use presentation spelling as a unique-key comparison.
-- Enforce the chosen canonical uniqueness in PostgreSQL. An application-only
-  pre-check races. If deleted values remain reserved, use an unconditional
-  unique constraint. If reuse is explicitly allowed, use an active-row partial
-  unique index and define the waiting period, verification, collision response,
-  and account-recovery implications.
-- Email verification, password verification, external identity-provider
-  linking, and account recovery remain authentication concerns. A unique email
-  column alone does not prove control of the address.
+- Enforce canonical uniqueness in PostgreSQL with an unconditional unique
+  constraint so a deleted username stays reserved. An application-only
+  pre-check races. Changing this in an existing project requires an explicit
+  identity and data decision.
+- Password verification is authentication, not proof of a presentation name.
+  Email login, identity-provider linking, and self-service recovery are outside
+  this baseline and require a separately requested design.
 
-The bundled asset is a neutral integration fallback: `email` and `user_name`
-are nullable, at least one is required, and both selected values are globally
-unique so deleted identities keep them reserved. Its trusted provisioner applies
-the same named normalization to supplied values before validation and storage;
-callers must not use a different pre-normalization rule. Before exposing a real
-signup or login endpoint, replace that fallback only as needed to match the
-user's recorded requiredness, normalization, uniqueness, and login policy.
-Credential verification remains product-owned.
+The bundled asset uses a required, globally unique `user_name`. Its trusted
+provisioner, public registration, admin creation, and login lookup use the same
+named normalization. A deleted name stays reserved, and SQL uniqueness is the
+final authority against concurrent creates.
 
 ## JWT Subject And First-Super-Admin Bootstrap
 
 The login choice never changes the Token subject. JWT `sub` is always the exact
 canonical string of immutable `users.id`; it is never an email, `user_name`, or
 other mutable/reusable lookup value. Login resolves the submitted identifier to
-one live user first, then issues the Token for that user's ID. Renaming an email
-or user name does not change `sub` and does not create a new identity.
+one live user first, then issues the Token for that user's ID. Renaming a
+username does not change `sub` and does not create a new identity.
 
 The operator-run first-super-admin script accepts only the intended existing
 user's canonical ID, for example:
@@ -140,7 +128,7 @@ user_roles:
   deleted_at, deleted_by_user_id
 
 role_permissions:
-  id, role_id, permission_id, can_delegate, assigned_at,
+  id, role_id, permission_id, assigned_at,
   assigned_by_user_id, deleted_at, deleted_by_user_id
 ```
 
@@ -150,11 +138,10 @@ one live episode and records the trusted actor. A later authorized bind creates
 a new episode with a new ID; it never clears or reuses the old tombstone. An
 unbind with no live episode is an idempotent `changed=false` result.
 
-Permission unbind tombstones the live `role_permissions` episode. When
-delegation remains the `can_delegate` attribute of a live permission grant,
-delegation unbind changes that flag to `false` and records the change in the
-append-only RBAC audit; if delegation is modeled as its own relation, tombstone
-that relation instead. Neither design physically deletes authorization history.
+Permission unbind tombstones the live `role_permissions` episode. The actor
+may grant only a permission it currently possesses and still must pass the
+strict hierarchy and affected-user checks. There is no independent delegation
+flag or runtime delegation-management route.
 
 Every effective-authority and affected-user query must require live users,
 roles, `user_roles`, and `role_permissions`. A tombstone never grants authority,
@@ -171,7 +158,7 @@ live child hidden only by a parent filter.
 
 A restore acts only on the requested entity. It never clears relation
 tombstones or silently revives prior ownership, role assignments, permission
-grants, delegation, subscriptions, memberships, shares, or other access edges.
+  grants, subscriptions, memberships, shares, or other access edges.
 Recreate each wanted relation through its normal authorized bind command so a
 new live episode, versions, and audit evidence are produced.
 
@@ -252,12 +239,10 @@ or another account-wide authentication change also increments
 
 For the selected surface, prove:
 
-- the greenfield identity decision records all seven dimensions above, while an
+- the greenfield identity decision records all six dimensions above, while an
   existing project's identity contract remains unchanged by default;
 - create and login use the same normalization and database uniqueness rule;
-- an email cannot be confused with another user's `user_name` through a shared
-  login input;
-- both allowed and forbidden post-deletion identifier reuse behave as selected;
+- a deleted username remains reserved, including under concurrent registration;
 - JWT `sub` and first-super-admin bootstrap use immutable `users.id` only;
 - every runtime delete/unbind leaves a tombstone and every rebind creates a new
   live episode with a new ID;

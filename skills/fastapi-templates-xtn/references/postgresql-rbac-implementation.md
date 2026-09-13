@@ -14,16 +14,16 @@ The example deliberately resolves choices that commonly produce security gaps:
 | --- | --- |
 | Database | PostgreSQL with asyncpg |
 | Persistence | SQLAlchemy 2 typed mappings and Alembic |
-| Identity | Greenfield contract chosen explicitly; bundled fallback stores nullable `email`/`user_name`, requires at least one, and reserves both globally |
+| Identity | Greenfield baseline requires `user_name` (trimmed, 3..32 ASCII), permanently reserved after deletion; ask only about case sensitivity |
 | Authorization | One application-wide RBAC control plane |
 | System roles | Immutable `super_admin`, `admin`, and `user` roles |
 | Grants | Positive, exact `resource:action` permission keys |
 | Multiple roles | Permission union and maximum management tier; no more than 10 live bindings per user |
-| Delegation | `role_permissions.can_delegate`; never inferred from possession |
+| Granting | Actor must hold any permission it grants, while strict hierarchy and anti-self-elevation still apply; no independent delegation field/API |
 | Hierarchy | Larger tier is higher; ordinary management requires strict `>` |
 | Protected authority | The `super_admin` identity is outside ordinary administration |
 | Production token target | Exact default `sub`/`jti`/`iat`/`exp`/`token_type`; consented optional `iss`/`aud` pair; no profile or authorization data |
-| Current `Unreleased` token adapter | Default five-claim or explicitly approved seven-claim profile, configurable 3600-second default, and required Redis active-JTI validation; no individual PostgreSQL Token table |
+| Working-tree token adapter | Default five-claim or explicitly approved seven-claim profile, configurable 3600-second default, required Redis active-JTI validation and project-chosen simultaneous-login maximum; no individual PostgreSQL Token table |
 | Permission cache | None; versions remain available for a later versioned cache |
 | Authorization writes | Global guard first, canonical row locks, reload, policy decision, mutation, version bump, audit |
 | Public API | Neutral `/api/v1` GET/POST routes with the standard numeric-code envelope |
@@ -69,7 +69,7 @@ weaken authentication, authorization, idempotency, or concurrency requirements.
   immutable principals, the permission catalog, system-role specifications, and
   complete multi-role authority snapshots.
 - [`app/rbac/queries.py`](../assets/postgresql-rbac/app/rbac/queries.py) resolves
-  effective and delegable permissions and implements canonical locking queries.
+  effective permissions and implements canonical locking queries.
 - [`app/rbac/policy.py`](../assets/postgresql-rbac/app/rbac/policy.py) contains
   strict manageability, system-role, and anti-self-elevation decisions.
 - [`app/rbac/dependencies.py`](../assets/postgresql-rbac/app/rbac/dependencies.py)
@@ -78,13 +78,15 @@ weaken authentication, authorization, idempotency, or concurrency requirements.
   centralizes exact permission checks.
 - [`app/rbac/service.py`](../assets/postgresql-rbac/app/rbac/service.py) implements
   user status changes, custom-role lifecycle, role creation and update,
-  permission and role bind/unbind commands, delegation, super-admin transfer,
+  permission and role bind/unbind commands, administrator session revocation,
   rollback-before-denial-audit, and the common locking protocol.
 - [`app/rbac/api.py`](../assets/postgresql-rbac/app/rbac/api.py) exposes neutral
   application-level resource endpoints with privileged fields excluded from
   bodies.
 - [`sql/bootstrap_super_admin.sql`](../assets/postgresql-rbac/sql/bootstrap_super_admin.sql)
   is the operator-run, one-time first-super-admin transaction.
+- [`sql/handover_super_admin.sql`](../assets/postgresql-rbac/sql/handover_super_admin.sql)
+  is the guarded offline handover for the sole existing holder.
 - [`alembic/versions/0001_single_project_rbac.py`](../assets/postgresql-rbac/alembic/versions/0001_single_project_rbac.py)
   creates the core RBAC schema and the database-enforced 10-live-role limit;
   [`0002_system_roles.py`](../assets/postgresql-rbac/alembic/versions/0002_system_roles.py)
@@ -92,18 +94,18 @@ weaken authentication, authorization, idempotency, or concurrency requirements.
   [`0003_business_audit.py`](../assets/postgresql-rbac/alembic/versions/0003_business_audit.py)
   adds generic append-only business audit.
 - [`0004_password_auth.py`](../assets/postgresql-rbac/alembic/versions/0004_password_auth.py)
-  adds password credential episodes, account-security audit, and the dedicated
+  adds password fields on `users`, account-security audit, and the dedicated
   administrator-reset capability.
 - [`tests`](../assets/postgresql-rbac/tests/) exercises PostgreSQL behavior,
   including the public contract, system roles, multi-role union, strict
-  hierarchy, delegation ceilings, direct and indirect self-elevation,
+  hierarchy, bounded permission grants, direct and indirect self-elevation,
   assignment constraints, the 10-live-role limit, optimistic concurrency, and
   locking.
 
 Every Python name referenced by an example is implemented in the asset. The app
 now includes the concrete username/password baseline described in
 [Local password authentication](local-password-authentication.md), while other
-identity providers remain product-specific. For greenfield use, settle the full login identifier contract in
+identity providers remain product-specific. For greenfield use, settle username case sensitivity in
 [Identity and soft-delete lifecycle](identity-soft-delete.md) before adapting
 those integration points.
 
@@ -122,11 +124,11 @@ The baseline fixes these seven tables:
 
 | Table | Purpose and enforced boundary |
 | --- | --- |
-| `users` | Selected login identifiers, lifecycle, protection, token revocation version, and authorization version |
-| `rbac_state` | Fixed `scope='global'` row used as the first RBAC lock and shared epoch; not Token state |
+| `users` | Required username, lifecycle, protection, token revocation version, and authorization version |
+| `rbac_state` | Fixed `scope='global'` row used as the first RBAC lock, shared epoch, and persisted registration toggle; not Token state |
 | `permissions` | Stable capability catalog |
 | `roles` | Immutable key, display data, tier, active/soft-delete lifecycle, version, and internal `is_system`/`is_protected`/`is_super_admin` flags |
-| `role_permissions` | Non-sequentially identified grant episodes, explicit `can_delegate`, bind metadata, and soft-delete metadata; one live row per role/permission pair |
+| `role_permissions` | Non-sequentially identified grant episodes, bind metadata, and soft-delete metadata; one live row per role/permission pair |
 | `user_roles` | Non-sequentially identified assignment episodes with bind and soft-delete metadata; one live row per user/role pair and at most 10 live rows per user |
 | `rbac_audit_events` | Allowed and denied RBAC administration decisions with trusted source, payload version, safe before/after summaries, request ID, and append-only enforcement |
 
@@ -167,20 +169,13 @@ uppercase suffixes sized by lifetime volume. Follow
 [identifier policy](identifier-policy.md) before creating tables. The fixed
 `rbac_state.scope` string is a control key, not a business or API ID.
 
-For the bundled fallback identity profile, `email` and `user_name` are nullable,
-at least one must be present, and each supplied canonical value remains globally
-unique even after user soft deletion. The product's trusted provisioner owns
-canonicalization, and login credential verification remains an adaptation point.
-A greenfield implementation must still ask which identity fields `users` stores,
-which are required on each creation path, what inputs login accepts, how values
-normalize, and whether reuse is allowed; it may then remove an unused column or
-replace these fallback constraints. An
-existing application's choice remains unchanged unless migration is requested.
-A shared untyped login input must also reject email/`user_name` cross-column
-ambiguity through a canonical login-key constraint, disjoint syntax, or explicit
-typed inputs; separate per-column unique constraints do not prevent it.
-Regardless of that choice, immutable `users.id` is the JWT subject and bootstrap
-target.
+The bundled new-project profile has a required, globally unique `user_name`:
+trim edges and require 3..32 ASCII letters/digits/underscores. Deleted names
+remain reserved. Ask whether case matters and apply the chosen normalization
+at every write and login lookup. Email login and verified email recovery are
+outside this baseline. Preserve an existing application's different identity
+contract unless changing it is requested. Immutable `users.id`, never the
+username, is the JWT subject and operator-bootstrap target.
 
 `user_roles` and `role_permissions` use non-sequential surrogate IDs so each bind
 is a distinct episode. They carry trusted bind and soft-delete actor/timestamp
@@ -225,11 +220,11 @@ Migrations seed exactly these roles before users are provisioned:
 
 | Key | Tier | Flags | Runtime policy |
 | --- | ---: | --- | --- |
-| `super_admin` | `1000` | system, protected, active (`is_super_admin` internal compatibility flag) | Exactly one current holder after bootstrap; full explicit allowlist; only the transfer command changes its holder |
-| `admin` | `500` | system, active | Manages only strictly lower users and custom roles within its delegation ceiling |
+| `super_admin` | `1000` | system, protected, active (`is_super_admin` internal flag) | Exactly one holder after bootstrap; only guarded offline SQL changes its holder |
+| `admin` | `500` | system, active | Manages only strictly lower users and custom roles using currently held capabilities |
 | `user` | `0` | system, active | Mandatory base role for every normal user; no authorization-management permissions |
 
-All three keys, tiers, system flags, lifecycle state, and permission/delegation
+All three keys, tiers, system flags, lifecycle state, and permission
 composition are immutable through public APIs, including for `super_admin`.
 They cannot be disabled, soft-deleted, or recreated. Change a system-role seed
 only through a reviewed, versioned migration with the same impact analysis,
@@ -253,13 +248,11 @@ users:read
 users:status:update
 ```
 
-It does not include `roles:delete`, `roles:delegation:update`, or
-`super_admin:transfer`. Possessing a capability is only the first gate: an
+It does not include `roles:delete` or an online super-admin transfer capability.
+Possessing a capability is only the first gate: an
 `admin` still cannot manage itself, another `admin`, a `super_admin`, any system
-role, a custom role at tier `500` or above, or permissions outside its explicit
-delegable set. The included `USER_PERMISSION_KEYS` is empty. The example
-`projects:read` and `projects:update` permissions in `ADMIN_PERMISSION_KEYS`
-form its whole delegable set. Replace those example business permissions through
+role, a custom role at tier `500` or above, or permissions it does not hold.
+The included `USER_PERMISSION_KEYS` is empty. Replace example business permissions through
 a reviewed migration when adapting the asset; they do not broaden the fixed
 control-plane set above.
 
@@ -286,15 +279,13 @@ roles:assign
 roles:revoke
 roles:permissions:bind
 roles:permissions:unbind
-roles:delegation:update
 users:read
 users:status:update
-super_admin:transfer
 ```
 
-`role_permissions.can_delegate=true` means a permission is both usable and
-delegable, so delegable permissions are structurally a subset of effective
-permissions. Delegation control and super-admin transfer are never delegable.
+There is no `can_delegate` field or independent delegation-management API.
+Granting requires possession of the permission, the exact operation capability,
+strict lower-target hierarchy, and complete affected-user anti-escalation checks.
 New custom roles start with no permissions; `POST /api/v1/roles` cannot smuggle
 grants into creation. This preserves the independent bind and unbind
 capabilities.
@@ -308,7 +299,7 @@ The model maintains these change counters:
 - `users.token_version` invalidates access tokens after identity-wide changes;
 - `users.authz_version` changes after that user's role or status changes;
 - `roles.version` changes after role information, lifecycle, grants, or
-  delegation changes;
+  grant changes;
 - `rbac_state.epoch` changes after shared authorization changes.
 
 The baseline reads PostgreSQL for each request, so these are not weak cache
@@ -342,7 +333,7 @@ authentication returns `401001`; a visible but forbidden action returns generic
 `403001`; a missing or deliberately concealed target returns generic `404001`.
 A normal `user` has none of the required capabilities. An `admin` can call only
 its seeded capability subset, and every write still applies hierarchy,
-delegation, protected-target, affected-user, and anti-self-elevation checks after
+granted-permission, protected-target, affected-user, and anti-self-elevation checks after
 locking.
 
 An early route capability gate is only a fast rejection. Record its denied
@@ -368,7 +359,7 @@ Use explicit operation IDs such as `list_permissions`, `get_role`, and
 
 Role creation accepts only `key`, `name`, `description`, and
 `management_tier`. The key is permanently immutable; permission IDs, system
-flags, active/deleted state, the internal `is_super_admin` flag, and delegation are
+flags, active/deleted state, and the internal `is_super_admin` flag are
 forbidden fields.
 New roles start active and permissionless. Ordinary role information update
 accepts `expected_version` plus at least one of `name` or `description`; tier
@@ -386,12 +377,12 @@ proposed result, and commit the whole request or none of it. Binding an existing
 live relation or unbinding a pair with no live relation is an idempotent success
 with `changed=false`. A successful unbind tombstones the live episode; a later
 bind inserts a new episode with a new ID rather than clearing the tombstone.
-Ordinary binding can never grant `super_admin`; only the `super_admin` transfer
-command may do that. Only `super_admin` can bind or unbind `admin`, while `user`
+Ordinary binding can never grant `super_admin`; only guarded offline SQL changes
+its holder. Only `super_admin` can bind or unbind `admin`, while `user`
 cannot be unbound from any user.
 
 The baseline also exposes these neutral companion operations for the existing
-user lifecycle, delegation, and transfer capabilities:
+user lifecycle and administrator session-revocation capabilities:
 
 ```text
 GET  /api/v1/me/access
@@ -399,19 +390,17 @@ GET  /api/v1/users
 GET  /api/v1/users/{user_id}
 POST /api/v1/users/{user_id}/disable
 POST /api/v1/users/{user_id}/enable
-POST /api/v1/roles/{role_id}/delegable-permissions/bind
-POST /api/v1/roles/{role_id}/delegable-permissions/unbind
-POST /api/v1/system/super-admin/transfer
+POST /api/v1/users/{user_id}/sessions/revoke
 ```
 
-The delegation endpoints and `super_admin` transfer additionally require the
-current `super_admin` identity after locks are held. No route accepts an
-authority override from the request body.
+No online route transfers `super_admin` or edits a separate delegation subset.
+The session-revoke command rechecks exact capability and strictly lower target
+inside the authoritative transaction. No route accepts an authority override.
 
 ## Optimistic Concurrency
 
 `GET /api/v1/roles/{role_id}` returns `version` inside the role data. Role
-update, disable, enable, delete, and permission/delegation bind or unbind require
+update, disable, enable, delete, and permission bind or unbind require
 that nonnegative value as a strict JSON integer `expected_version` in the body.
 Role creation does not require it. Missing or malformed input returns HTTP `422`
 with business code `422001`; a stale value returns HTTP `409` with business code
@@ -456,8 +445,8 @@ after the proposal. Allow only when all applicable conditions hold:
 4. No affected identity or role is protected or an immutable system role.
 5. Actor tier is strictly greater than target-before, target-after, and every
    changed role tier.
-6. Target effective and delegable permissions before and after are subsets of
-   the actor's explicit delegable permissions.
+6. The actor holds each newly granted permission, and affected users' current
+   and proposed authority remains strictly manageable by the actor.
 7. The actor's own authority is unchanged by the proposal.
 8. Mandatory `user`, sole-`super_admin`, soft-delete, and audit invariants remain
    valid.
@@ -467,18 +456,14 @@ after the proposal. Allow only when all applicable conditions hold:
 
 Shared custom-role updates expand every live assignment, including suspended
 users. Reject the whole operation when the actor holds the role or an affected
-user is protected, peer, higher, or outside the delegation ceiling. This blocks
+user is protected, peer, higher, or outside the actor's manageable authority. This blocks
 indirect self-elevation and partial bulk writes.
 
-Delegation changes use the same complete impact analysis and require the current
-`super_admin` after locks are held; injecting `roles:delegation:update` into an
-ordinary role never bypasses that identity check.
-
 User suspension and reactivation deny self-management, protected users, peers,
-higher users, and retained authority outside the actor's delegation ceiling.
+higher users, and retained authority outside the actor's manageable authority.
 Reactivation revalidates every retained role before restoring access.
 
-## First Super Admin And Transfer
+## First Super Admin And Offline Handover
 
 Do not promote the first registered user and do not tell an operator to improvise
 a bare `user_roles` row. A naked insert omits the global lock, mandatory base
@@ -506,7 +491,7 @@ changes a password, changes `users.token_version`, or marks the user protected.
 Re-running for the same resulting identity leaves authority versions unchanged;
 attempting to name a missing, inactive, deleted, protected, or different second
 identity is refused and rolled back. The parameter is immutable `users.id`, not
-an email or `user_name`. It is not an HTTP endpoint and never accepts a role
+the username. It is not an HTTP endpoint and never accepts a role
 definition or arbitrary grants. Automated tests may execute the script against a
 disposable test database; the user performs the target-database initialization.
 
@@ -520,8 +505,8 @@ The fresh `0001_single_project_rbac` schema also serializes direct assignment
 writes and enforces at most 10 live roles per user. This is a baseline invariant,
 not a later compatibility migration.
 
-After bootstrap, change the sole holder only through
-`POST /api/v1/system/super-admin/transfer`. The transfer atomically inserts a new
+After bootstrap, change the sole holder only through the operator-run guarded
+`sql/handover_super_admin.sql` from a trusted host. It atomically inserts a new
 `super_admin` episode for the target, tombstones the actor's live episode,
 preserves `user` for
 both, increments both users' authorization versions and the global epoch, and
@@ -607,11 +592,10 @@ development port binds to `127.0.0.1`.
 
 The main product-specific decisions are:
 
-1. For greenfield use, first ask whether `users` stores `email`, `user_name`, or
-   both. Separately fix per-flow requiredness, accepted login inputs,
-   normalization, database uniqueness, cross-field ambiguity, and post-deletion
-   reuse. Preserve an existing product's choices unless their migration is
-   requested. Follow
+1. For greenfield use, start with required username and password, trim edges,
+   validate 3..32 ASCII characters and the reserved-name list, and ask only
+   whether username case matters. Deleted names stay reserved. Preserve an
+   existing product's other identity contract unless a change is requested. Follow
    [Identity and soft-delete lifecycle](identity-soft-delete.md).
 2. Add stable business capabilities without weakening the fixed administration
    catalog or system-role invariants.
@@ -647,7 +631,7 @@ The main product-specific decisions are:
 Do not ask the user to choose basic table topology, multi-role semantics,
 hierarchy direction, the three system roles, the 10-live-role limit,
 default-user assignment,
-delegation meaning, default denial, public administration routes, lock order, or
+grant bounds, default denial, public administration routes, lock order, or
 ordinary self-management behavior unless the existing application explicitly
 contradicts this baseline.
 

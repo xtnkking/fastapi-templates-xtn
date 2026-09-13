@@ -16,11 +16,12 @@ class PermissionKey(StrEnum):
     ROLES_REVOKE = "roles:revoke"
     ROLES_PERMISSIONS_BIND = "roles:permissions:bind"
     ROLES_PERMISSIONS_UNBIND = "roles:permissions:unbind"
-    ROLES_DELEGATION_UPDATE = "roles:delegation:update"
     USERS_READ = "users:read"
+    USERS_CREATE = "users:create"
     USERS_STATUS_UPDATE = "users:status:update"
     USERS_PASSWORD_RESET = "users:password:reset"
-    SUPER_ADMIN_TRANSFER = "super_admin:transfer"
+    USERS_SESSIONS_REVOKE = "users:sessions:revoke"
+    REGISTRATION_CONFIGURE = "registration:configure"
     PROJECTS_READ = "projects:read"
     PROJECTS_UPDATE = "projects:update"
 
@@ -38,17 +39,14 @@ PERMISSION_CATALOG: dict[PermissionKey, str] = {
     PermissionKey.ROLES_PERMISSIONS_UNBIND: (
         "Unbind one permission from a manageable role"
     ),
-    PermissionKey.ROLES_DELEGATION_UPDATE: (
-        "Replace delegable grants on a manageable role"
-    ),
     PermissionKey.USERS_READ: "Read users and their current authority",
+    PermissionKey.USERS_CREATE: "Create a user with the mandatory base role",
     PermissionKey.USERS_STATUS_UPDATE: "Activate or suspend a manageable user",
     PermissionKey.USERS_PASSWORD_RESET: (
         "Reset the local password of a strictly lower user"
     ),
-    PermissionKey.SUPER_ADMIN_TRANSFER: (
-        "Transfer the sole super administrator atomically"
-    ),
+    PermissionKey.USERS_SESSIONS_REVOKE: "End every login of a strictly lower user",
+    PermissionKey.REGISTRATION_CONFIGURE: "Change the public registration switch",
     PermissionKey.PROJECTS_READ: "Read projects",
     PermissionKey.PROJECTS_UPDATE: "Update projects",
 }
@@ -69,7 +67,6 @@ class SystemRoleSpec:
     is_protected: bool
     is_super_admin: bool
     permissions: frozenset[str]
-    delegable_permissions: frozenset[str]
 
 
 # Explicit allowlists prevent newly seeded or break-glass capabilities from
@@ -86,24 +83,15 @@ SUPER_ADMIN_PERMISSION_KEYS = frozenset(
         PermissionKey.ROLES_REVOKE.value,
         PermissionKey.ROLES_PERMISSIONS_BIND.value,
         PermissionKey.ROLES_PERMISSIONS_UNBIND.value,
-        PermissionKey.ROLES_DELEGATION_UPDATE.value,
         PermissionKey.USERS_READ.value,
+        PermissionKey.USERS_CREATE.value,
         PermissionKey.USERS_STATUS_UPDATE.value,
         PermissionKey.USERS_PASSWORD_RESET.value,
-        PermissionKey.SUPER_ADMIN_TRANSFER.value,
+        PermissionKey.USERS_SESSIONS_REVOKE.value,
+        PermissionKey.REGISTRATION_CONFIGURE.value,
         PermissionKey.PROJECTS_READ.value,
         PermissionKey.PROJECTS_UPDATE.value,
     }
-)
-NON_DELEGABLE_CONTROL_PERMISSIONS = frozenset(
-    {
-        PermissionKey.ROLES_DELEGATION_UPDATE.value,
-        PermissionKey.USERS_PASSWORD_RESET.value,
-        PermissionKey.SUPER_ADMIN_TRANSFER.value,
-    }
-)
-SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS = (
-    SUPER_ADMIN_PERMISSION_KEYS - NON_DELEGABLE_CONTROL_PERMISSIONS
 )
 ADMIN_PERMISSION_KEYS = frozenset(
     {
@@ -117,14 +105,10 @@ ADMIN_PERMISSION_KEYS = frozenset(
         PermissionKey.ROLES_PERMISSIONS_BIND.value,
         PermissionKey.ROLES_PERMISSIONS_UNBIND.value,
         PermissionKey.USERS_READ.value,
+        PermissionKey.USERS_CREATE.value,
         PermissionKey.USERS_STATUS_UPDATE.value,
         PermissionKey.USERS_PASSWORD_RESET.value,
-        PermissionKey.PROJECTS_READ.value,
-        PermissionKey.PROJECTS_UPDATE.value,
-    }
-)
-ADMIN_DELEGABLE_PERMISSION_KEYS = frozenset(
-    {
+        PermissionKey.USERS_SESSIONS_REVOKE.value,
         PermissionKey.PROJECTS_READ.value,
         PermissionKey.PROJECTS_UPDATE.value,
     }
@@ -140,7 +124,6 @@ SYSTEM_ROLE_SPECS: dict[SystemRoleKey, SystemRoleSpec] = {
         is_protected=True,
         is_super_admin=True,
         permissions=SUPER_ADMIN_PERMISSION_KEYS,
-        delegable_permissions=SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS,
     ),
     SystemRoleKey.ADMIN: SystemRoleSpec(
         key=SystemRoleKey.ADMIN,
@@ -150,7 +133,6 @@ SYSTEM_ROLE_SPECS: dict[SystemRoleKey, SystemRoleSpec] = {
         is_protected=False,
         is_super_admin=False,
         permissions=ADMIN_PERMISSION_KEYS,
-        delegable_permissions=ADMIN_DELEGABLE_PERMISSION_KEYS,
     ),
     SystemRoleKey.USER: SystemRoleSpec(
         key=SystemRoleKey.USER,
@@ -160,7 +142,6 @@ SYSTEM_ROLE_SPECS: dict[SystemRoleKey, SystemRoleSpec] = {
         is_protected=False,
         is_super_admin=False,
         permissions=USER_PERMISSION_KEYS,
-        delegable_permissions=frozenset(),
     ),
 }
 SYSTEM_ROLE_KEYS = frozenset(item.value for item in SystemRoleKey)
@@ -183,7 +164,6 @@ class RoleGrant:
     key: str
     management_tier: int
     permissions: frozenset[str]
-    delegable_permissions: frozenset[str]
     is_system: bool
     is_protected: bool
     is_super_admin: bool
@@ -197,7 +177,6 @@ class AuthoritySnapshot:
     token_version: int
     roles: tuple[RoleGrant, ...]
     permissions: frozenset[str]
-    delegable_permissions: frozenset[str]
     management_tier: int
     is_protected: bool
     is_super_admin: bool
@@ -217,9 +196,6 @@ class AuthoritySnapshot:
         permissions = frozenset(
             permission for role in roles for permission in role.permissions
         )
-        delegable = frozenset(
-            permission for role in roles for permission in role.delegable_permissions
-        )
         return cls(
             user_id=user_id,
             user_is_active=user_is_active,
@@ -227,7 +203,6 @@ class AuthoritySnapshot:
             token_version=token_version,
             roles=tuple(sorted(roles, key=lambda role: str(role.role_id))),
             permissions=permissions,
-            delegable_permissions=delegable,
             management_tier=max((role.management_tier for role in roles), default=0),
             is_protected=(
                 user_is_protected or any(role.is_protected for role in roles)

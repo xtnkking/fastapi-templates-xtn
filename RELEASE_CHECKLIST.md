@@ -12,15 +12,17 @@ Use this checklist for the first public preview and subsequent releases.
 - [ ] Ruff, strict mypy, and non-PostgreSQL tests pass.
 - [ ] PostgreSQL-marked tests pass against PostgreSQL 17.
 - [ ] Redis-backed authentication tests pass against the active-JTI Redis, and
-  rate-limit and login/registration defense tests pass against a separately
-  configured rate-limit Redis. The bundled optional verification component is
-  tested there without making it a default product requirement. Confirm CI uses
-  two distinct URLs. Do not claim PostgreSQL/Redis behavior is verified until
+  rate-limit, login/registration defense, and required graphical-CAPTCHA tests
+  pass against a separately configured rate-limit Redis. The Redis-only
+  CAPTCHA/session test uses a third empty logical database that does not
+  overlap either integration target. Confirm all three CI URLs. Do not claim
+  PostgreSQL/Redis behavior is verified until
   all database test groups have actually passed.
 - [ ] Local-password tests cover Argon2id offload, real-or-dummy verification,
-  credential tombstones, registration/login, self change, administrator reset,
-  temporary completion, offline operator recovery, Token invalidation, hierarchy,
-  atomic account-security audit, and secret-free responses/logs.
+  password fields on `users`, registration/login, self change, administrator
+  reset, temporary completion, offline operator recovery and super-admin
+  handover, oldest-login eviction, Token invalidation, hierarchy, atomic
+  account-security audit, and secret-free responses/logs.
 - [ ] No `.env`, token, credential, private key, cache, database, or build artifact
   is present.
 - [ ] `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md` are present at repository,
@@ -28,6 +30,53 @@ Use this checklist for the first public preview and subsequent releases.
 - [ ] README limitations match the behavior actually implemented by the asset.
 - [ ] After all local checks, `python -B scripts/validate_release.py` passes from
   the final clean tree.
+
+## v0.5.0 acceptance baseline
+
+- [ ] A new project uses required `user_name` (3..32 ASCII letters, digits, or
+  underscore, trimmed; reserved names and soft-deleted names cannot be reused).
+  Ask only whether username casing matters, password composition beyond 8..60
+  characters, maximum simultaneous logins, and how to enroll existing accounts.
+  Preserve the chosen identity contract in an existing project.
+- [ ] The PostgreSQL registration switch starts enabled, remains changeable
+  through a super-admin-only command, and is checked transactionally on each
+  public registration. A public read returns only the switch's boolean; closing
+  registration does not block login or authorized administrator creation. Both
+  account-creation paths grant only `user`.
+- [ ] Each of the five required graphical-CAPTCHA scenes (login, registration,
+  administrator create/reset, self password change) is purpose-bound and
+  single-attempt: success and failure both consume it atomically. A CAPTCHA
+  expires after five minutes, refresh replaces only its indicated old image,
+  and issuance is limited to 10 per scene and subject per five minutes. Failed
+  image rendering must not invalidate the old challenge. A valid scene at the
+  wrong endpoint or parsed invalid CAPTCHA body uses an independent per-subject
+  rejection quota without spending a scene's normal issuance budget.
+  No email/SMS delivery module or self-service forgot-password route is bundled.
+- [ ] Ordinary users can revoke only their current Token. The session read
+  returns login count and timestamps, never claims to identify devices; successful
+  issuance evicts the oldest when the project-chosen concurrent-login maximum
+  is reached. A capability-checked administrator may revoke all sessions of a
+  strictly lower user, not self, a peer, or a higher user.
+- [ ] Exactly one `super_admin` is first appointed and later handed over only
+  with guarded, audited, transactional offline SQL; no online transfer API or
+  extra `can_delegate` switch/API remains. Grants are limited to the grantor's
+  actual authority. Inventory every table and row-removal path: mutable records
+  soft-delete, audits append only, and the 10-role limit and anti-self-elevation
+  are enforced under locks.
+- [ ] No global or cross-business quota exists, including in optional country
+  and proxy guidance. Anonymous authentication is limited by business plus
+  trusted IP; authenticated endpoints by business plus user ID. Fixed-window
+  Redis admission fails closed when it cannot decide. Verify `429001`,
+  `Retry-After`, and configurable defaults; no submitted username is a quota
+  subject. Optional country reads are not anonymous ordinary business reads.
+- [ ] JWT still defaults to one hour, only minimal claims plus a verified Redis
+  active JTI, with no per-Token PostgreSQL table. `iss`/`aud` requires explicit
+  adopter consent; password rotation revokes old Tokens. Preserve request IDs,
+  safe errors and logs, atomic RBAC/account-security audits, and soft deletion.
+
+The `v0.4.0` section below records the published historical checklist. Its
+retired choices (email selection, online transfer, global quotas, or self logout-all)
+must not be carried into `v0.5.0`.
 
 ## GitHub repository
 
@@ -45,6 +94,25 @@ Use this checklist for the first public preview and subsequent releases.
 - [ ] Keep Issues enabled. Close external pull requests according to
   `CONTRIBUTING.md`.
 
+## Release v0.5.0
+
+- [ ] Review the complete diff, the English and Chinese docs, the upstream
+  attribution, and the fresh-project migration boundary. Match `0.5.0` and
+  its date in the changelogs, asset metadata, installer URLs, and validator.
+- [ ] Validate the release tree and run Ruff, strict mypy, unit tests, and
+  disposable PostgreSQL 17 / two-Redis integration tests. Confirm the CI
+  Redis-only tests use a third distinct logical database and cannot leave
+  data in either later integration target.
+- [ ] Commit and push `main`; wait for both CI jobs on that exact commit to
+  pass. Create and push `v0.5.0` on that commit, without replacing any old tag.
+  A signing key is optional, not a release requirement.
+- [ ] Publish a non-draft, non-prerelease GitHub Release for `v0.5.0`.
+  Highlight the username-only, five-CAPTCHA, per-business limiter, offline
+  super-admin handover, and password-table changes as breaking changes.
+- [ ] Verify the public tag, the GitHub source download, and a fresh
+  `$skill-installer` install from the tagged Skill path. Attach checksums only
+  when uploading a separate release archive.
+
 ## Release v0.4.0
 
 - [ ] Verify the Skill asks the unresolved authentication product questions once
@@ -53,12 +121,15 @@ Use this checklist for the first public preview and subsequent releases.
   It must not delegate fixed Argon2, dummy-hash, transaction, audit, redaction, or
   old-Token revocation behavior to the adopter.
 - [ ] Verify the bundled local-password asset exposes the documented five POST
-  commands, stores Argon2id only in one live `user_password_credentials` episode,
-  clears hashes on tombstones, applies real-or-dummy work and uniform login
-  failures, never treats username as ownership proof, uses one short-lived Access
+  commands, stores Argon2id in nullable `users.password_hash` with coherent
+  password timestamp and temporary flag, clears it on user soft deletion,
+  applies real-or-dummy work and uniform login failures, never treats username
+  as ownership proof, uses one short-lived Access
   Token with login again after expiry, and adds no per-Token PostgreSQL table.
 - [ ] Verify password change/reset/recovery completion increments
   `users.token_version` and commits with the append-only account-security audit.
+  Derive password-change counts from succeeded audit actions, excluding
+  registration; do not add a password-episode table or independent mutable count.
   Administrator reset must require current-password reauthentication,
   `users:password:reset`, and the full strictly-lower hierarchy policy. The sole
   `super_admin` recovery path must remain an interactive offline operator command.

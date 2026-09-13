@@ -19,7 +19,6 @@ from app.rbac.domain import (
     AuthorizationContext,
     PermissionKey,
     RoleGrant,
-    SystemRoleKey,
 )
 from app.rbac.errors import (
     RbacError,
@@ -42,9 +41,8 @@ from app.rbac.policy import (
     decide_role_administration,
     decide_role_change,
     decide_role_create,
-    decide_role_delegation_change,
     decide_role_permissions_change,
-    decide_super_admin_transfer,
+    decide_user_sessions_revoke,
     decide_user_status_change,
     is_administrative_role_visible,
     is_administrative_user_visible,
@@ -122,7 +120,6 @@ def _snapshot_payload(snapshot: AuthoritySnapshot) -> dict[str, object]:
         "role_ids": [str(role.role_id) for role in snapshot.roles],
         "role_keys": sorted(role.key for role in snapshot.roles),
         "permissions": sorted(snapshot.permissions),
-        "delegable_permissions": sorted(snapshot.delegable_permissions),
         "management_tier": snapshot.management_tier,
         "is_protected": snapshot.is_protected,
         "is_super_admin": snapshot.is_super_admin,
@@ -141,7 +138,6 @@ def _role_response(role: Role, grant: RoleGrant) -> RoleResponse:
         is_system=role.is_system,
         is_protected=role.is_protected,
         permissions=tuple(sorted(grant.permissions)),
-        delegable_permissions=tuple(sorted(grant.delegable_permissions)),
         version=role.version,
         deleted_at=role.deleted_at,
     )
@@ -158,7 +154,6 @@ def _role_payload(role: RoleResponse) -> dict[str, object]:
         "is_system": role.is_system,
         "is_deleted": role.deleted_at is not None,
         "permissions": list(role.permissions),
-        "delegable_permissions": list(role.delegable_permissions),
         "version": role.version,
     }
 
@@ -172,7 +167,6 @@ def _user_response(access: UserAccessView) -> UserResponse:
         effective_role_ids=tuple(role.role_id for role in authority.roles),
         effective_management_tier=authority.management_tier,
         effective_permissions=tuple(sorted(authority.permissions)),
-        effective_delegable_permissions=tuple(sorted(authority.delegable_permissions)),
         authz_version=authority.authz_version,
     )
 
@@ -429,6 +423,48 @@ class RbacService:
             operation=operation,
         )
 
+    async def revoke_user_sessions(
+        self,
+        *,
+        context: AuthorizationContext,
+        target_user_id: uuid.UUID,
+    ) -> None:
+        async def operation(session: AsyncSession) -> _MutationOutcome[None]:
+            (
+                actor,
+                target_before,
+                target_row,
+                _state,
+                _locked_roles,
+            ) = await self._lock_actor_and_target_user(
+                session,
+                context=context,
+                target_user_id=target_user_id,
+                required_permission=PermissionKey.USERS_SESSIONS_REVOKE,
+            )
+            decision = decide_user_sessions_revoke(
+                actor=actor,
+                target_before=target_before,
+            )
+            if not decision.allowed:
+                raise forbidden(decision.reason_code)
+            previous_version = target_row.token_version
+            target_row.token_version += 1
+            return _MutationOutcome(
+                value=None,
+                reason_code="user_sessions_revoked",
+                before_state={"token_version": previous_version},
+                after_state={"token_version": target_row.token_version},
+            )
+
+        await self._run_audited(
+            context=context,
+            action="user.sessions.revoke",
+            target_user_id=target_user_id,
+            target_role_id=None,
+            operation=operation,
+        )
+
     async def change_user_roles(
         self,
         *,
@@ -679,7 +715,6 @@ class RbacService:
                 key=role.key,
                 management_tier=role.management_tier,
                 permissions=frozenset(),
-                delegable_permissions=frozenset(),
                 is_system=False,
                 is_protected=False,
                 is_super_admin=False,
@@ -845,7 +880,6 @@ class RbacService:
                 replace(
                     locked.role_before,
                     permissions=frozenset(),
-                    delegable_permissions=frozenset(),
                 ),
             )
             return _MutationOutcome(
@@ -901,13 +935,9 @@ class RbacService:
                 permission_keys_after = locked.role_before.permissions | requested_keys
             else:
                 permission_keys_after = locked.role_before.permissions - requested_keys
-            retained_delegable = (
-                locked.role_before.delegable_permissions & permission_keys_after
-            )
             replacement = replace(
                 locked.role_before,
                 permissions=permission_keys_after,
-                delegable_permissions=retained_delegable,
             )
             affected_after = tuple(
                 snapshot.with_role(replacement) for snapshot in locked.affected_before
@@ -933,7 +963,6 @@ class RbacService:
                         RolePermission(
                             role_id=role_id,
                             permission_id=permission_id,
-                            can_delegate=False,
                             assigned_by_user_id=locked.actor.user_id,
                         )
                         for permission_id, key in permission_keys_by_id.items()
@@ -977,229 +1006,6 @@ class RbacService:
             target_user_id=None,
             target_role_id=role_id,
             operation=mutate,
-        )
-
-    async def change_role_delegation(
-        self,
-        *,
-        context: AuthorizationContext,
-        role_id: uuid.UUID,
-        permission_ids: Iterable[uuid.UUID],
-        operation: RoleOperation,
-        expected_version: int,
-    ) -> RoleMutationResponse:
-        operation = _require_role_operation(operation)
-        requested_ids = frozenset(permission_ids)
-        if not requested_ids:
-            raise invalid_request("permission_ids_required")
-
-        async def mutate(
-            session: AsyncSession,
-        ) -> _MutationOutcome[RoleMutationResponse]:
-            locked = await self._lock_shared_role_change(
-                session,
-                context=context,
-                role_id=role_id,
-                required_permission=PermissionKey.ROLES_DELEGATION_UPDATE,
-            )
-            permission_keys_by_id = await load_permission_keys(session, requested_ids)
-            if set(permission_keys_by_id) != set(requested_ids):
-                raise invalid_request("unknown_permission_id")
-            requested_keys = frozenset(permission_keys_by_id.values())
-            if operation == "bind":
-                delegable_after = (
-                    locked.role_before.delegable_permissions | requested_keys
-                )
-            else:
-                delegable_after = (
-                    locked.role_before.delegable_permissions - requested_keys
-                )
-            replacement = replace(
-                locked.role_before,
-                delegable_permissions=delegable_after,
-            )
-            affected_after = tuple(
-                snapshot.with_role(replacement) for snapshot in locked.affected_before
-            )
-            decision = decide_role_delegation_change(
-                actor=locked.actor,
-                changed_role_before=locked.role_before,
-                delegable_permission_keys_after=delegable_after,
-                actor_holds_role=locked.actor.user_id in locked.affected_ids,
-                affected_after=affected_after,
-            )
-            if not decision.allowed:
-                if decision.reason_code == "delegation_requires_role_permission":
-                    raise invalid_request(decision.reason_code)
-                raise forbidden(decision.reason_code)
-
-            self._require_expected_role_version(locked.role, expected_version)
-            role_before = _role_response(locked.role, locked.role_before)
-            changed = locked.role_before.delegable_permissions != delegable_after
-            if changed:
-                for key, row in locked.permission_rows.items():
-                    row.can_delegate = key in delegable_after
-                self._bump_shared_authority(locked)
-            role_after = _role_response(locked.role, replacement)
-            return _MutationOutcome(
-                value=RoleMutationResponse(changed=changed, role=role_after),
-                reason_code=(
-                    (
-                        "role_delegation_bound"
-                        if operation == "bind"
-                        else "role_delegation_unbound"
-                    )
-                    if changed
-                    else "role_delegation_unchanged"
-                ),
-                before_state=_role_payload(role_before),
-                after_state=_role_payload(role_after),
-            )
-
-        return await self._run_audited(
-            context=context,
-            action=f"role.delegation.{operation}",
-            target_user_id=None,
-            target_role_id=role_id,
-            operation=mutate,
-        )
-
-    async def transfer_super_admin(
-        self,
-        *,
-        context: AuthorizationContext,
-        target_user_id: uuid.UUID,
-    ) -> None:
-        async def operation(session: AsyncSession) -> _MutationOutcome[None]:
-            state = await lock_rbac_state(session)
-            actor_id = context.principal.user_id
-            users = await lock_users(session, {actor_id, target_user_id})
-            self._require_current_locked_actor_row(
-                actor_user=users.get(actor_id),
-                context=context,
-            )
-            actor = await require_current_actor(
-                session,
-                actor_user_id=actor_id,
-                token_version=context.principal.token_version,
-            )
-            if (
-                PermissionKey.SUPER_ADMIN_TRANSFER.value not in actor.permissions
-                or not actor.is_super_admin
-            ):
-                raise forbidden("actor_is_not_super_admin")
-            if target_user_id not in users:
-                raise not_found("target_user_not_found")
-
-            super_admin_role_id = await session.scalar(
-                select(Role.id).where(
-                    Role.key == SystemRoleKey.SUPER_ADMIN.value,
-                    Role.is_super_admin.is_(True),
-                    Role.deleted_at.is_(None),
-                )
-            )
-            if super_admin_role_id is None:
-                raise conflict("super_admin_role_missing")
-            user_ids = {actor_id, target_user_id}
-            all_role_ids = set(
-                (
-                    await session.scalars(
-                        select(UserRole.role_id).where(
-                            UserRole.user_id.in_(user_ids),
-                            UserRole.deleted_at.is_(None),
-                        )
-                    )
-                ).all()
-            )
-            locked_roles = await lock_roles(
-                session,
-                role_ids=all_role_ids | {super_admin_role_id},
-            )
-            super_admin_role = locked_roles.get(super_admin_role_id)
-            if super_admin_role is None:
-                raise conflict("super_admin_role_missing")
-            actor = await require_current_actor(
-                session,
-                actor_user_id=actor_id,
-                token_version=context.principal.token_version,
-            )
-            target_before = await load_authority_snapshot(
-                session,
-                user_id=target_user_id,
-                include_disabled_roles=True,
-            )
-            decision = decide_super_admin_transfer(
-                actor=actor,
-                target_before=target_before,
-            )
-            if not decision.allowed:
-                raise forbidden(decision.reason_code)
-
-            super_admin_grant = await load_role_grant(
-                session, role_id=super_admin_role.id
-            )
-            target_after = target_before.with_role(super_admin_grant)
-            actor_assignment = await session.scalar(
-                select(UserRole).where(
-                    UserRole.user_id == actor.user_id,
-                    UserRole.role_id == super_admin_role.id,
-                    UserRole.deleted_at.is_(None),
-                )
-            )
-            if actor_assignment is None:
-                raise forbidden("actor_is_not_super_admin")
-            target_assignment = await session.scalar(
-                select(UserRole).where(
-                    UserRole.user_id == target_user_id,
-                    UserRole.role_id == super_admin_role.id,
-                    UserRole.deleted_at.is_(None),
-                )
-            )
-            if target_assignment is None:
-                live_role_count = await count_live_user_roles(
-                    session,
-                    user_id=target_user_id,
-                )
-                if live_role_count >= MAX_ROLES_PER_USER:
-                    raise conflict("user_role_limit_exceeded")
-            actor_assignment.deleted_at = datetime.now(UTC)
-            actor_assignment.deleted_by_user_id = actor.user_id
-            await session.flush()
-            if target_assignment is None:
-                session.add(
-                    UserRole(
-                        user_id=target_user_id,
-                        role_id=super_admin_role.id,
-                        assigned_by_user_id=actor.user_id,
-                    )
-                )
-            users[actor.user_id].authz_version += 1
-            users[target_user_id].authz_version += 1
-            state.epoch += 1
-            target_after = replace(
-                target_after,
-                authz_version=users[target_user_id].authz_version,
-            )
-            return _MutationOutcome(
-                value=None,
-                reason_code="super_admin_transferred",
-                before_state={
-                    "previous_super_admin": _snapshot_payload(actor),
-                    "next_super_admin": _snapshot_payload(target_before),
-                },
-                after_state={
-                    "previous_super_admin_user_id": str(actor.user_id),
-                    "next_super_admin": _snapshot_payload(target_after),
-                },
-                audit_target_role_id=super_admin_role.id,
-            )
-
-        await self._run_audited(
-            context=context,
-            action="super_admin.transfer",
-            target_user_id=target_user_id,
-            target_role_id=None,
-            operation=operation,
         )
 
     async def _lock_shared_role_change(

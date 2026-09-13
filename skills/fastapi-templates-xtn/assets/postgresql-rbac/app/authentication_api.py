@@ -1,8 +1,11 @@
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response, status
+from pydantic import ValidationError
 
+from app.abuse_defense import AbuseDefenseService
 from app.abuse_flow import IdentityAbuseFlow, build_identity_abuse_flow
 from app.api_contract import (
     STANDARD_ERROR_RESPONSES,
@@ -14,27 +17,35 @@ from app.api_contract import (
 )
 from app.authentication_schemas import (
     AccessTokenData,
+    ActiveSessionsData,
     AdminPasswordResetRequest,
+    AdminUserCreateRequest,
+    CaptchaCreateRequest,
+    CaptchaData,
     LoginRequest,
     PasswordChangeRequest,
     PasswordMutationData,
     PasswordResetCompletionRequest,
     RegistrationData,
     RegistrationRequest,
+    RegistrationStatusData,
+    RegistrationStatusUpdateRequest,
 )
 from app.authentication_service import (
     LocalAuthenticationService,
     get_local_authentication_service,
 )
+from app.captcha import CaptchaService
 from app.rate_limit_middleware import trusted_client_ip
 from app.rbac.dependencies import (
+    PrincipalDependency,
     SettingsDependency,
     get_authorization_context,
     require_permissions,
 )
 from app.rbac.domain import AuthorizationContext, PermissionKey
-from app.rbac.errors import password_change_required
-from app.rbac.security import issue_access_token
+from app.rbac.errors import invalid_request, password_change_required
+from app.rbac.security import issue_access_token, list_active_sessions
 from app.redis_client import get_rate_limit_redis, get_redis
 
 router = APIRouter(
@@ -56,14 +67,9 @@ LocalAuthenticationServiceDependency = Annotated[
 ]
 
 
-def authentication_routers(
-    *,
-    public_registration_enabled: bool,
-) -> tuple[APIRouter, ...]:
-    """Return only the authentication surfaces selected by product policy."""
-    if public_registration_enabled:
-        return registration_router, router
-    return (router,)
+def authentication_routers() -> tuple[APIRouter, ...]:
+    """The server-side registration switch does not remove the public route."""
+    return registration_router, router
 
 
 def _identity_abuse_flow(
@@ -75,6 +81,193 @@ def _identity_abuse_flow(
     return build_identity_abuse_flow(
         get_rate_limit_redis(request),
         settings=settings,
+    )
+
+
+async def _consume_captcha(
+    request: Request,
+    settings: SettingsDependency,
+    *,
+    captcha_id: uuid.UUID,
+    answer: str,
+    scene: str,
+    owner_id: uuid.UUID | None = None,
+) -> None:
+    await CaptchaService(get_redis(request), settings).consume(
+        captcha_id=captcha_id, answer=answer, scene=scene, owner_id=owner_id
+    )
+
+
+async def _issue_captcha(
+    request: Request,
+    settings: SettingsDependency,
+    *,
+    body: CaptchaCreateRequest,
+    owner_id: uuid.UUID | None,
+) -> ApiResponse[CaptchaData]:
+    if settings.rate_limit_enabled:
+        defense = AbuseDefenseService(get_rate_limit_redis(request), settings)
+        await defense.check_captcha_create(
+            scene=body.scene,
+            user_id=str(owner_id) if owner_id else None,
+            client_ip=trusted_client_ip(request.scope) if owner_id is None else None,
+        )
+    captcha_id, image_base64 = await CaptchaService(get_redis(request), settings).issue(
+        scene=body.scene,
+        owner_id=owner_id,
+        previous_captcha_id=body.previous_captcha_id,
+    )
+    return api_response(
+        request,
+        code=BusinessCode.OK,
+        message="验证码已生成",
+        data=CaptchaData(captcha_id=captcha_id, image_base64=image_base64),
+    )
+
+
+async def _admit_rejected_captcha_scene(
+    request: Request,
+    settings: SettingsDependency,
+    *,
+    owner_id: uuid.UUID | None,
+) -> None:
+    if not settings.rate_limit_enabled:
+        return
+    await AbuseDefenseService(
+        get_rate_limit_redis(request), settings
+    ).check_rejected_captcha_scene(
+        user_id=str(owner_id) if owner_id is not None else None,
+        client_ip=trusted_client_ip(request.scope) if owner_id is None else None,
+    )
+
+
+async def _precheck_captcha_body(
+    request: Request,
+    settings: SettingsDependency,
+    *,
+    owner_id: uuid.UUID | None,
+) -> None:
+    media_type = (
+        request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    )
+    if media_type == "application/json" or (
+        media_type.startswith("application/") and media_type.endswith("+json")
+    ):
+        try:
+            CaptchaCreateRequest.model_validate(await request.json())
+        except ValidationError:
+            pass
+        else:
+            return
+    await _admit_rejected_captcha_scene(request, settings, owner_id=owner_id)
+
+
+async def _precheck_public_captcha_body(
+    request: Request, settings: SettingsDependency
+) -> None:
+    await _precheck_captcha_body(request, settings, owner_id=None)
+
+
+async def _precheck_authenticated_captcha_body(
+    request: Request,
+    settings: SettingsDependency,
+    principal: PrincipalDependency,
+) -> None:
+    await _precheck_captcha_body(request, settings, owner_id=principal.user_id)
+
+
+@registration_router.post(
+    "/auth/captcha",
+    response_model=ApiResponse[CaptchaData],
+    tags=[AUTHENTICATION_TAG],
+    operation_id="create_public_captcha",
+    dependencies=[Depends(_precheck_public_captcha_body)],
+)
+async def create_public_captcha(
+    body: CaptchaCreateRequest,
+    request: Request,
+    response: Response,
+    settings: SettingsDependency,
+) -> ApiResponse[CaptchaData]:
+    response.headers["Cache-Control"] = "no-store"
+    if body.scene not in {"login", "register"}:
+        await _admit_rejected_captcha_scene(request, settings, owner_id=None)
+        raise invalid_request("captcha_scene_requires_authentication")
+    return await _issue_captcha(request, settings, body=body, owner_id=None)
+
+
+@router.post(
+    "/me/captcha",
+    response_model=ApiResponse[CaptchaData],
+    tags=[ACCOUNT_SECURITY_TAG],
+    operation_id="create_authenticated_captcha",
+    dependencies=[Depends(_precheck_authenticated_captcha_body)],
+)
+async def create_authenticated_captcha(
+    body: CaptchaCreateRequest,
+    request: Request,
+    response: Response,
+    settings: SettingsDependency,
+    context: Annotated[AuthorizationContext, Depends(get_authorization_context)],
+) -> ApiResponse[CaptchaData]:
+    response.headers["Cache-Control"] = "no-store"
+    if body.scene not in {"admin_create", "admin_reset", "self_change"}:
+        await _admit_rejected_captcha_scene(
+            request, settings, owner_id=context.principal.user_id
+        )
+        raise invalid_request("captcha_scene_is_public")
+    return await _issue_captcha(
+        request, settings, body=body, owner_id=context.principal.user_id
+    )
+
+
+@registration_router.get(
+    "/auth/registration/status",
+    response_model=ApiResponse[RegistrationStatusData],
+    tags=[AUTHENTICATION_TAG],
+    operation_id="read_registration_status",
+)
+async def read_registration_status(
+    request: Request,
+    response: Response,
+    service: LocalAuthenticationServiceDependency,
+) -> ApiResponse[RegistrationStatusData]:
+    response.headers["Cache-Control"] = "no-store"
+    return api_response(
+        request,
+        code=BusinessCode.OK,
+        message="成功",
+        data=RegistrationStatusData(
+            registration_enabled=await service.registration_enabled()
+        ),
+    )
+
+
+@router.post(
+    "/auth/registration/status",
+    response_model=ApiResponse[RegistrationStatusData],
+    tags=[ACCOUNT_SECURITY_TAG],
+    operation_id="update_registration_policy",
+)
+async def update_registration_status(
+    body: RegistrationStatusUpdateRequest,
+    request: Request,
+    response: Response,
+    context: Annotated[
+        AuthorizationContext,
+        Depends(require_permissions(PermissionKey.REGISTRATION_CONFIGURE)),
+    ],
+    service: LocalAuthenticationServiceDependency,
+) -> ApiResponse[RegistrationStatusData]:
+    response.headers["Cache-Control"] = "no-store"
+    enabled = await service.set_registration_enabled(
+        context=context, enabled=body.registration_enabled
+    )
+    return api_response(
+        request,
+        code=BusinessCode.OK,
+        message="注册设置已更新",
+        data=RegistrationStatusData(registration_enabled=enabled),
     )
 
 
@@ -93,6 +286,13 @@ async def register_local_account(
     service: LocalAuthenticationServiceDependency,
 ) -> ApiResponse[RegistrationData]:
     response.headers["Cache-Control"] = "no-store"
+    await _consume_captcha(
+        request,
+        settings,
+        captcha_id=body.captcha_id,
+        answer=body.captcha_answer,
+        scene="register",
+    )
     user_id = await service.register(
         abuse_flow=_identity_abuse_flow(request, settings),
         client_ip=trusted_client_ip(request.scope),
@@ -122,6 +322,13 @@ async def login_with_local_password(
     service: LocalAuthenticationServiceDependency,
 ) -> ApiResponse[AccessTokenData]:
     response.headers["Cache-Control"] = "no-store"
+    await _consume_captcha(
+        request,
+        settings,
+        captcha_id=body.captcha_id,
+        answer=body.captcha_answer,
+        scene="login",
+    )
     identity = await service.authenticate(
         abuse_flow=_identity_abuse_flow(request, settings),
         client_ip=trusted_client_ip(request.scope),
@@ -149,6 +356,36 @@ async def login_with_local_password(
     )
 
 
+@router.get(
+    "/me/sessions",
+    response_model=ApiResponse[ActiveSessionsData],
+    tags=[AUTHENTICATION_TAG],
+    operation_id="my_active_sessions",
+)
+async def my_active_sessions(
+    request: Request,
+    settings: SettingsDependency,
+    context: Annotated[AuthorizationContext, Depends(get_authorization_context)],
+) -> ApiResponse[ActiveSessionsData]:
+    timestamps = await list_active_sessions(
+        get_redis(request),
+        user_id=context.principal.user_id,
+        token_version=context.principal.token_version,
+        settings=settings,
+    )
+    return api_response(
+        request,
+        code=BusinessCode.OK,
+        message="成功",
+        data=ActiveSessionsData(
+            active_count=len(timestamps),
+            login_times=tuple(
+                datetime.fromtimestamp(value, UTC).isoformat() for value in timestamps
+            ),
+        ),
+    )
+
+
 @router.post(
     "/me/password/change",
     response_model=ApiResponse[PasswordMutationData],
@@ -164,9 +401,15 @@ async def change_my_password(
     service: LocalAuthenticationServiceDependency,
 ) -> ApiResponse[PasswordMutationData]:
     response.headers["Cache-Control"] = "no-store"
+    await _consume_captcha(
+        request,
+        settings,
+        captcha_id=body.captcha_id,
+        answer=body.captcha_answer,
+        scene="self_change",
+        owner_id=context.principal.user_id,
+    )
     changed = await service.change_password(
-        abuse_flow=_identity_abuse_flow(request, settings),
-        client_ip=trusted_client_ip(request.scope),
         context=context,
         current_password=body.current_password.get_secret_value(),
         new_password=body.new_password.get_secret_value(),
@@ -198,12 +441,17 @@ async def reset_user_password(
     service: LocalAuthenticationServiceDependency,
 ) -> ApiResponse[PasswordMutationData]:
     response.headers["Cache-Control"] = "no-store"
+    await _consume_captcha(
+        request,
+        settings,
+        captcha_id=body.captcha_id,
+        answer=body.captcha_answer,
+        scene="admin_reset",
+        owner_id=context.principal.user_id,
+    )
     changed = await service.reset_user_password(
-        abuse_flow=_identity_abuse_flow(request, settings),
-        client_ip=trusted_client_ip(request.scope),
         context=context,
         target_user_id=user_id,
-        current_password=body.current_password.get_secret_value(),
         temporary_password=body.temporary_password.get_secret_value(),
     )
     return api_response(
@@ -211,6 +459,46 @@ async def reset_user_password(
         code=BusinessCode.OK,
         message="临时密码已设置",
         data=PasswordMutationData(changed=changed),
+    )
+
+
+@router.post(
+    "/users",
+    status_code=status.HTTP_201_CREATED,
+    response_model=ApiResponse[RegistrationData],
+    tags=[ACCOUNT_SECURITY_TAG],
+    operation_id="create_user",
+)
+async def create_user_with_temporary_password(
+    body: AdminUserCreateRequest,
+    request: Request,
+    response: Response,
+    settings: SettingsDependency,
+    context: Annotated[
+        AuthorizationContext,
+        Depends(require_permissions(PermissionKey.USERS_CREATE)),
+    ],
+    service: LocalAuthenticationServiceDependency,
+) -> ApiResponse[RegistrationData]:
+    response.headers["Cache-Control"] = "no-store"
+    await _consume_captcha(
+        request,
+        settings,
+        captcha_id=body.captcha_id,
+        answer=body.captcha_answer,
+        scene="admin_create",
+        owner_id=context.principal.user_id,
+    )
+    user_id = await service.create_user_by_administrator(
+        context=context,
+        user_name=body.user_name,
+        temporary_password=body.temporary_password.get_secret_value(),
+    )
+    return api_response(
+        request,
+        code=BusinessCode.CREATED,
+        message="用户创建成功",
+        data=RegistrationData(user_id=user_id),
     )
 
 

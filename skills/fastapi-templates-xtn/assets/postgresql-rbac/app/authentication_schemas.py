@@ -18,25 +18,35 @@ class _ClosedRequest(BaseModel):
 
 
 class _UsernameRequest(_ClosedRequest):
-    user_name: str = Field(min_length=1, max_length=160)
+    user_name: str = Field(min_length=1, max_length=40)
 
     @field_validator("user_name")
     @classmethod
     def normalize_user_name(cls, value: str) -> str:
-        normalized = normalize_identity(value, field="user_name")
+        try:
+            normalized = normalize_identity(value, field="user_name")
+        except ValueError as exc:
+            if str(exc) == "reserved_user_name":
+                raise ValueError("该用户名不可使用，请更换") from exc
+            raise
         assert normalized is not None
         return normalized
 
 
-class RegistrationRequest(_UsernameRequest):
+class _CaptchaAnswer(_ClosedRequest):
+    captcha_id: uuid.UUID
+    captcha_answer: str = Field(min_length=1, max_length=16)
+
+
+class RegistrationRequest(_UsernameRequest, _CaptchaAnswer):
     password: SecretStr = Field(min_length=1, max_length=128)
 
 
-class LoginRequest(_UsernameRequest):
+class LoginRequest(_UsernameRequest, _CaptchaAnswer):
     password: SecretStr = Field(min_length=1, max_length=128)
 
 
-class PasswordChangeRequest(_ClosedRequest):
+class PasswordChangeRequest(_CaptchaAnswer):
     current_password: SecretStr = Field(min_length=1, max_length=128)
     new_password: SecretStr = Field(min_length=1, max_length=128)
 
@@ -50,9 +60,42 @@ class PasswordChangeRequest(_ClosedRequest):
         return self
 
 
-class AdminPasswordResetRequest(_ClosedRequest):
-    current_password: SecretStr = Field(min_length=1, max_length=128)
+class AdminPasswordResetRequest(_CaptchaAnswer):
     temporary_password: SecretStr = Field(min_length=1, max_length=128)
+
+
+class AdminUserCreateRequest(_UsernameRequest, _CaptchaAnswer):
+    temporary_password: SecretStr = Field(min_length=1, max_length=128)
+
+
+class RegistrationStatusUpdateRequest(_ClosedRequest):
+    registration_enabled: bool = Field(strict=True)
+
+
+class RegistrationStatusData(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    registration_enabled: bool
+
+
+class CaptchaCreateRequest(_ClosedRequest):
+    scene: Literal["login", "register", "admin_create", "admin_reset", "self_change"]
+    previous_captcha_id: uuid.UUID | None = None
+
+
+class CaptchaData(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    captcha_id: uuid.UUID
+    image_base64: str
+    expires_in: Literal[300] = 300
+
+
+class ActiveSessionsData(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    active_count: int = Field(ge=0)
+    login_times: tuple[str, ...]
 
 
 class PasswordResetCompletionRequest(_UsernameRequest):

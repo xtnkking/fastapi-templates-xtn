@@ -416,8 +416,9 @@ required by the existing application. The service applies that context before
 loading or decrypting the proxy; the dependency is not merely a route-level
 capability check.
 
-Apply a server-side per-actor and application-wide rate limit plus a bounded outbound
-concurrency budget. Five browser workers are not a global capacity limit. Bound
+Apply a server-side per-operation, per-actor rate limit and a bounded outbound
+concurrency budget; never add an all-user or cross-business request quota.
+Five browser workers are not a server concurrency limit. Bound
 queue wait and release semaphore slots in `finally`; do not retry provider `429`,
 timeouts, or connection failures inside one explicit check.
 

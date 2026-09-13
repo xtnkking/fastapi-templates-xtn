@@ -20,8 +20,8 @@ The included PostgreSQL asset uses this linear migration chain:
 3. [`0003_business_audit.py`](../assets/postgresql-rbac/alembic/versions/0003_business_audit.py)
    adds the separate append-only `business_audit_events` table and guards.
 4. [`0004_password_auth.py`](../assets/postgresql-rbac/alembic/versions/0004_password_auth.py)
-   adds local-password credential episodes, account-security audit evidence,
-   and the `users:password:reset` permission/grants.
+   adds nullable local-password fields to `users`, account-security audit
+   evidence, and the `users:password:reset` permission/grants.
 
 The current unreleased baseline intentionally updates these four revisions
 because the maintainer confirmed that no adopter database requires compatibility.
@@ -63,25 +63,15 @@ migration pass.
 
 ## Login-Identifier Schema
 
-Before a greenfield migration, first ask whether `users` stores `email`,
-`user_name`, or both. Then separately record per-flow requiredness, accepted
-login inputs, normalization, uniqueness, cross-namespace ambiguity, and reuse
-after soft deletion. Generate columns, checks, and indexes from those answers
-rather than copying an accidental example.
-
-The bundled fallback makes `email` and `user_name` nullable, requires at least
-one, and keeps each supplied canonical value globally unique, including after
-user soft deletion. If the selected policy allows reuse, replace global
-uniqueness with a partial unique index over live users and migrate recovery and
-lookup behavior together. An existing service retains its current contract
-unless the user explicitly requests this migration. Backfill a new canonical
-column, detect normalization collisions, dual-read/write during rollout when
-needed, and validate before enforcing uniqueness; never silently merge users.
-If one login input accepts either field, reject cross-column collisions through
-a shared canonical login-key table/constraint, disjoint syntax, or explicit
-typed inputs; separate unique constraints do not solve that ambiguity.
-Immutable `users.id` does not change and remains JWT `sub` and the bootstrap
-input throughout.
+The fresh baseline has one required `user_name`, globally unique even after
+soft deletion. Trim edge whitespace, validate 3..32 ASCII letters/digits or
+underscores, reject the fixed reserved-name list, and ask the project owner
+whether casing matters before fixing canonical uniqueness and lookup behavior.
+Email login or recovery is a separately designed product extension, not a
+nullable field or secondary login namespace in the bundled baseline. Existing
+services retain their intentional identity contract unless migration is
+requested. Immutable `users.id`, not username, remains JWT `sub` and the
+operator-bootstrap input throughout.
 
 ## `0002_system_roles` Contract
 
@@ -94,21 +84,21 @@ assignment history:
    system roles but do not make every holder a protected identity.
 3. Seed the permission catalog used by the public API, including separate
    `permissions:read`, role information/lifecycle/delete capabilities,
-   permission bind/unbind capabilities, and `super_admin:transfer`.
+   permission bind/unbind and administrator target-session-revocation capabilities.
 4. Seed deterministic `super_admin`, `admin`, and `user` roles directly. Fix
    their tiers at `1000`, `500`, and `0`. Reject a pre-existing collision on one
    of those three keys unless it already has the exact required system-role
    shape; do not rename or reinterpret any other custom role.
 5. Leave an unrelated custom role whose key is `owner` unchanged. The fresh
    baseline has no legacy `owner` system-role alias or compatibility behavior.
-6. Seed explicit super-admin and admin grant/delegation allowlists. The admin set
-   deliberately omits role deletion, delegation control, and super-admin
-   transfer; `user` receives no authorization-management grant.
+6. Seed explicit super-admin and admin grant allowlists. The admin set
+   deliberately omits role deletion and online super-admin handover;
+   `user` receives no authorization-management grant.
 7. Backfill `user` for every existing user, preserving every other assignment.
    Increment each changed user's `authz_version`, increment the global epoch for
    the shared change, and record the controlled migration outcome.
 8. Add database constraints and triggers that protect the fixed key, name,
-   description, tier, flags, active/not-deleted shape, and permission/delegation
+   description, tier, flags, active/not-deleted shape, and permission
    composition of all three system roles from direct runtime writes.
 9. Add the indexes needed for active/non-deleted role resolution, role list and
    detail lookup, permission detail lookup, and affected-user scans.
@@ -130,11 +120,15 @@ drops the constraint trigger and functions before dropping `user_roles`.
 indexes, bounded JSON constraints, and database triggers rejecting runtime
 `UPDATE`, `DELETE`, and `TRUNCATE`. It does not change RBAC role limits.
 
-`0004_password_auth` creates `user_password_credentials` and
-`account_security_audit_events`, installs their live-episode, tombstone,
-UUIDv4, and append-only controls, and seeds `users:password:reset` for the
-built-in administrator roles. Existing users receive no generated or default
-credential and remain unable to use password login until controlled enrollment.
+`0004_password_auth` adds nullable `users.password_hash`, non-null
+`users.must_change_password` (default `false`), and nullable
+`users.password_changed_at`, while preserving `users.token_version`. Named
+checks enforce Argon2id hash shape, coherent password state, and no hash on a
+soft-deleted user. It also creates the append-only
+`account_security_audit_events` table and seeds `users:password:reset` for the
+built-in administrator roles. It does not create a password-episode table or
+credential-version counter. Existing users receive no generated or default
+password and remain unable to use password login until controlled enrollment.
 
 ## System Role Specifications
 
@@ -142,13 +136,13 @@ The database and domain constants agree on exactly these rows:
 
 | Key | Tier | Required flags | Public mutation |
 | --- | ---: | --- | --- |
-| `super_admin` | `1000` | `is_system`, `is_protected`, `is_super_admin`, `is_active`, not deleted | Assignment changes only through bootstrap or atomic `super_admin` transfer |
+| `super_admin` | `1000` | `is_system`, `is_protected`, `is_super_admin`, `is_active`, not deleted | Assignment changes only through bootstrap or guarded offline handover |
 | `admin` | `500` | `is_system`, `is_active`, `is_protected=false`, `is_super_admin=false`, not deleted | Role definition and grants are immutable; assignment only by a strictly higher actor |
 | `user` | `0` | `is_system`, `is_active`, `is_protected=false`, `is_super_admin=false`, not deleted | Mandatory assignment cannot be unbound |
 
 Custom roles use tier `1..999`. Runtime strict hierarchy means `admin` can create,
 edit, enable, disable, grant, or assign only custom roles below tier `500` and
-within its explicit delegation ceiling. Only custom roles may be soft-deleted.
+using only current capabilities and strict hierarchy. Only custom roles may be soft-deleted.
 Their keys remain reserved after deletion. `owner` is not a reserved system key;
 it may be an ordinary custom-role key and has no special authority.
 
@@ -247,7 +241,7 @@ second holder is refused without partial writes.
   Application services must still reject the mutation before SQL.
 - Use a deferred constraint trigger for changes involving the `super_admin`
   assignment. Lock the global guard and require exactly one holder in the final
-  transaction state, allowing bootstrap and atomic transfer while rejecting a
+  transaction state, allowing bootstrap and atomic offline handover while rejecting a
   second holder or deletion of the last holder.
 - Add indexes supporting exact permission resolution, stable pagination,
   affected-user scans, and application resource queries.
@@ -279,10 +273,9 @@ roles:assign
 roles:revoke
 roles:permissions:bind
 roles:permissions:unbind
-roles:delegation:update
 users:read
 users:status:update
-super_admin:transfer
+users:sessions:revoke
 ```
 
 Seeding is repeatable and must not duplicate rows or reset custom-role
@@ -317,6 +310,9 @@ application-level authorization ordering proof.
 
 - Upgrade a new empty database through `0004_password_auth` at head and verify
   the role-limit functions and triggers already installed by `0001` remain active.
+- Verify `users` carries the three local-password fields with the documented
+  nullability/default and preserves `token_version`; check that a deleted user
+  cannot retain a hash and that no password-episode table is created.
 - Exercise the linear `0001` through `0004` chain with an ordinary
   custom role whose key is `owner`, users with no roles, users with multiple
   roles, and existing custom grants. Verify `owner` remains ordinary custom data
@@ -347,8 +343,8 @@ application-level authorization ordering proof.
   bootstrap and super-admin transfer.
 - Prove the fixed global `rbac_state` row exists and locks first for
   every authorization writer; direct `DELETE` and `TRUNCATE` fail.
-- Prove the selected email/`user_name` requiredness, normalization, uniqueness,
-  login lookup, and reuse policy from empty and supported prior revisions.
+- Prove the new-project username requiredness, trim/ASCII validation,
+  normalization, uniqueness, lookup, and permanent post-deletion reservation.
 - Prove parent soft deletion and live relation tombstones are atomic, relation
   rebind creates a new episode, and restore revives no old authority.
 - Prove runtime roles cannot update, delete, truncate, or soft-delete audit rows,

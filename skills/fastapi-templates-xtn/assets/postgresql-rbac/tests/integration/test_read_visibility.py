@@ -150,7 +150,7 @@ async def test_role_reads_hide_peer_and_higher_authority(
         "user",
         "junior-admin",
         "viewer",
-        "nondelegable",
+        "auditor",
     }
 
     missing = await client.get(
@@ -236,7 +236,6 @@ async def test_disabled_roles_remain_assigned_but_do_not_contribute_authority(
         "effective_role_ids",
         "effective_management_tier",
         "effective_permissions",
-        "effective_delegable_permissions",
         "authz_version",
     }
     assert set(data["assigned_role_ids"]) == {
@@ -249,7 +248,6 @@ async def test_disabled_roles_remain_assigned_but_do_not_contribute_authority(
     }
     assert data["effective_management_tier"] == 20
     assert data["effective_permissions"] == [PermissionKey.PROJECTS_READ.value]
-    assert data["effective_delegable_permissions"] == []
 
     manager_list_response = await client.get(
         "/api/v1/users?page_size=200",

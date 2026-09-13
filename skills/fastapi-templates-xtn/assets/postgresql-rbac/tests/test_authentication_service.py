@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
@@ -14,7 +14,6 @@ from app.authentication_service import (
     LocalAuthenticationService,
     _PasswordSnapshot,
 )
-from app.password_models import PasswordCredential
 from app.passwords import PasswordHashError, PasswordVerification
 from app.rbac.errors import RbacError, forbidden, unavailable
 from app.rbac.models import User
@@ -42,13 +41,11 @@ def _snapshot(*, password_hash: str) -> _PasswordSnapshot:
     return _PasswordSnapshot(
         user_id=uuid.uuid4(),
         user_name="alice",
-        email=None,
         is_active=True,
         is_deleted=False,
         token_version=0,
-        credential_id=uuid.uuid4(),
         password_hash=password_hash,
-        credential_version=1,
+        password_changed_at=datetime.now(UTC),
         must_change_password=False,
     )
 
@@ -132,8 +129,6 @@ async def test_service_self_change_rejects_reusing_the_current_password(
 
     with pytest.raises(RbacError) as caught:
         await service.change_password(
-            abuse_flow=None,
-            client_ip="127.0.0.1",
             context=cast(Any, object()),
             current_password="same password value",
             new_password="same password value",
@@ -211,68 +206,68 @@ async def test_account_security_denial_audit_excludes_infrastructure_failures(
         write_denied_event.assert_not_awaited()
 
 
-async def test_password_rotation_tombstones_then_creates_a_new_episode() -> None:
+async def test_denial_audit_failure_preserves_the_original_permission_error() -> None:
+    class _FailingTransaction:
+        async def __aenter__(self) -> None:
+            raise OSError("account audit unavailable")
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    session = SimpleNamespace(begin=Mock(return_value=_FailingTransaction()))
+    service = LocalAuthenticationService(
+        cast(
+            async_sessionmaker[AsyncSession], Mock(return_value=_AsyncContext(session))
+        ),
+        Mock(),
+    )
+    error = forbidden("target_not_allowed")
+
+    with pytest.raises(RbacError) as caught:
+        try:
+            raise error
+        except RbacError as exc:
+            await service._write_client_denial(
+                error=exc,
+                action="account_security.password.admin_reset",
+                actor_user_id=uuid.uuid4(),
+                target_user_id=uuid.uuid4(),
+                source=AuditSource.HTTP,
+                request_id=str(uuid.uuid4()),
+            )
+            raise
+
+    assert caught.value is error
+
+
+async def test_password_rotation_updates_user_row_and_timestamp() -> None:
     user_id = uuid.uuid4()
-    actor_id = uuid.uuid4()
-    user = User(id=user_id, user_name="target", token_version=3)
-    old = PasswordCredential(
-        id=uuid.uuid4(),
-        user_id=user_id,
+    old_timestamp = datetime.now(UTC)
+    user = User(
+        id=user_id,
+        user_name="target",
+        token_version=3,
         password_hash="$argon2id$old",
-        version=7,
         must_change_password=False,
-        created_by_user_id=None,
+        password_changed_at=old_timestamp,
     )
     changed_at = datetime.now(UTC)
     session = Mock(spec=AsyncSession)
-    session.scalar = AsyncMock(side_effect=[old, 7, changed_at])
-    session.flush = AsyncMock()
-    session.add = Mock()
+    session.scalar = AsyncMock(return_value=changed_at)
 
-    created = await LocalAuthenticationService._rotate_password(
+    await LocalAuthenticationService._rotate_password(
         cast(AsyncSession, session),
         user=user,
         password_hash="$argon2id$new",
         must_change_password=True,
-        created_by_user_id=actor_id,
     )
 
-    assert old.password_hash is None
-    assert old.version == 7
-    assert old.must_change_password is False
-    assert old.deleted_at == changed_at
-    assert old.deleted_by_user_id == actor_id
-    assert created.user_id == user_id
-    assert created.password_hash == "$argon2id$new"
-    assert created.version == 8
-    assert created.must_change_password is True
-    assert created.created_by_user_id == actor_id
-    session.flush.assert_awaited_once_with()
-    session.add.assert_called_once_with(created)
-
-
-async def test_password_rotation_continues_after_only_tombstones_remain() -> None:
-    user_id = uuid.uuid4()
-    user = User(id=user_id, user_name="target", token_version=3)
-    changed_at = datetime.now(UTC)
-    session = Mock(spec=AsyncSession)
-    session.scalar = AsyncMock(side_effect=[None, 7, changed_at])
-    session.flush = AsyncMock()
-    session.add = Mock()
-
-    created = await LocalAuthenticationService._rotate_password(
-        cast(AsyncSession, session),
-        user=user,
-        password_hash="$argon2id$new",
-        must_change_password=True,
-        created_by_user_id=user_id,
-    )
-
-    assert created.version == 8
-    assert created.password_hash == "$argon2id$new"
-    assert created.must_change_password is True
-    session.flush.assert_not_awaited()
-    session.add.assert_called_once_with(created)
+    assert user.id == user_id
+    assert user.password_hash == "$argon2id$new"
+    assert user.must_change_password is True
+    assert user.password_changed_at == changed_at
+    assert user.token_version == 3
+    session.scalar.assert_awaited_once()
 
 
 async def test_successful_login_upgrades_a_stale_hash_after_rechecking_locks(
@@ -284,17 +279,10 @@ async def test_successful_login_upgrades_a_stale_hash_after_rechecking_locks(
     user = User(
         id=snapshot.user_id,
         user_name=snapshot.user_name,
-        email=snapshot.email,
         is_active=True,
         token_version=snapshot.token_version,
-    )
-    assert snapshot.credential_id is not None
-    assert snapshot.credential_version is not None
-    credential = PasswordCredential(
-        id=snapshot.credential_id,
-        user_id=snapshot.user_id,
         password_hash=old_hash,
-        version=snapshot.credential_version,
+        password_changed_at=snapshot.password_changed_at,
         must_change_password=False,
     )
     session = SimpleNamespace(begin=Mock(return_value=_AsyncContext(None)))
@@ -322,11 +310,6 @@ async def test_successful_login_upgrades_a_stale_hash_after_rechecking_locks(
         "lock_users",
         AsyncMock(return_value={snapshot.user_id: user}),
     )
-    monkeypatch.setattr(
-        service,
-        "_lock_live_credential",
-        AsyncMock(return_value=credential),
-    )
 
     identity = await service.authenticate(
         abuse_flow=None,
@@ -336,8 +319,8 @@ async def test_successful_login_upgrades_a_stale_hash_after_rechecking_locks(
     )
 
     assert identity.user_id == snapshot.user_id
-    assert credential.password_hash == new_hash
-    assert credential.version == snapshot.credential_version
+    assert user.password_hash == new_hash
+    assert user.password_changed_at == snapshot.password_changed_at
     assert user.token_version == snapshot.token_version
     manager.hash_verified_password.assert_awaited_once_with("verified legacy password")
 
@@ -353,17 +336,10 @@ async def test_concurrent_stale_hash_upgrade_accepts_the_second_login_outside_lo
     user = User(
         id=snapshot.user_id,
         user_name=snapshot.user_name,
-        email=snapshot.email,
         is_active=True,
         token_version=snapshot.token_version,
-    )
-    assert snapshot.credential_id is not None
-    assert snapshot.credential_version is not None
-    credential = PasswordCredential(
-        id=snapshot.credential_id,
-        user_id=snapshot.user_id,
         password_hash=current_hash,
-        version=snapshot.credential_version,
+        password_changed_at=snapshot.password_changed_at,
         must_change_password=False,
     )
     transaction_open = False
@@ -405,14 +381,6 @@ async def test_concurrent_stale_hash_upgrade_accepts_the_second_login_outside_lo
         events.append("database.lock.user")
         return {snapshot.user_id: user}
 
-    async def lock_current_credential(
-        _session: object,
-        _user_id: uuid.UUID,
-    ) -> PasswordCredential:
-        assert transaction_open
-        events.append("database.lock.credential")
-        return credential
-
     manager.verify_or_dummy = AsyncMock(side_effect=verify_or_dummy)
     manager.hash_verified_password = AsyncMock(return_value="$argon2id$unused")
     service = LocalAuthenticationService(
@@ -425,11 +393,6 @@ async def test_concurrent_stale_hash_upgrade_accepts_the_second_login_outside_lo
         AsyncMock(return_value=snapshot),
     )
     monkeypatch.setattr(authentication_service, "lock_users", lock_current_users)
-    monkeypatch.setattr(
-        service,
-        "_lock_live_credential",
-        lock_current_credential,
-    )
 
     identity = await service.authenticate(
         abuse_flow=None,
@@ -440,17 +403,15 @@ async def test_concurrent_stale_hash_upgrade_accepts_the_second_login_outside_lo
 
     assert identity.user_id == snapshot.user_id
     assert identity.token_version == snapshot.token_version
-    assert credential.password_hash == current_hash
+    assert user.password_hash == current_hash
     assert events == [
         "argon2.verify.old",
         "transaction.enter",
         "database.lock.user",
-        "database.lock.credential",
         "transaction.exit",
         "argon2.verify.current",
         "transaction.enter",
         "database.lock.user",
-        "database.lock.credential",
         "transaction.exit",
     ]
 
@@ -466,17 +427,10 @@ async def test_concurrent_hash_only_change_must_be_a_current_verified_encoding(
     user = User(
         id=snapshot.user_id,
         user_name=snapshot.user_name,
-        email=snapshot.email,
         is_active=True,
         token_version=snapshot.token_version,
-    )
-    assert snapshot.credential_id is not None
-    assert snapshot.credential_version is not None
-    credential = PasswordCredential(
-        id=snapshot.credential_id,
-        user_id=snapshot.user_id,
         password_hash=other_legacy_hash,
-        version=snapshot.credential_version,
+        password_changed_at=snapshot.password_changed_at,
         must_change_password=False,
     )
     session = SimpleNamespace(begin=Mock(return_value=_AsyncContext(None)))
@@ -505,11 +459,6 @@ async def test_concurrent_hash_only_change_must_be_a_current_verified_encoding(
         "lock_users",
         AsyncMock(return_value={snapshot.user_id: user}),
     )
-    monkeypatch.setattr(
-        service,
-        "_lock_live_credential",
-        AsyncMock(return_value=credential),
-    )
 
     with pytest.raises(InvalidLoginCredentialsError):
         await service.authenticate(
@@ -524,7 +473,7 @@ async def test_concurrent_hash_only_change_must_be_a_current_verified_encoding(
 
 @pytest.mark.parametrize(
     "changed_state",
-    ["token_version", "inactive", "credential_id", "credential_version", "temporary"],
+    ["token_version", "inactive", "password_changed_at", "password_hash", "temporary"],
 )
 async def test_concurrent_rehash_recheck_rejects_changed_authoritative_state(
     monkeypatch: pytest.MonkeyPatch,
@@ -535,43 +484,32 @@ async def test_concurrent_rehash_recheck_rejects_changed_authoritative_state(
         "$argon2id$v=19$m=65536,t=3,p=4$current-salt-value$current-hash-value"
     )
     snapshot = _snapshot(password_hash=old_hash)
-    assert snapshot.credential_id is not None
-    assert snapshot.credential_version is not None
     first_user = User(
         id=snapshot.user_id,
         user_name=snapshot.user_name,
-        email=snapshot.email,
         is_active=True,
         token_version=snapshot.token_version,
+        password_hash=current_hash,
+        password_changed_at=snapshot.password_changed_at,
+        must_change_password=False,
     )
+    assert snapshot.password_changed_at is not None
     second_user = User(
         id=snapshot.user_id,
         user_name=snapshot.user_name,
-        email=snapshot.email,
         is_active=changed_state != "inactive",
         token_version=(
             snapshot.token_version + 1
             if changed_state == "token_version"
             else snapshot.token_version
         ),
-    )
-    first_credential = PasswordCredential(
-        id=snapshot.credential_id,
-        user_id=snapshot.user_id,
-        password_hash=current_hash,
-        version=snapshot.credential_version,
-        must_change_password=False,
-    )
-    second_credential = PasswordCredential(
-        id=(
-            uuid.uuid4() if changed_state == "credential_id" else snapshot.credential_id
+        password_hash=(
+            "$argon2id$changed" if changed_state == "password_hash" else current_hash
         ),
-        user_id=snapshot.user_id,
-        password_hash=current_hash,
-        version=(
-            snapshot.credential_version + 1
-            if changed_state == "credential_version"
-            else snapshot.credential_version
+        password_changed_at=(
+            snapshot.password_changed_at + timedelta(seconds=1)
+            if changed_state == "password_changed_at"
+            else snapshot.password_changed_at
         ),
         must_change_password=changed_state == "temporary",
     )
@@ -606,11 +544,6 @@ async def test_concurrent_rehash_recheck_rejects_changed_authoritative_state(
             ]
         ),
     )
-    monkeypatch.setattr(
-        service,
-        "_lock_live_credential",
-        AsyncMock(side_effect=[first_credential, second_credential]),
-    )
 
     with pytest.raises(InvalidLoginCredentialsError):
         await service.authenticate(
@@ -629,17 +562,10 @@ async def test_login_rejects_token_version_change_before_hash_upgrade_lock(
     user = User(
         id=snapshot.user_id,
         user_name=snapshot.user_name,
-        email=snapshot.email,
         is_active=True,
         token_version=snapshot.token_version + 1,
-    )
-    assert snapshot.credential_id is not None
-    assert snapshot.credential_version is not None
-    credential = PasswordCredential(
-        id=snapshot.credential_id,
-        user_id=snapshot.user_id,
         password_hash=old_hash,
-        version=snapshot.credential_version,
+        password_changed_at=snapshot.password_changed_at,
         must_change_password=False,
     )
     session = SimpleNamespace(begin=Mock(return_value=_AsyncContext(None)))
@@ -665,11 +591,6 @@ async def test_login_rejects_token_version_change_before_hash_upgrade_lock(
         "lock_users",
         AsyncMock(return_value={snapshot.user_id: user}),
     )
-    monkeypatch.setattr(
-        service,
-        "_lock_live_credential",
-        AsyncMock(return_value=credential),
-    )
 
     with pytest.raises(InvalidLoginCredentialsError):
         await service.authenticate(
@@ -690,20 +611,14 @@ async def test_concurrent_password_change_cancels_stale_hash_upgrade(
         "$argon2id$v=19$m=65536,t=3,p=4$concurrent-salt-12$concurrent-hash-12"
     )
     snapshot = _snapshot(password_hash=old_hash)
+    assert snapshot.password_changed_at is not None
     user = User(
         id=snapshot.user_id,
         user_name=snapshot.user_name,
-        email=snapshot.email,
         is_active=True,
         token_version=snapshot.token_version,
-    )
-    assert snapshot.credential_id is not None
-    assert snapshot.credential_version is not None
-    credential = PasswordCredential(
-        id=uuid.uuid4(),
-        user_id=snapshot.user_id,
         password_hash=concurrent_hash,
-        version=snapshot.credential_version + 1,
+        password_changed_at=snapshot.password_changed_at + timedelta(seconds=1),
         must_change_password=False,
     )
     session = SimpleNamespace(begin=Mock(return_value=_AsyncContext(None)))
@@ -733,11 +648,6 @@ async def test_concurrent_password_change_cancels_stale_hash_upgrade(
         "lock_users",
         AsyncMock(return_value={snapshot.user_id: user}),
     )
-    monkeypatch.setattr(
-        service,
-        "_lock_live_credential",
-        AsyncMock(return_value=credential),
-    )
 
     with pytest.raises(InvalidLoginCredentialsError):
         await service.authenticate(
@@ -747,7 +657,7 @@ async def test_concurrent_password_change_cancels_stale_hash_upgrade(
             password="verified legacy password",
         )
 
-    assert credential.password_hash == concurrent_hash
+    assert user.password_hash == concurrent_hash
 
 
 @pytest.mark.parametrize("holder_case", ["none", "different", "multiple"])
@@ -912,7 +822,6 @@ async def test_operator_reset_accepts_only_the_target_as_sole_super_admin(
         user=user,
         password_hash="$argon2id$temporary",
         must_change_password=True,
-        created_by_user_id=None,
     )
     event = session.add.call_args.args[0]
     assert event.action == "account_security.password.operator_reset"

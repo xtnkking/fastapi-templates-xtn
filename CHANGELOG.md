@@ -6,6 +6,47 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-13
+
+- **BREAKING:** New projects now use required, non-reusable
+  `user_name` only. Public registration starts enabled through a persistent,
+  super-admin-only server switch; administrator creation remains available when
+  public registration is closed. Both paths grant only `user`. The baseline
+  requires five distinct one-attempt graphical-CAPTCHA scenes for login,
+  registration, administrator user creation/reset, and self password change;
+  it does not bundle email/SMS delivery or a self-service forgot-password API.
+- **BREAKING:** Replaced global and cross-business Token Bucket
+  quotas with per-business Redis atomic fixed windows. Unauthenticated login,
+  registration, temporary-password completion and public CAPTCHA issuance use
+  trusted IP plus business; authenticated work (including its CAPTCHA) uses
+  immutable user ID plus business.
+  There is no submitted-username quota or global site budget. CAPTCHA issuance
+  defaults to 10 per scene and subject per five minutes. Limits remain
+  configurable and must be shown to the project owner before generation.
+- **BREAKING:** Removed online super-admin transfer, ordinary
+  self logout-all, and the separate `can_delegate` switch and APIs. A guarded,
+  audited offline SQL handover replaces online transfer. Ordinary logout revokes
+  only its current Token; authorized administrators can revoke a strictly lower
+  user's sessions. A project-chosen concurrent-login limit evicts the oldest
+  active login on successful issuance; Redis records login times, not devices.
+  Grants remain bounded by the grantor's own effective permissions.
+- Kept optional country and proxy guidance behind explicit product selection;
+  neither opens anonymous ordinary business reads or a global quota. Updated
+  release validation and the `v0.5.0` checklist to enforce the simplified
+  baseline while keeping the published `v0.4.0` record intact.
+- **BREAKING:** Store local Argon2id password state directly on
+  `users` with nullable `password_hash` and `password_changed_at`, non-null
+  `must_change_password=false`, and the existing `token_version`. Remove the
+  separate `user_password_credentials` table and credential-episode versions.
+  User soft deletion clears the hash and restoration never revives it. Committed
+  password-change counts derive from successful account-security audit events,
+  not a second mutable counter. The reference asset is for fresh projects; no
+  in-place database migration from the `v0.4.0` asset is provided.
+- Corrected CAPTCHA rejection limits for malformed parsed requests, preserved
+  the old challenge if image rendering fails during refresh, and fixed
+  PostgreSQL downgrade ordering with nonempty data. Added an asset setup guide
+  and verified the full PostgreSQL 17 and Redis test suites.
+
 ## [0.4.0] - 2026-09-13
 
 - **BREAKING:** Greenfield services must first choose whether `users` stores

@@ -26,12 +26,24 @@ _ACTIVATE_JTI = """
 redis.replicate_commands()
 local redis_time = redis.call('TIME')
 local expires_at = tonumber(ARGV[2])
+local maximum = tonumber(ARGV[5])
+local incoming_version = tonumber(ARGV[4])
 if not expires_at or expires_at ~= math.floor(expires_at) then
     return -1
 end
+if not maximum or maximum < 1 or maximum ~= math.floor(maximum) then return -1 end
+if not incoming_version or incoming_version < 0 or
+    incoming_version ~= math.floor(incoming_version) then return -1 end
 local ttl_seconds = expires_at - tonumber(redis_time[1])
 if ttl_seconds <= 0 then
     return -1
+end
+local current_version = redis.call('GET', KEYS[3])
+if current_version then
+    local parsed_version = tonumber(current_version)
+    if not parsed_version or parsed_version < 0 or
+        parsed_version ~= math.floor(parsed_version) then return -1 end
+    if parsed_version > incoming_version then return -2 end
 end
 if not redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', ttl_seconds) then
     return 0
@@ -40,6 +52,26 @@ if redis.call('PEXPIREAT', KEYS[1], expires_at * 1000) ~= 1 then
     redis.call('DEL', KEYS[1])
     return -1
 end
+if current_version ~= ARGV[4] then
+    redis.call('DEL', KEYS[2])
+end
+local members = redis.call('ZRANGE', KEYS[2], 0, -1)
+for _, member in ipairs(members) do
+    if redis.call('EXISTS', member) == 0 then redis.call('ZREM', KEYS[2], member) end
+end
+local score = tonumber(redis_time[1]) * 1000000 + tonumber(redis_time[2])
+local most_recent = redis.call('ZREVRANGE', KEYS[2], 0, 0, 'WITHSCORES')
+if #most_recent == 2 and tonumber(most_recent[2]) >= score then
+    score = tonumber(most_recent[2]) + 1
+end
+redis.call('ZADD', KEYS[2], score, KEYS[1])
+while redis.call('ZCARD', KEYS[2]) > maximum do
+    local oldest = redis.call('ZRANGE', KEYS[2], 0, 0)[1]
+    redis.call('DEL', oldest)
+    redis.call('ZREM', KEYS[2], oldest)
+end
+redis.call('EXPIRE', KEYS[2], ttl_seconds)
+redis.call('SET', KEYS[3], ARGV[4], 'EX', ttl_seconds)
 return 1
 """
 _COMPARE_AND_DELETE = """
@@ -50,7 +82,37 @@ end
 if current ~= ARGV[1] then
     return -1
 end
-return redis.call('DEL', KEYS[1])
+local removed = redis.call('DEL', KEYS[1])
+redis.call('ZREM', KEYS[2], KEYS[1])
+return removed
+"""
+_READ_ACTIVE_JTI = """
+local value = redis.call('GET', KEYS[1])
+if not value then return false end
+local ok, record = pcall(cjson.decode, value)
+if not ok or type(record) ~= 'table' or type(record.token_version) ~= 'number'
+    then return false end
+if redis.call('GET', KEYS[3]) ~= tostring(record.token_version) then return false end
+if not redis.call('ZSCORE', KEYS[2], KEYS[1]) then return false end
+return value
+"""
+_LIST_USER_SESSIONS = """
+if redis.call('GET', KEYS[2]) ~= ARGV[1] then return {} end
+local entries = redis.call('ZRANGE', KEYS[1], 0, -1)
+local result = {}
+for _, key in ipairs(entries) do
+    local raw = redis.call('GET', key)
+    if raw then
+        local ok, record = pcall(cjson.decode, raw)
+        if not ok or type(record) ~= 'table' or type(record.iat) ~= 'number' then
+            return redis.error_reply('invalid active session')
+        end
+        result[#result + 1] = record.iat
+    else
+        redis.call('ZREM', KEYS[1], key)
+    end
+end
+return result
 """
 REQUIRED_ACCESS_CLAIMS = frozenset({"sub", "jti", "iat", "exp", "token_type"})
 OPTIONAL_ACCESS_SCOPE_CLAIMS = frozenset({"iss", "aud"})
@@ -132,6 +194,12 @@ def decode_access_token(token: str, settings: Settings) -> AccessTokenClaims:
 def _active_jti_key(*, settings: Settings, token_id: uuid.UUID) -> str:
     digest = hashlib.sha256(f"{settings.service_name}\0{token_id}".encode()).hexdigest()
     return f"auth:access:v1:{settings.app_environment}:{digest}"
+
+
+def _user_session_keys(*, settings: Settings, user_id: uuid.UUID) -> tuple[str, str]:
+    digest = hashlib.sha256(f"{settings.service_name}\0{user_id}".encode()).hexdigest()
+    prefix = f"auth:sessions:v1:{settings.app_environment}:{digest}"
+    return f"{prefix}:active", f"{prefix}:version"
 
 
 def _active_jti_value(
@@ -230,17 +298,25 @@ async def issue_access_token(
             settings=settings,
         )
         try:
+            index_key, version_key = _user_session_keys(
+                settings=settings, user_id=user_id
+            )
             created = await cast(
                 Awaitable[object],
                 redis.eval(
                     _ACTIVATE_JTI,
-                    1,
+                    3,
                     _active_jti_key(settings=settings, token_id=claims.token_id),
+                    index_key,
+                    version_key,
                     _active_jti_value(
                         claims,
                         user_token_version=user_token_version,
                     ),
                     str(claims.expires_at),
+                    "",
+                    str(user_token_version),
+                    settings.max_active_sessions_per_user,
                 ),
             )
         except RedisError as exc:
@@ -258,6 +334,8 @@ async def issue_access_token(
             raise unavailable("active_token_registry_unavailable") from exc
         if type(created) is int and created == 1:
             return token
+        if type(created) is int and created == -2:
+            raise unauthenticated("token_version_changed")
         if type(created) is not int or created != 0:
             raise unavailable("active_token_registry_unavailable")
 
@@ -271,8 +349,18 @@ async def require_active_jti(
     settings: Settings,
 ) -> int:
     try:
-        value = await redis.get(
-            _active_jti_key(settings=settings, token_id=claims.token_id)
+        index_key, version_key = _user_session_keys(
+            settings=settings, user_id=claims.user_id
+        )
+        value = await cast(
+            Awaitable[object],
+            redis.eval(
+                _READ_ACTIVE_JTI,
+                3,
+                _active_jti_key(settings=settings, token_id=claims.token_id),
+                index_key,
+                version_key,
+            ),
         )
     except RedisError as exc:
         safe_log(
@@ -316,12 +404,14 @@ async def revoke_active_jti(
     settings: Settings,
 ) -> None:
     try:
+        index_key, _ = _user_session_keys(settings=settings, user_id=claims.user_id)
         deleted = await cast(
             Awaitable[object],
             redis.eval(
                 _COMPARE_AND_DELETE,
-                1,
+                2,
                 _active_jti_key(settings=settings, token_id=claims.token_id),
+                index_key,
                 _active_jti_value(
                     claims,
                     user_token_version=user_token_version,
@@ -343,3 +433,28 @@ async def revoke_active_jti(
         raise unavailable("active_token_registry_unavailable") from exc
     if deleted != 1:
         raise unauthenticated("inactive_access_token")
+
+
+async def list_active_sessions(
+    redis: Redis,
+    *,
+    user_id: uuid.UUID,
+    token_version: int,
+    settings: Settings,
+) -> tuple[int, ...]:
+    index_key, version_key = _user_session_keys(settings=settings, user_id=user_id)
+    try:
+        values = await cast(
+            Awaitable[object],
+            redis.eval(
+                _LIST_USER_SESSIONS, 2, index_key, version_key, str(token_version)
+            ),
+        )
+    except RedisError as exc:
+        raise unavailable("active_token_registry_unavailable") from exc
+    if not isinstance(values, list) or any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in values
+    ):
+        raise unavailable("active_token_registry_unavailable")
+    return tuple(values)

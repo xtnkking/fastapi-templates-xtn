@@ -11,7 +11,6 @@ from app.database import SessionFactory
 from app.rbac.domain import (
     MAX_ROLES_PER_USER,
     PERMISSION_CATALOG,
-    SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS,
     SUPER_ADMIN_PERMISSION_KEYS,
     SYSTEM_ROLE_KEYS,
     SYSTEM_ROLE_SPECS,
@@ -34,6 +33,7 @@ pytestmark = pytest.mark.postgresql
 
 ASSET_ROOT = Path(__file__).resolve().parents[2]
 BOOTSTRAP_SQL = ASSET_ROOT / "sql" / "bootstrap_super_admin.sql"
+HANDOVER_SQL = ASSET_ROOT / "sql" / "handover_super_admin.sql"
 PSQL_PREAMBLE = "\\set ON_ERROR_STOP on\n"
 USER_ID_MARKER = ":'super_admin_user_id'"
 
@@ -64,16 +64,37 @@ async def _run_bootstrap(user_id: uuid.UUID | str) -> None:
         await connection.close()
 
 
+async def _run_handover(old_id: uuid.UUID | str, new_id: uuid.UUID | str) -> None:
+    script = HANDOVER_SQL.read_text(encoding="utf-8")
+    assert script.startswith(PSQL_PREAMBLE)
+    markers = {
+        ":'old_super_admin_user_id'": old_id,
+        ":'new_super_admin_user_id'": new_id,
+    }
+    for marker, value in markers.items():
+        assert script.count(marker) == 1
+        script = script.replace(marker, "'" + str(value).replace("'", "''") + "'")
+    url = make_url(get_settings().database_url)
+    connection = await asyncpg.connect(
+        host=url.host,
+        port=url.port or 5432,
+        user=url.username,
+        password=url.password,
+        database=url.database,
+    )
+    try:
+        await connection.execute(script.removeprefix(PSQL_PREAMBLE))
+    finally:
+        await connection.close()
+
+
 async def _provision_user(
-    email: str | None = None,
-    *,
-    user_name: str | None = None,
+    user_name: str,
 ) -> User:
     async with SessionFactory() as session:
         async with session.begin():
             return await create_user_with_default_role(
                 session,
-                email=email,
                 user_name=user_name,
                 request_id=f"provision:{uuid.uuid4()}",
             )
@@ -131,7 +152,7 @@ async def test_operator_sql_assigns_existing_super_admin_atomically() -> None:
         ).all()
         grants = (
             await session.execute(
-                select(Permission.key, RolePermission.can_delegate)
+                select(Permission.key)
                 .select_from(RolePermission)
                 .join(Permission, Permission.id == RolePermission.permission_id)
                 .where(
@@ -161,9 +182,6 @@ async def test_operator_sql_assigns_existing_super_admin_atomically() -> None:
         SystemRoleKey.USER.value,
     }
     assert {row.key for row in grants} == SUPER_ADMIN_PERMISSION_KEYS
-    assert {row.key for row in grants if row.can_delegate} == (
-        SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS
-    )
     assert state_after is not None and state_after.epoch == epoch_before + 1
     assert user_after is not None
     assert user_after.authz_version == authz_version_before + 1
@@ -273,7 +291,7 @@ async def test_operator_sql_does_not_grant_unknown_global_permission() -> None:
         await session.commit()
 
     try:
-        candidate = await _provision_user("isolated-super-admin@example.test")
+        candidate = await _provision_user("isolated_super_admin")
         await _run_bootstrap(candidate.id)
         async with SessionFactory() as session:
             role = await session.scalar(
@@ -313,7 +331,7 @@ async def test_operator_sql_requires_an_existing_identity_and_rolls_back() -> No
 
 
 async def test_operator_sql_rejects_disabled_identity_and_rolls_back() -> None:
-    candidate = await _provision_user("disabled-super-admin@example.test")
+    candidate = await _provision_user("disabled_super_admin")
     async with SessionFactory() as session:
         async with session.begin():
             stored = await session.get(User, candidate.id)
@@ -349,7 +367,7 @@ async def test_operator_sql_rejects_disabled_identity_and_rolls_back() -> None:
 
 
 async def test_operator_sql_rejects_deleted_identity_and_rolls_back() -> None:
-    candidate = await _provision_user("deleted-super-admin@example.test")
+    candidate = await _provision_user("deleted_super_admin")
     async with SessionFactory() as session:
         async with session.begin():
             stored = await session.get(User, candidate.id)
@@ -386,8 +404,8 @@ async def test_operator_sql_rejects_deleted_identity_and_rolls_back() -> None:
 
 
 async def test_operator_sql_refuses_a_second_super_admin() -> None:
-    first = await _provision_user("first-super-admin@example.test")
-    second = await _provision_user("second-super-admin@example.test")
+    first = await _provision_user("first_super_admin")
+    second = await _provision_user("second_super_admin")
     await _run_bootstrap(first.id)
 
     async with SessionFactory() as session:
@@ -424,7 +442,7 @@ async def test_operator_sql_refuses_a_second_super_admin() -> None:
 
 
 async def test_operator_sql_same_identity_is_idempotent() -> None:
-    candidate = await _provision_user("idempotent-super-admin@example.test")
+    candidate = await _provision_user("idempotent_super_admin")
     await _run_bootstrap(candidate.id)
     async with SessionFactory() as session:
         state_before = await session.get(RbacState, "global")
@@ -472,6 +490,90 @@ async def test_operator_sql_rejects_non_v4_user_id() -> None:
         await _run_bootstrap(uuid.uuid1())
 
 
+async def test_operator_handover_replaces_holder_and_revokes_both_sessions() -> None:
+    old = await _provision_user("outgoing_admin")
+    new = await _provision_user("incoming_admin")
+    await _run_bootstrap(old.id)
+    async with SessionFactory() as session:
+        state_before = await session.get(RbacState, "global")
+        old_before = await session.get(User, old.id)
+        new_before = await session.get(User, new.id)
+        assert state_before is not None and old_before is not None
+        assert new_before is not None
+        epoch = state_before.epoch
+        old_authz, old_token = old_before.authz_version, old_before.token_version
+        new_authz, new_token = new_before.authz_version, new_before.token_version
+
+    await _run_handover(old.id, new.id)
+
+    async with SessionFactory() as session:
+        super_role_id = await session.scalar(
+            select(Role.id).where(Role.key == SystemRoleKey.SUPER_ADMIN.value)
+        )
+        assert super_role_id is not None
+        assignments = (
+            await session.scalars(
+                select(UserRole).where(UserRole.role_id == super_role_id)
+            )
+        ).all()
+        current_old = await session.get(User, old.id)
+        current_new = await session.get(User, new.id)
+        state = await session.get(RbacState, "global")
+        audit = await session.scalar(
+            select(RbacAuditEvent).where(
+                RbacAuditEvent.action == "super_admin.transfer"
+            )
+        )
+    assert {a.user_id for a in assignments if a.deleted_at is None} == {new.id}
+    assert {a.user_id for a in assignments if a.deleted_at is not None} == {old.id}
+    assert current_old is not None and current_new is not None and state is not None
+    assert current_old.authz_version == old_authz + 1
+    assert current_new.authz_version == new_authz + 1
+    assert current_old.token_version == old_token + 1
+    assert current_new.token_version == new_token + 1
+    assert state.epoch == epoch + 1
+    assert audit is not None and audit.decision == "allowed"
+    assert audit.source == "operator"
+    assert audit.actor_user_id == old.id and audit.target_user_id == new.id
+
+
+async def test_operator_handover_rejects_wrong_old_holder_without_changes() -> None:
+    holder = await _provision_user("actual_admin")
+    impostor = await _provision_user("claimed_admin")
+    target = await _provision_user("target_admin")
+    await _run_bootstrap(holder.id)
+    async with SessionFactory() as session:
+        state = await session.get(RbacState, "global")
+        assert state is not None
+        epoch = state.epoch
+
+    with pytest.raises(asyncpg.PostgresError, match="not the sole super_admin"):
+        await _run_handover(impostor.id, target.id)
+
+    async with SessionFactory() as session:
+        current_state = await session.get(RbacState, "global")
+        super_role_id = await session.scalar(
+            select(Role.id).where(Role.key == SystemRoleKey.SUPER_ADMIN.value)
+        )
+        audit_count = await session.scalar(
+            select(func.count())
+            .select_from(RbacAuditEvent)
+            .where(RbacAuditEvent.action == "super_admin.transfer")
+        )
+        assert current_state is not None and super_role_id is not None
+        holders = (
+            await session.scalars(
+                select(UserRole.user_id).where(
+                    UserRole.role_id == super_role_id,
+                    UserRole.deleted_at.is_(None),
+                )
+            )
+        ).all()
+    assert holders == [holder.id]
+    assert current_state.epoch == epoch
+    assert audit_count == 0
+
+
 async def test_provisioning_creates_user_and_default_role_atomically() -> None:
     user_id = uuid.uuid4()
     async with SessionFactory() as session:
@@ -481,14 +583,12 @@ async def test_provisioning_creates_user_and_default_role_atomically() -> None:
             epoch_before = state_before.epoch
             created = await create_user_with_default_role(
                 session,
-                email="  Provisioned-User@Example.Test  ",
                 user_name="  Provisioned_User  ",
                 user_id=user_id,
                 request_id="provision-default-user",
             )
             assert created.authz_version == 1
-            assert created.email == "provisioned-user@example.test"
-            assert created.user_name == "provisioned_user"
+            assert created.user_name == "Provisioned_User"
 
     async with SessionFactory() as session:
         user_role = await session.scalar(
@@ -516,24 +616,22 @@ async def test_provisioning_creates_user_and_default_role_atomically() -> None:
     assert audit.schema_version == 1
 
 
-async def test_provisioning_accepts_user_name_without_email() -> None:
+async def test_provisioning_strips_user_name_whitespace() -> None:
     created = await _provision_user(user_name="  USER_NAme_ONLY  ")
 
-    assert created.email is None
-    assert created.user_name == "user_name_only"
+    assert created.user_name == "USER_NAme_ONLY"
 
 
 @pytest.mark.parametrize(
-    ("email", "user_name", "message"),
+    ("user_name", "message"),
     [
-        (None, None, "email or user_name must be provided"),
-        ("  ", None, "email must not be empty when provided"),
-        (None, "  ", "user_name must not be empty when provided"),
+        ("  ", "user_name must be 3-32 ASCII"),
+        ("u!", "user_name must be 3-32 ASCII"),
+        ("admin", "reserved_user_name"),
     ],
 )
-async def test_provisioning_requires_a_nonempty_identity(
-    email: str | None,
-    user_name: str | None,
+async def test_provisioning_rejects_invalid_user_names(
+    user_name: str,
     message: str,
 ) -> None:
     async with SessionFactory() as session:
@@ -541,33 +639,24 @@ async def test_provisioning_requires_a_nonempty_identity(
             with pytest.raises(ValueError, match=message):
                 await create_user_with_default_role(
                     session,
-                    email=email,
                     user_name=user_name,
                 )
 
 
 @pytest.mark.parametrize(
-    ("email", "user_name"),
-    [
-        ("EXISTING@EXAMPLE.TEST", "different_name"),
-        ("different@example.test", "EXISTING_NAME"),
-    ],
+    "user_name",
+    ["existing_name", "  existing_name  "],
 )
-async def test_provisioning_rejects_each_existing_identity(
-    email: str,
+async def test_provisioning_rejects_an_existing_user_name(
     user_name: str,
 ) -> None:
-    await _provision_user(
-        email="existing@example.test",
-        user_name="existing_name",
-    )
+    await _provision_user(user_name="existing_name")
 
     async with SessionFactory() as session:
         async with session.begin():
             with pytest.raises(RbacError) as exc_info:
                 await create_user_with_default_role(
                     session,
-                    email=email,
                     user_name=user_name,
                 )
 
@@ -575,14 +664,14 @@ async def test_provisioning_rejects_each_existing_identity(
 
 
 async def test_provisioning_rejects_an_existing_user_id() -> None:
-    existing = await _provision_user(email="existing-id@example.test")
+    existing = await _provision_user(user_name="existing_id")
 
     async with SessionFactory() as session:
         async with session.begin():
             with pytest.raises(RbacError) as exc_info:
                 await create_user_with_default_role(
                     session,
-                    email="new-identity@example.test",
+                    user_name="new_identity",
                     user_id=existing.id,
                 )
 

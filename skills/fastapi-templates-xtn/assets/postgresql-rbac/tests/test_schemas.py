@@ -11,7 +11,6 @@ from app.rbac.schemas import (
     RoleResponse,
     RoleUpdateRequest,
     RoleVersionRequest,
-    SuperAdminTransferRequest,
 )
 
 
@@ -128,18 +127,6 @@ def test_role_batches_require_one_to_ten_unique_ids() -> None:
     assert len(request.role_ids) == 10
 
 
-def test_super_admin_transfer_accepts_only_the_target_user_id() -> None:
-    target_user_id = uuid.uuid4()
-
-    request = SuperAdminTransferRequest(target_user_id=target_user_id)
-
-    assert request.target_user_id == target_user_id
-    with pytest.raises(ValidationError):
-        SuperAdminTransferRequest.model_validate(
-            {"target_user_id": target_user_id, "is_super_admin": True}
-        )
-
-
 def test_role_mutation_snapshot_is_immutable() -> None:
     role = RoleResponse(
         id=uuid.uuid4(),
@@ -151,7 +138,6 @@ def test_role_mutation_snapshot_is_immutable() -> None:
         is_system=False,
         is_protected=False,
         permissions=("projects:read",),
-        delegable_permissions=(),
         version=3,
         deleted_at=None,
     )

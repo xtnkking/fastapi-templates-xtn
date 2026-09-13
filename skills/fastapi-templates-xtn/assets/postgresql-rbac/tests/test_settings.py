@@ -9,7 +9,6 @@ from app.settings import Settings
 EXAMPLE_ENV = Path(__file__).parents[1] / ".env.example"
 VALID_TEST_SECRET = "D7vL3qN9xR2mK8pT5sW1cF6hJ4yB0uGz"
 VALID_RATE_LIMIT_SECRET = "R8qM4vK2zT7pN5xC9sW1dF6hJ3yB0uGa"
-VALID_VERIFICATION_SECRET = "V5nL8rQ2xM7kT4pC9sD1fH6jB3yW0uGz"
 SETTINGS_ENV_NAMES = (
     "DATABASE_URL",
     "REDIS_URL",
@@ -21,11 +20,7 @@ SETTINGS_ENV_NAMES = (
     "LOG_INCLUDE_EXCEPTION_DETAILS",
     "JWT_SECRET",
     "RATE_LIMIT_HMAC_KEY",
-    "PUBLIC_REGISTRATION_ENABLED",
-    "VERIFICATION_ENABLED",
-    "VERIFICATION_CODE_HMAC_KEY",
-    "VERIFICATION_ENABLED_PURPOSES",
-    "VERIFICATION_ENABLED_CHANNELS",
+    "MAX_ACTIVE_SESSIONS_PER_USER",
     "JWT_ISSUER",
     "JWT_AUDIENCE",
     "JWT_ACCESS_TOKEN_TTL_SECONDS",
@@ -46,6 +41,7 @@ def settings_for_test(**overrides: object) -> Settings:
         "rate_limit_enabled": False,
         "jwt_secret": SecretStr(VALID_TEST_SECRET),
         "rate_limit_hmac_key": SecretStr(VALID_RATE_LIMIT_SECRET),
+        "max_active_sessions_per_user": 2,
     }
     values.update(overrides)
     return Settings.model_validate(values)
@@ -53,12 +49,6 @@ def settings_for_test(**overrides: object) -> Settings:
 
 def settings_with_secret(secret: str) -> Settings:
     return settings_for_test(jwt_secret=SecretStr(secret))
-
-
-def test_public_registration_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("PUBLIC_REGISTRATION_ENABLED", raising=False)
-
-    assert settings_for_test().public_registration_enabled is False
 
 
 @pytest.mark.parametrize("rate_limit_enabled", [True, False])
@@ -112,17 +102,6 @@ def test_local_and_test_environments_may_explicitly_disable_rate_limiting(
     )
 
     assert settings.rate_limit_enabled is False
-
-
-def settings_with_verification(**overrides: object) -> Settings:
-    values: dict[str, object] = {
-        "verification_enabled": True,
-        "verification_code_hmac_key": SecretStr(VALID_VERIFICATION_SECRET),
-        "verification_enabled_purposes": "registration,login,password_reset",
-        "verification_enabled_channels": "email,sms",
-    }
-    values.update(overrides)
-    return settings_for_test(**values)
 
 
 def test_example_env_cannot_start_with_public_jwt_placeholder(
@@ -255,109 +234,43 @@ def test_redis_url_requires_redis_protocol() -> None:
 def test_rate_limit_defaults_are_explicit_and_configurable() -> None:
     settings = settings_with_secret(VALID_TEST_SECRET)
 
-    assert settings.rate_limit_enabled is False  # The test suite disables middleware.
-    assert settings.rate_limit_api_ip_per_minute == 1200
-    assert settings.rate_limit_api_ip_burst == 200
-    assert settings.rate_limit_authenticated_read_per_minute == 300
-    assert settings.rate_limit_authorization_write_per_minute == 30
+    assert settings.rate_limit_enabled is False  # Isolated unit tests opt out.
+    assert settings.rate_limit_captcha_create_per_five_minutes == 10
+    assert settings.rate_limit_authenticated_read_per_minute == 600
+    assert settings.rate_limit_ordinary_write_per_minute == 120
+    assert settings.rate_limit_management_read_per_minute == 300
+    assert settings.rate_limit_authorization_write_per_minute == 60
     assert settings.rate_limit_login_ip_per_five_minutes == 20
-    assert settings.rate_limit_login_global_per_five_minutes == 1000
     assert settings.rate_limit_registration_ip_per_hour == 5
-    assert settings.rate_limit_registration_target_per_hour == 3
-    assert settings.rate_limit_verification_target_average_per_day == 5
-    assert settings.rate_limit_verification_global_per_minute == 300
-    assert settings.rate_limit_verification_global_burst == 50
-    assert settings.rate_limit_verification_submit_ip_per_hour == 120
-    assert settings.verification_code_ttl_seconds == 300
-    assert settings.verification_max_attempts == 5
-    assert settings.login_failure_state_retention_seconds == 86400
-    assert settings.verification_enabled is False
-    assert settings.verification_code_hmac_key is None
-    assert settings.verification_enabled_purposes == ""
-    assert settings.verification_enabled_channels == ""
+    assert settings.rate_limit_temporary_complete_ip_per_five_minutes == 20
+    assert settings.max_active_sessions_per_user == 2
 
 
-def test_verification_can_be_enabled_with_complete_configuration() -> None:
-    settings = settings_with_verification()
-
-    assert settings.verification_enabled is True
-    assert settings.verification_code_hmac_key is not None
-    assert settings.verification_enabled_purposes == (
-        "registration,login,password_reset"
-    )
-    assert settings.verification_enabled_channels == "email,sms"
+def test_session_limit_must_be_positive_and_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MAX_ACTIVE_SESSIONS_PER_USER", raising=False)
+    with pytest.raises(ValidationError, match="max_active_sessions_per_user"):
+        Settings.model_validate(
+            {
+                "database_url": "postgresql+asyncpg://postgres:postgres@localhost/example",
+                "redis_url": "redis://localhost:6379/0",
+                "app_environment": "test",
+                "jwt_secret": SecretStr(VALID_TEST_SECRET),
+                "rate_limit_hmac_key": SecretStr(VALID_RATE_LIMIT_SECRET),
+            }
+        )
+    with pytest.raises(ValidationError, match="max_active_sessions_per_user"):
+        settings_for_test(max_active_sessions_per_user=0)
 
 
 def test_rate_limit_policy_bounds_can_be_validated_at_startup() -> None:
     settings = settings_with_secret(VALID_TEST_SECRET).model_copy(
-        update={"rate_limit_api_ip_burst": 1_000_001}
+        update={"rate_limit_login_ip_per_five_minutes": 1_000_001}
     )
 
-    with pytest.raises(ValueError, match="burst_capacity"):
+    with pytest.raises(ValueError, match="limit"):
         SecurityPolicies.from_settings(settings)
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("verification_enabled_purposes", ""),
-        ("verification_enabled_purposes", "login,login"),
-        ("verification_enabled_purposes", "login,unknown"),
-        ("verification_enabled_channels", "email,email"),
-        ("verification_enabled_channels", "push"),
-    ],
-)
-def test_verification_allowlists_reject_empty_duplicate_or_unknown_values(
-    field: str,
-    value: str,
-) -> None:
-    with pytest.raises(ValidationError, match=field):
-        settings_with_verification(**{field: value})
-
-
-@pytest.mark.parametrize(
-    ("purposes", "channels"),
-    [("email_change", "sms"), ("phone_change", "email")],
-)
-def test_verification_purpose_requires_its_delivery_channel(
-    purposes: str,
-    channels: str,
-) -> None:
-    with pytest.raises(ValidationError, match="matching channel"):
-        settings_with_verification(
-            verification_enabled_purposes=purposes,
-            verification_enabled_channels=channels,
-        )
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"verification_code_hmac_key": None},
-        {"verification_enabled_purposes": ""},
-        {"verification_enabled_channels": ""},
-    ],
-)
-def test_enabled_verification_requires_complete_configuration(
-    overrides: dict[str, object],
-) -> None:
-    with pytest.raises(ValidationError, match="verification"):
-        settings_with_verification(**overrides)
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"verification_code_hmac_key": SecretStr(VALID_VERIFICATION_SECRET)},
-        {"verification_enabled_purposes": "login"},
-        {"verification_enabled_channels": "email"},
-    ],
-)
-def test_disabled_verification_rejects_dormant_configuration(
-    overrides: dict[str, object],
-) -> None:
-    with pytest.raises(ValidationError, match="must be omitted"):
-        settings_for_test(**overrides)
 
 
 def test_rate_limit_redis_can_be_isolated_or_explicitly_shared() -> None:
@@ -378,20 +291,10 @@ def test_rate_limit_hmac_secret_rejects_weak_values() -> None:
         settings_for_test(rate_limit_hmac_key=SecretStr("a" * 32))
 
 
-def test_enabled_verification_hmac_secret_rejects_weak_values() -> None:
-    with pytest.raises(ValidationError, match="verification_code_hmac_key"):
-        settings_with_verification(verification_code_hmac_key=SecretStr("a" * 32))
-
-
 def test_security_secrets_must_not_be_reused() -> None:
     with pytest.raises(ValidationError, match="must use different values"):
         settings_for_test(
             rate_limit_hmac_key=SecretStr(VALID_TEST_SECRET),
-        )
-
-    with pytest.raises(ValidationError, match="must use different values"):
-        settings_with_verification(
-            verification_code_hmac_key=SecretStr(VALID_RATE_LIMIT_SECRET)
         )
 
 

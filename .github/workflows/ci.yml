@@ -36,6 +36,7 @@ jobs:
       TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/rbac_example_test
       TEST_DISPOSABLE_DATABASE: rbac_example_test
       TEST_REDIS_URL: redis://127.0.0.1:6379/15
+      TEST_CAPTCHA_REDIS_URL: redis://127.0.0.1:6379/14
       TEST_RATE_LIMIT_REDIS_URL: redis://127.0.0.1:6380/0
       TEST_REDIS_ISOLATION_CONFIRMED: "yes"
     services:

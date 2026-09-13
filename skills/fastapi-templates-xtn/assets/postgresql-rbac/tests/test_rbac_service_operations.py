@@ -71,18 +71,3 @@ async def test_role_permission_change_rejects_unknown_operation() -> None:
         )
 
     session_factory.assert_not_called()
-
-
-async def test_role_delegation_change_rejects_unknown_operation() -> None:
-    service, session_factory = _service()
-
-    with pytest.raises(ValueError, match="operation must be 'bind' or 'unbind'"):
-        await service.change_role_delegation(
-            context=_context(),
-            role_id=uuid.uuid4(),
-            permission_ids=(uuid.uuid4(),),
-            operation=_misspelled_operation(),
-            expected_version=0,
-        )
-
-    session_factory.assert_not_called()

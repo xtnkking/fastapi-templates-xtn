@@ -156,6 +156,34 @@ def test_redis_preflight_requires_confirmation_before_connecting(
         )
 
 
+@pytest.mark.parametrize(
+    "redis_only_url",
+    [
+        "redis://127.0.0.1:16379/15",
+        "redis://localhost:16379/15",
+        "redis://127.0.0.1:16380/0",
+    ],
+)
+def test_redis_only_target_must_not_reuse_integration_database(
+    monkeypatch: pytest.MonkeyPatch, redis_only_url: str
+) -> None:
+    configure_disposable_targets(monkeypatch)
+    monkeypatch.setenv("TEST_CAPTCHA_REDIS_URL", redis_only_url)
+    with pytest.raises(RuntimeError, match="distinct from integration tests"):
+        safety.confirmed_redis_only_target()
+
+
+def test_redis_only_target_requires_explicit_distinct_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_disposable_targets(monkeypatch)
+    monkeypatch.delenv("TEST_CAPTCHA_REDIS_URL", raising=False)
+    with pytest.raises(RuntimeError, match="must be configured"):
+        safety.confirmed_redis_only_target()
+    monkeypatch.setenv("TEST_CAPTCHA_REDIS_URL", "redis://127.0.0.1:16379/14")
+    assert safety.confirmed_redis_only_target() == "redis://127.0.0.1:16379/14"
+
+
 def test_unsafe_urls_are_not_echoed_in_error_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

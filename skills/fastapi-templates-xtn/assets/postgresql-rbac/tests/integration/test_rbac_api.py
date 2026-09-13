@@ -130,14 +130,14 @@ async def test_stale_actor_cannot_probe_missing_user(world: World) -> None:
     assert caught.value.status_code == 401
 
 
-async def test_stale_actor_cannot_probe_missing_super_admin_transfer_target(
+async def test_stale_actor_cannot_probe_missing_session_revoke_target(
     world: World,
 ) -> None:
-    context = await context_for(world, "super_admin", "stale-super-admin-missing-user")
-    await increment_token_version(world.users["super_admin"].id)
+    context = await context_for(world, "manager", "stale-manager-missing-user")
+    await increment_token_version(world.users["manager"].id)
 
     with pytest.raises(RbacError) as caught:
-        await RbacService(SessionFactory).transfer_super_admin(
+        await RbacService(SessionFactory).revoke_user_sessions(
             context=context,
             target_user_id=uuid.uuid4(),
         )
@@ -194,8 +194,8 @@ async def test_unprivileged_actor_cannot_probe_missing_user(world: World) -> Non
             role_ids=(world.roles["viewer"].id,),
             operation="bind",
         )
-    with pytest.raises(RbacError) as transfer_error:
-        await service.transfer_super_admin(
+    with pytest.raises(RbacError) as sessions_error:
+        await service.revoke_user_sessions(
             context=context,
             target_user_id=uuid.uuid4(),
         )
@@ -204,8 +204,8 @@ async def test_unprivileged_actor_cannot_probe_missing_user(world: World) -> Non
     assert status_error.value.reason_code == "missing_operation_permission"
     assert role_error.value.status_code == 403
     assert role_error.value.reason_code == "missing_operation_permission"
-    assert transfer_error.value.status_code == 403
-    assert transfer_error.value.reason_code == "actor_is_not_super_admin"
+    assert sessions_error.value.status_code == 403
+    assert sessions_error.value.reason_code == "missing_operation_permission"
 
 
 async def test_authority_uses_all_active_roles(
@@ -324,7 +324,7 @@ async def test_user_role_unbind_then_rebind_preserves_history(
     assert PermissionKey.PROJECTS_READ.value in after_rebind.permissions
 
 
-async def test_delegated_junior_admin_can_manage_a_strictly_lower_user(
+async def test_junior_admin_can_manage_a_strictly_lower_user(
     client: AsyncClient,
     world: World,
     access_token: AccessToken,
@@ -470,18 +470,18 @@ async def test_user_role_batch_conceals_hidden_role_and_remains_atomic(
     assert partial_assignment is None
 
 
-async def test_possession_does_not_imply_delegation(
+async def test_admin_can_assign_lower_role_with_permissions_in_its_ceiling(
     client: AsyncClient,
     world: World,
     access_token: AccessToken,
 ) -> None:
     response = await client.post(
         f"/api/v1/users/{world.users['blank'].id}/roles/bind",
-        json={"role_ids": [str(world.roles["nondelegable"].id)]},
+        json={"role_ids": [str(world.roles["auditor"].id)]},
         headers=await headers(access_token, world, "manager"),
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 200
 
 
 async def test_system_roles_reject_lifecycle_and_permission_changes(
@@ -533,7 +533,6 @@ async def test_role_creation_starts_empty_and_cannot_elevate_creator(
     )
 
     assert created["permissions"] == []
-    assert created["delegable_permissions"] == []
     assignment = await client.post(
         f"/api/v1/users/{world.users['manager'].id}/roles/bind",
         json={"role_ids": [created["id"]]},
@@ -630,13 +629,6 @@ async def test_policy_denial_precedes_stale_role_version(
                 "expected_version": stale_version,
             },
         ),
-        (
-            f"/api/v1/roles/{role.id}/delegable-permissions/bind",
-            {
-                "permission_ids": [str(permission_id)],
-                "expected_version": stale_version,
-            },
-        ),
     )
 
     for path, body in requests:
@@ -675,7 +667,7 @@ async def test_unknown_permission_is_a_semantically_invalid_request(
     assert response.json()["code"] == 400001
 
 
-async def test_incremental_permission_and_delegation_changes_are_idempotent(
+async def test_incremental_permission_changes_are_idempotent(
     client: AsyncClient,
     world: World,
     access_token: AccessToken,
@@ -709,13 +701,12 @@ async def test_incremental_permission_and_delegation_changes_are_idempotent(
     assert duplicate.json()["data"]["changed"] is False
     assert duplicate.json()["data"]["role"]["version"] == version
 
-    delegated = await client.post(
+    obsolete_delegation = await client.post(
         f"/api/v1/roles/{role_id}/delegable-permissions/bind",
         json={"permission_ids": [str(read_id)], "expected_version": version},
         headers=super_admin_headers,
     )
-    assert delegated.status_code == 200
-    version = delegated.json()["data"]["role"]["version"]
+    assert obsolete_delegation.status_code == 404
 
     second_permission = await client.post(
         f"/api/v1/roles/{role_id}/permissions/bind",
@@ -723,9 +714,10 @@ async def test_incremental_permission_and_delegation_changes_are_idempotent(
         headers=super_admin_headers,
     )
     assert second_permission.status_code == 200
-    assert second_permission.json()["data"]["role"]["delegable_permissions"] == [
-        PermissionKey.PROJECTS_READ.value
-    ]
+    assert set(second_permission.json()["data"]["role"]["permissions"]) == {
+        PermissionKey.PROJECTS_READ.value,
+        PermissionKey.PROJECTS_UPDATE.value,
+    }
     version = second_permission.json()["data"]["role"]["version"]
 
     removed = await client.post(
@@ -734,7 +726,9 @@ async def test_incremental_permission_and_delegation_changes_are_idempotent(
         headers=super_admin_headers,
     )
     assert removed.status_code == 200
-    assert removed.json()["data"]["role"]["delegable_permissions"] == []
+    assert removed.json()["data"]["role"]["permissions"] == [
+        PermissionKey.PROJECTS_UPDATE.value
+    ]
     version = removed.json()["data"]["role"]["version"]
 
     rebound = await client.post(
@@ -922,7 +916,7 @@ async def test_system_role_assignment_rules_and_mandatory_user_role(
     assert user_assignment is not None
 
 
-async def test_super_admin_transfer_is_atomic(
+async def test_super_admin_transfer_route_is_absent(
     client: AsyncClient,
     world: World,
     access_token: AccessToken,
@@ -933,41 +927,18 @@ async def test_super_admin_transfer_is_atomic(
         headers=await headers(access_token, world, "super_admin"),
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 404
     async with SessionFactory() as session:
-        role = world.roles["super_admin"]
-        assignments = (
+        role_id = world.roles["super_admin"].id
+        holders = (
             await session.scalars(
-                select(UserRole).where(
-                    UserRole.role_id == role.id,
+                select(UserRole.user_id).where(
+                    UserRole.role_id == role_id,
                     UserRole.deleted_at.is_(None),
                 )
             )
         ).all()
-        old_super_admin_assignment = await session.scalar(
-            select(UserRole).where(
-                UserRole.user_id == world.users["super_admin"].id,
-                UserRole.role_id == role.id,
-            )
-        )
-        old_super_admin = await session.get(User, world.users["super_admin"].id)
-        new_super_admin = await session.get(User, world.users["blank"].id)
-        old_base = await session.scalar(
-            select(UserRole).where(
-                UserRole.user_id == world.users["super_admin"].id,
-                UserRole.role_id == world.roles["user"].id,
-                UserRole.deleted_at.is_(None),
-            )
-        )
-    assert [item.user_id for item in assignments] == [world.users["blank"].id]
-    assert old_super_admin is not None and old_super_admin.authz_version == 1
-    assert new_super_admin is not None and new_super_admin.authz_version == 1
-    assert old_base is not None
-    assert old_super_admin_assignment is not None
-    assert old_super_admin_assignment.deleted_at is not None
-    assert (
-        old_super_admin_assignment.deleted_by_user_id == world.users["super_admin"].id
-    )
+    assert holders == [world.users["super_admin"].id]
 
 
 async def test_status_change_invalidates_old_token_after_reactivation(
@@ -1035,7 +1006,7 @@ async def test_logout_revokes_only_the_presented_access_token(
     assert second_accepted.status_code == 200
 
 
-async def test_logout_all_revokes_every_access_token_for_the_current_user(
+async def test_administrator_can_revoke_only_strictly_lower_users_sessions(
     client: AsyncClient,
     world: World,
     access_token: AccessToken,
@@ -1045,9 +1016,10 @@ async def test_logout_all_revokes_every_access_token_for_the_current_user(
     second_token = await access_token(user)
     previous_token_version = user.token_version
 
-    logged_out = await client.post(
-        "/api/v1/auth/logout-all",
-        headers={"Authorization": f"Bearer {first_token}"},
+    admin_token = await access_token(world.users["manager"])
+    revoked = await client.post(
+        f"/api/v1/users/{user.id}/sessions/revoke",
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
     first_rejected = await client.get(
         "/api/v1/me/access",
@@ -1061,12 +1033,62 @@ async def test_logout_all_revokes_every_access_token_for_the_current_user(
     async with SessionFactory() as session:
         persisted_user = await session.get(User, user.id)
 
-    assert logged_out.status_code == 200
-    assert logged_out.json()["data"] == {"changed": True}
+    assert revoked.status_code == 200
+    assert revoked.json()["data"] == {"changed": True}
     assert first_rejected.status_code == 401
     assert second_rejected.status_code == 401
     assert persisted_user is not None
     assert persisted_user.token_version == previous_token_version + 1
+    assert (
+        await client.get(
+            "/api/v1/me/access",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    ).status_code == 200
+    async with SessionFactory() as session:
+        audit = await session.scalar(
+            select(RbacAuditEvent).where(
+                RbacAuditEvent.action == "user.sessions.revoke",
+                RbacAuditEvent.target_user_id == user.id,
+                RbacAuditEvent.decision == "allowed",
+            )
+        )
+    assert audit is not None
+    assert audit.actor_user_id == world.users["manager"].id
+    assert audit.before_state == {"token_version": previous_token_version}
+    assert audit.after_state == {"token_version": previous_token_version + 1}
+
+
+async def test_session_revocation_conceals_self_peer_and_higher_users(
+    client: AsyncClient,
+    world: World,
+    access_token: AccessToken,
+) -> None:
+    manager_headers = await headers(access_token, world, "manager")
+    unknown = await client.post(
+        f"/api/v1/users/{uuid.uuid4()}/sessions/revoke",
+        headers=manager_headers,
+    )
+    for name in ("manager", "peer", "higher", "super_admin"):
+        response = await client.post(
+            f"/api/v1/users/{world.users[name].id}/sessions/revoke",
+            headers=manager_headers,
+        )
+        assert response.status_code == unknown.status_code == 404
+        assert response.json()["code"] == unknown.json()["code"] == 404001
+
+    ordinary_user = await client.post(
+        f"/api/v1/users/{world.users['lower'].id}/sessions/revoke",
+        headers=await headers(access_token, world, "lower"),
+    )
+    assert ordinary_user.status_code == 403
+    assert ordinary_user.json()["code"] == 403001
+    assert (
+        await client.post(
+            "/api/v1/auth/logout-all",
+            headers=await headers(access_token, world, "lower"),
+        )
+    ).status_code == 404
 
 
 async def test_audit_failure_rolls_back_authorization_mutation(world: World) -> None:
@@ -1174,7 +1196,7 @@ async def test_permission_list_and_detail_use_uuid_identifiers(
 ) -> None:
     super_admin_headers = await headers(access_token, world, "super_admin")
     listed = await client.get("/api/v1/permissions", headers=super_admin_headers)
-    permission = world.permissions[PermissionKey.SUPER_ADMIN_TRANSFER.value]
+    permission = world.permissions[PermissionKey.USERS_SESSIONS_REVOKE.value]
     detailed = await client.get(
         f"/api/v1/permissions/{permission.id}",
         headers=super_admin_headers,
@@ -1185,7 +1207,7 @@ async def test_permission_list_and_detail_use_uuid_identifiers(
     assert set(page) == {"items", "page", "page_size", "total"}
     assert all(uuid.UUID(item["id"]) for item in page["items"])
     assert detailed.status_code == 200
-    assert detailed.json()["data"]["key"] == PermissionKey.SUPER_ADMIN_TRANSFER.value
+    assert detailed.json()["data"]["key"] == PermissionKey.USERS_SESSIONS_REVOKE.value
 
 
 async def test_user_soft_delete_and_restore_never_revive_old_roles(

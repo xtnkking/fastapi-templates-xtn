@@ -21,19 +21,47 @@ pytestmark = pytest.mark.postgresql
 
 
 @pytest.mark.parametrize(
-    ("email", "user_name"),
+    ("user_name", "expected_error"),
     [
-        pytest.param(None, None, id="missing-both"),
-        pytest.param("   ", None, id="blank-email"),
-        pytest.param(None, "   ", id="blank-user-name"),
+        pytest.param(None, IntegrityError, id="missing-user-name"),
+        pytest.param("   ", IntegrityError, id="blank-user-name"),
+        pytest.param("a!b", IntegrityError, id="invalid-user-name"),
+        pytest.param("aa", IntegrityError, id="short-user-name"),
+        pytest.param("x" * 33, DBAPIError, id="long-user-name"),
     ],
 )
-async def test_database_requires_a_nonblank_user_identity(
-    email: str | None,
-    user_name: str | None,
+async def test_database_requires_a_valid_user_name(
+    user_name: str | None, expected_error: type[DBAPIError]
 ) -> None:
     async with SessionFactory() as session:
-        session.add(User(email=email, user_name=user_name))
+        session.add(User(user_name=user_name))
+        with pytest.raises(expected_error) as caught:
+            await session.commit()
+        if user_name is not None and len(user_name) > 32:
+            assert getattr(caught.value.orig, "sqlstate", None) == "22001"
+
+
+async def test_database_reserves_user_name_after_soft_deletion(world: World) -> None:
+    target = world.users["blank"]
+    async with SessionFactory() as session:
+        async with session.begin():
+            user = await session.get(User, target.id, with_for_update=True)
+            assert user is not None
+            user.is_active = False
+            user.deleted_at = datetime.now(UTC)
+            bindings = (
+                await session.scalars(
+                    select(UserRole).where(
+                        UserRole.user_id == target.id,
+                        UserRole.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+            for binding in bindings:
+                binding.deleted_at = user.deleted_at
+
+    async with SessionFactory() as session:
+        session.add(User(user_name=target.user_name))
         with pytest.raises(IntegrityError):
             await session.commit()
 
@@ -59,7 +87,6 @@ async def test_database_rejects_unknown_role_in_permission_grant(
             RolePermission(
                 role_id=uuid.uuid4(),
                 permission_id=world.permissions[PermissionKey.PROJECTS_READ.value].id,
-                can_delegate=False,
             )
         )
         with pytest.raises(IntegrityError):
@@ -85,7 +112,6 @@ async def test_database_rejects_duplicate_live_permission_grant(world: World) ->
             RolePermission(
                 role_id=world.roles["viewer"].id,
                 permission_id=world.permissions[PermissionKey.PROJECTS_READ.value].id,
-                can_delegate=False,
             )
         )
         with pytest.raises(IntegrityError):
@@ -233,7 +259,7 @@ async def test_database_requires_soft_deleted_roles_to_be_inactive() -> None:
 
 async def test_database_requires_every_user_to_retain_user_role() -> None:
     async with SessionFactory() as session:
-        session.add(User(email="missing-user-role@example.test"))
+        session.add(User(user_name="missing_user_role"))
         with pytest.raises(IntegrityError):
             await session.commit()
 
@@ -283,7 +309,7 @@ async def test_database_allows_base_role_assignment_before_bootstrap() -> None:
             select(Role).where(Role.key == SystemRoleKey.USER.value)
         )
         assert user_role is not None
-        new_user = User(email="pre-bootstrap-user@example.test")
+        new_user = User(user_name="pre_bootstrap_user")
         session.add(new_user)
         await session.flush()
         session.add(
@@ -440,7 +466,6 @@ async def test_schema_uses_only_expected_tables_and_uuid_entity_ids() -> None:
         "role_permissions",
         "roles",
         "user_roles",
-        "user_password_credentials",
         "users",
     }
     entity_id_columns = {
@@ -450,7 +475,6 @@ async def test_schema_uses_only_expected_tables_and_uuid_entity_ids() -> None:
         ("role_permissions", "id"),
         ("roles", "id"),
         ("user_roles", "id"),
-        ("user_password_credentials", "id"),
         ("users", "id"),
     }
 
@@ -484,6 +508,20 @@ async def test_schema_uses_only_expected_tables_and_uuid_entity_ids() -> None:
     business_audit_id = columns[("business_audit_events", "id")]
     assert business_audit_id.data_type == "uuid"
     assert business_audit_id.column_default is None
+    assert columns[("users", "password_hash")].data_type == "character varying"
+    assert columns[("users", "password_changed_at")].data_type == (
+        "timestamp with time zone"
+    )
+    assert columns[("users", "must_change_password")].data_type == "boolean"
+    assert "false" in columns[("users", "must_change_password")].column_default
+    assert columns[("rbac_state", "public_registration_enabled")].data_type == (
+        "boolean"
+    )
+    assert (
+        "true" in columns[("rbac_state", "public_registration_enabled")].column_default
+    )
+    assert ("users", "user_name") in columns
+    assert ("users", "email") not in columns
 
     for key in (
         ("role_permissions", "role_id"),
@@ -497,8 +535,6 @@ async def test_schema_uses_only_expected_tables_and_uuid_entity_ids() -> None:
         ("permissions", "deleted_by_user_id"),
         ("roles", "deleted_by_user_id"),
         ("users", "deleted_by_user_id"),
-        ("user_password_credentials", "user_id"),
-        ("user_password_credentials", "deleted_by_user_id"),
         ("account_security_audit_events", "actor_user_id"),
         ("account_security_audit_events", "target_user_id"),
     ):

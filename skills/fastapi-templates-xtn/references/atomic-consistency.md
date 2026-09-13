@@ -26,8 +26,8 @@ Distinguish these outcomes:
 
 | Outcome | Database and caller contract |
 | --- | --- |
-| Allowed | Mutation, versions, allowed audit, and transactional outbox rows all commit, or none do. Return success only after commit. |
-| Denied by policy | Mutation, versions, and outbox rows roll back. Attempt the denied audit only after rollback; audit failure never becomes success. |
+| Allowed | Mutation, versions, and allowed audit commit together, or none do. Add an outbox only for a separately approved external-delivery requirement. Return success only after commit. |
+| Denied by policy | Mutation and versions roll back. Attempt the denied audit only after rollback; audit failure never becomes success. |
 | Retryable concurrency conflict | Roll back and restart in a fresh transaction within one retry and time budget. Internal retries are not policy denials. |
 | Commit outcome unknown | Resolve through an idempotency record or authoritative reread; never blindly replay a non-idempotent command. |
 | Infrastructure failure | Roll back when the outcome is known, fail closed, and emit operational telemetry instead of a false policy result. |
@@ -57,13 +57,14 @@ The transaction owner must:
 
 1. Acquire the singleton authorization guard first, then all other canonical
    locks that conflict with writers able to change the decision.
-2. Reload the actor, target, complete affected users, roles, grants, delegation,
+2. Reload the actor, target, complete affected users, roles, grants,
    protection, ownership, versions, and relevant resource state.
 3. Re-evaluate complete current and proposed authority.
 4. Check any client concurrency precondition.
 5. Apply the mutation, including all required parent/relation tombstones or new
    relation episodes, and all affected version or epoch increments.
-6. Insert the allowed audit and required transactional outbox rows.
+6. Insert the allowed audit. Add a transactional outbox row only if the product
+   actually has an approved external side effect requiring delivery.
 7. Build the immutable public response snapshot from the post-mutation rows while
    the same locks are held, using the actor's read-visibility projection for any
    nested role or grant collection.
@@ -85,7 +86,7 @@ async def run_authorized_write(command: Command) -> Result:
                 result = await apply_mutation(session, current, command)
                 bump_authorization_versions(current, result)
                 session.add(allowed_audit(decision, current, result))
-                session.add_all(outbox_events(result))
+                # Only a separately approved external-delivery feature needs an outbox.
                 response = await build_immutable_response_snapshot(
                     session,
                     actor=current.actor,
@@ -113,7 +114,7 @@ never create it opportunistically.
 
 The global row intentionally serializes authorization changes in this
 single-project baseline. This makes assignment, revocation, user status, shared
-role edits, delegation, and super-admin transfer participate in one proof. Keep
+role edits, and offline super-admin handover participate in one proof. Keep
 transactions short; do not perform network I/O while holding the guard.
 The row exists for the database lifetime: runtime and production-maintenance
 roles cannot delete, truncate, disable, or soft-delete it. Missing state fails
@@ -140,13 +141,13 @@ this baseline.
 ## Canonical PostgreSQL Lock Order
 
 Use one order across authorization changes, identity disablement, user-version
-revocation, super-admin transfer, and protected business writes:
+revocation, offline super-admin handover, and protected business writes:
 
 ```text
 class 10: singleton rbac_state row
 -> class 20: users or principal authorization rows
 -> class 30: roles
--> class 40: role permissions, assignments, delegation, and other policy rows
+-> class 40: role permissions, assignments, and other policy rows
 -> class 50+: protected business rows
 ```
 
@@ -200,7 +201,7 @@ authorized administrators can read version 4, then submit different full
 replacements; without a precondition, the second silently overwrites the first.
 
 For role information update, lifecycle, soft deletion, and permission or
-delegation bind/unbind commands, require a nonnegative `expected_version` in the
+permission bind/unbind commands, require a nonnegative `expected_version` in the
 JSON body. Compare it with `roles.version` only after locks, fresh reload,
 visibility, and manageability checks. Missing or malformed input follows the
 ordinary `422001` validation contract. Return HTTP `409` with business code

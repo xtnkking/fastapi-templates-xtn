@@ -30,6 +30,7 @@ os.environ["RATE_LIMIT_REDIS_URL"] = os.environ.get(
 os.environ["APP_ENVIRONMENT"] = "test"
 os.environ["JWT_SECRET"] = "D7vL3qN9xR2mK8pT5sW1cF6hJ4yB0uGz"
 os.environ["RATE_LIMIT_HMAC_KEY"] = "vM8qD2kR7pX4cN9sH5wF1jL6tG3yB0uZ"
+os.environ["MAX_ACTIVE_SESSIONS_PER_USER"] = "2"
 os.environ["PUBLIC_REGISTRATION_ENABLED"] = "true"
 os.environ["VERIFICATION_ENABLED"] = "false"
 os.environ.pop("VERIFICATION_CODE_HMAC_KEY", None)

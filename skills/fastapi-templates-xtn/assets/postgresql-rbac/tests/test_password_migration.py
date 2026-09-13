@@ -35,9 +35,14 @@ def test_password_migration_extends_the_linear_chain() -> None:
 def test_password_migration_contains_database_security_guards() -> None:
     source = (VERSIONS / "0004_password_auth.py").read_text(encoding="utf-8")
 
-    assert "uq_user_password_credentials_live_user" in source
-    assert "ck_user_password_credentials_password_hash_shape" in source
-    assert "ck_user_password_credentials_live_hash_or_tombstone" in source
+    for field in ("password_hash", "must_change_password", "password_changed_at"):
+        assert f'"users", sa.Column("{field}"' in source or (
+            f'"{field}",' in source and "op.add_column(" in source
+        )
+    assert "ck_users_password_hash_shape" in source
+    assert "ck_users_password_state_coherent" in source
+    assert "ck_users_deleted_user_no_password" in source
+    assert "user_password_credentials" not in source
     assert "trg_account_security_audit_no_update_delete" in source
     assert "trg_account_security_audit_no_truncate" in source
     assert "users:password:reset" in source

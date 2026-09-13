@@ -2,7 +2,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.exceptions import RequestValidationError
@@ -13,10 +13,8 @@ from sqlalchemy.exc import OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 
-import app.main as main_module
 from app.abuse_flow import InvalidLoginCredentialsError
 from app.api_contract import ApiResponse, BusinessCode, PageData
-from app.authentication import get_access_token_revocation_service
 from app.main import (
     app,
     handle_database_unavailable,
@@ -53,12 +51,10 @@ from app.rbac.schemas import (
     UserRoleMutationResponse,
 )
 from app.rbac.service import get_rbac_service
-from app.verification import VerificationUnavailableError
-from app.verification_flow import VerificationDeliveryUnavailableError
 
 REQUIRED_ROUTES = {
     ("POST", "/api/v1/auth/logout"),
-    ("POST", "/api/v1/auth/logout-all"),
+    ("POST", "/api/v1/users/{user_id}/sessions/revoke"),
     ("GET", "/api/v1/permissions"),
     ("GET", "/api/v1/permissions/{permission_id}"),
     ("GET", "/api/v1/roles"),
@@ -80,8 +76,6 @@ ROLE_MUTATION_PATHS = {
     "/api/v1/roles/{role_id}/delete",
     "/api/v1/roles/{role_id}/permissions/bind",
     "/api/v1/roles/{role_id}/permissions/unbind",
-    "/api/v1/roles/{role_id}/delegable-permissions/bind",
-    "/api/v1/roles/{role_id}/delegable-permissions/unbind",
 }
 
 
@@ -121,8 +115,9 @@ def test_public_contract_contains_required_routes_and_only_get_or_post() -> None
     assert {method for method, _path in actual} <= {"GET", "POST"}
 
 
-async def test_logout_all_uses_authoritative_context_and_standard_response() -> None:
+async def test_admin_session_revocation_uses_authoritative_context() -> None:
     user_id = uuid.uuid4()
+    target_id = uuid.uuid4()
     context = AuthorizationContext(
         principal=Principal(
             user_id=user_id,
@@ -138,7 +133,17 @@ async def test_logout_all_uses_authoritative_context_and_standard_response() -> 
             user_is_protected=False,
             token_version=3,
             authz_version=5,
-            roles=(),
+            roles=(
+                RoleGrant(
+                    role_id=uuid.uuid4(),
+                    key="session_manager",
+                    management_tier=100,
+                    permissions=frozenset({PermissionKey.USERS_SESSIONS_REVOKE.value}),
+                    is_system=False,
+                    is_protected=False,
+                    is_super_admin=False,
+                ),
+            ),
         ),
         request_id=str(uuid.uuid4()),
     )
@@ -148,14 +153,14 @@ async def test_logout_all_uses_authoritative_context_and_standard_response() -> 
         return context
 
     class RevocationService:
-        revoke_all_for_current_user = revoke_all
+        revoke_user_sessions = revoke_all
 
     app.dependency_overrides[get_authorization_context] = current_context
-    app.dependency_overrides[get_access_token_revocation_service] = RevocationService
+    app.dependency_overrides[get_rbac_service] = RevocationService
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.post("/api/v1/auth/logout-all")
+            response = await client.post(f"/api/v1/users/{target_id}/sessions/revoke")
     finally:
         app.dependency_overrides.clear()
 
@@ -165,7 +170,11 @@ async def test_logout_all_uses_authoritative_context_and_standard_response() -> 
         business_code=BusinessCode.OK,
     )
     assert body["data"] == {"changed": True}
-    revoke_all.assert_awaited_once_with(context=context)
+    assert revoke_all.await_count == 1
+    awaited_call = revoke_all.await_args
+    assert awaited_call is not None
+    assert awaited_call.kwargs["context"] is context
+    assert awaited_call.kwargs["target_user_id"] == target_id
 
 
 def test_public_contract_does_not_name_the_authorization_implementation() -> None:
@@ -195,6 +204,18 @@ def test_public_contract_does_not_name_the_authorization_implementation() -> Non
     semantic_error = invalid_request("test")
     assert semantic_error.status_code == 400
     assert semantic_error.business_code == BusinessCode.BAD_REQUEST
+
+
+def test_removed_capabilities_are_not_seeded_or_exposed() -> None:
+    assert "super_admin:transfer" not in {
+        permission.value for permission in PermissionKey
+    }
+    assert "roles:delegation:update" not in {
+        permission.value for permission in PermissionKey
+    }
+    paths = app.openapi()["paths"]
+    assert "/api/v1/system/super-admin/transfer" not in paths
+    assert not any("delegable-permissions" in path for path in paths)
 
 
 def test_public_response_schemas_include_management_state() -> None:
@@ -239,11 +260,9 @@ def test_public_response_schemas_include_management_state() -> None:
     assert role_list_responses["422"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/ApiResponse_Any_"
     }
-    transfer_operation = app.openapi()["paths"]["/api/v1/system/super-admin/transfer"][
-        "post"
-    ]
-    assert transfer_operation["operationId"] == "transfer_super_admin"
-    assert transfer_operation["tags"] == ["Super administrator"]
+    assert "/api/v1/system/super-admin/transfer" not in app.openapi()["paths"]
+    assert "/api/v1/auth/logout-all" not in app.openapi()["paths"]
+    assert not any("delegable-permissions" in path for path in app.openapi()["paths"])
 
 
 def test_openapi_declares_request_id_on_every_public_response() -> None:
@@ -488,54 +507,6 @@ async def test_invalid_login_credentials_use_one_non_leaking_contract() -> None:
     assert response.headers["X-Request-ID"] == body["request_id"]
 
 
-@pytest.mark.parametrize(
-    ("error", "handler", "event_name", "dependency", "operation"),
-    [
-        (
-            VerificationUnavailableError(),
-            main_module.handle_verification_unavailable,
-            "dependency.verification.unavailable",
-            "rate_limit_redis",
-            "verification_challenge",
-        ),
-        (
-            VerificationDeliveryUnavailableError(),
-            main_module.handle_verification_delivery_unavailable,
-            "dependency.verification_delivery.unavailable",
-            "verification_delivery",
-            "send_verification_code",
-        ),
-    ],
-)
-async def test_verification_dependency_logs_identify_the_correct_boundary(
-    monkeypatch: pytest.MonkeyPatch,
-    error: VerificationUnavailableError | VerificationDeliveryUnavailableError,
-    handler: Any,
-    event_name: str,
-    dependency: str,
-    operation: str,
-) -> None:
-    safe_log = Mock()
-    monkeypatch.setattr(main_module, "safe_log", safe_log)
-    request = Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/api/v1/verification/send",
-            "headers": [],
-        }
-    )
-
-    response = await handler(request, error)
-
-    assert response.status_code == 503
-    assert "Retry-After" not in response.headers
-    safe_log.assert_called_once()
-    assert safe_log.call_args.args[2] == event_name
-    assert safe_log.call_args.kwargs["extra"]["dependency"] == dependency
-    assert safe_log.call_args.kwargs["extra"]["dependency_operation"] == operation
-
-
 @pytest.mark.parametrize("expected_version", ["1", 1.0, True])
 async def test_role_mutation_rejects_coerced_expected_version(
     expected_version: object,
@@ -552,7 +523,6 @@ async def test_role_mutation_rejects_coerced_expected_version(
                 key="status-manager",
                 management_tier=100,
                 permissions=frozenset({PermissionKey.ROLES_STATUS_UPDATE.value}),
-                delegable_permissions=frozenset(),
                 is_system=False,
                 is_protected=False,
                 is_super_admin=False,
@@ -606,7 +576,6 @@ async def test_validation_and_unexpected_errors_use_the_standard_envelope() -> N
                 key="reader",
                 management_tier=1,
                 permissions=frozenset({PermissionKey.ROLES_READ.value}),
-                delegable_permissions=frozenset(),
                 is_system=False,
                 is_protected=False,
                 is_super_admin=False,
@@ -676,7 +645,6 @@ async def test_role_delete_uses_the_committed_service_snapshot() -> None:
                 key="test-admin",
                 management_tier=100,
                 permissions=frozenset({PermissionKey.ROLES_DELETE.value}),
-                delegable_permissions=frozenset(),
                 is_system=False,
                 is_protected=False,
                 is_super_admin=False,
@@ -707,7 +675,6 @@ async def test_role_delete_uses_the_committed_service_snapshot() -> None:
             is_system=False,
             is_protected=False,
             permissions=("projects:read",),
-            delegable_permissions=(),
             version=8,
             deleted_at=datetime.now(UTC),
         ),
@@ -761,7 +728,6 @@ async def test_user_write_routes_use_service_transaction_snapshots(
                         PermissionKey.USERS_STATUS_UPDATE.value,
                     }
                 ),
-                delegable_permissions=frozenset(),
                 is_system=False,
                 is_protected=False,
                 is_super_admin=False,
@@ -787,7 +753,6 @@ async def test_user_write_routes_use_service_transaction_snapshots(
         effective_role_ids=(role_id,),
         effective_management_tier=10,
         effective_permissions=(PermissionKey.PROJECTS_READ.value,),
-        effective_delegable_permissions=(),
         authz_version=7,
     )
     role_mutation = UserRoleMutationResponse(changed=True, user=active_user)
@@ -968,6 +933,7 @@ async def test_unprivileged_user_cannot_call_required_management_routes(
             f"/api/v1/users/{target_user_id}/roles/unbind",
             {"json": {"role_ids": [str(role_id)]}},
         ),
+        ("POST", f"/api/v1/users/{target_user_id}/sessions/revoke", {}),
     ]
 
     app.dependency_overrides[get_authorization_context] = unprivileged_context

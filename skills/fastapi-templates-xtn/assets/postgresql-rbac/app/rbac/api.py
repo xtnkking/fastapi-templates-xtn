@@ -13,10 +13,6 @@ from app.api_contract import (
     RequestIdRoute,
     api_response,
 )
-from app.authentication import (
-    AccessTokenRevocationService,
-    get_access_token_revocation_service,
-)
 from app.rbac.dependencies import (
     PrincipalDependency,
     SessionDependency,
@@ -48,7 +44,6 @@ from app.rbac.schemas import (
     RoleResponse,
     RoleUpdateRequest,
     RoleVersionRequest,
-    SuperAdminTransferRequest,
     UserResponse,
     UserRoleMutationResponse,
     UserStatusUpdateRequest,
@@ -63,22 +58,16 @@ router = APIRouter(
     route_class=RequestIdRoute,
 )
 RbacServiceDependency = Annotated[RbacService, Depends(get_rbac_service)]
-AccessTokenRevocationServiceDependency = Annotated[
-    AccessTokenRevocationService,
-    Depends(get_access_token_revocation_service),
-]
 
 PERMISSION_TAG = "Permission management"
 ROLE_TAG = "Role management"
 USER_TAG = "User access"
-SYSTEM_TAG = "Super administrator"
 AUTHENTICATION_TAG = "Authentication"
 
 
 def _role_response(
     role: Role,
     permissions: Iterable[str],
-    delegable_permissions: Iterable[str],
 ) -> RoleResponse:
     return RoleResponse(
         id=role.id,
@@ -90,7 +79,6 @@ def _role_response(
         is_system=role.is_system,
         is_protected=role.is_protected,
         permissions=tuple(sorted(permissions)),
-        delegable_permissions=tuple(sorted(delegable_permissions)),
         version=role.version,
         deleted_at=role.deleted_at,
     )
@@ -105,7 +93,6 @@ def _user_response(access: UserAccessView) -> UserResponse:
         effective_role_ids=tuple(role.role_id for role in authority.roles),
         effective_management_tier=authority.management_tier,
         effective_permissions=tuple(sorted(authority.permissions)),
-        effective_delegable_permissions=tuple(sorted(authority.delegable_permissions)),
         authz_version=authority.authz_version,
     )
 
@@ -154,26 +141,6 @@ async def logout_current_access_token(
     )
 
 
-@router.post(
-    "/auth/logout-all",
-    response_model=ApiResponse[OperationResponse],
-    tags=[AUTHENTICATION_TAG],
-    operation_id="logout_all_access_tokens",
-)
-async def logout_all_access_tokens(
-    request: Request,
-    context: Annotated[AuthorizationContext, Depends(get_authorization_context)],
-    revocation_service: AccessTokenRevocationServiceDependency,
-) -> ApiResponse[OperationResponse]:
-    await revocation_service.revoke_all_for_current_user(context=context)
-    return api_response(
-        request,
-        code=BusinessCode.OK,
-        message="已退出全部设备",
-        data=OperationResponse(changed=True),
-    )
-
-
 @router.get(
     "/me/access",
     response_model=ApiResponse[AuthorityResponse],
@@ -193,7 +160,6 @@ async def read_my_authority(
             user_id=authority.user_id,
             management_tier=authority.management_tier,
             permissions=sorted(authority.permissions),
-            delegable_permissions=sorted(authority.delegable_permissions),
             authz_version=authority.authz_version,
             authorization_epoch=context.authorization_epoch,
         ),
@@ -316,7 +282,6 @@ async def list_roles(
         _role_response(
             role,
             grants[role.id].permissions,
-            grants[role.id].delegable_permissions,
         )
         for role in roles
     ]
@@ -364,7 +329,7 @@ async def get_role(
         request,
         code=BusinessCode.OK,
         message="查询成功",
-        data=_role_response(role, grant.permissions, grant.delegable_permissions),
+        data=_role_response(role, grant.permissions),
     )
 
 
@@ -609,85 +574,6 @@ async def unbind_role_permissions(
     )
 
 
-async def _change_role_delegation(
-    *,
-    role_id: uuid.UUID,
-    body: PermissionIdsRequest,
-    operation: Literal["bind", "unbind"],
-    context: AuthorizationContext,
-    service: RbacService,
-) -> RoleMutationResponse:
-    return await service.change_role_delegation(
-        context=context,
-        role_id=role_id,
-        permission_ids=body.permission_ids,
-        operation=operation,
-        expected_version=body.expected_version,
-    )
-
-
-@router.post(
-    "/roles/{role_id}/delegable-permissions/bind",
-    response_model=ApiResponse[RoleMutationResponse],
-    tags=[ROLE_TAG],
-    operation_id="bind_role_delegable_permissions",
-)
-async def bind_role_delegable_permissions(
-    request: Request,
-    role_id: uuid.UUID,
-    body: PermissionIdsRequest,
-    context: Annotated[
-        AuthorizationContext,
-        Depends(require_permissions(PermissionKey.ROLES_DELEGATION_UPDATE)),
-    ],
-    service: RbacServiceDependency,
-) -> ApiResponse[RoleMutationResponse]:
-    result = await _change_role_delegation(
-        role_id=role_id,
-        body=body,
-        operation="bind",
-        context=context,
-        service=service,
-    )
-    return api_response(
-        request,
-        code=BusinessCode.OK,
-        message="操作成功",
-        data=result,
-    )
-
-
-@router.post(
-    "/roles/{role_id}/delegable-permissions/unbind",
-    response_model=ApiResponse[RoleMutationResponse],
-    tags=[ROLE_TAG],
-    operation_id="unbind_role_delegable_permissions",
-)
-async def unbind_role_delegable_permissions(
-    request: Request,
-    role_id: uuid.UUID,
-    body: PermissionIdsRequest,
-    context: Annotated[
-        AuthorizationContext,
-        Depends(require_permissions(PermissionKey.ROLES_DELEGATION_UPDATE)),
-    ],
-    service: RbacServiceDependency,
-) -> ApiResponse[RoleMutationResponse]:
-    result = await _change_role_delegation(
-        role_id=role_id,
-        body=body,
-        operation="unbind",
-        context=context,
-        service=service,
-    )
-    return api_response(
-        request,
-        code=BusinessCode.OK,
-        message="操作成功",
-        data=result,
-    )
-
-
 @router.get(
     "/users",
     response_model=ApiResponse[PageData[UserResponse]],
@@ -910,23 +796,23 @@ async def enable_user(
 
 
 @router.post(
-    "/system/super-admin/transfer",
+    "/users/{user_id}/sessions/revoke",
     response_model=ApiResponse[OperationResponse],
-    tags=[SYSTEM_TAG],
-    operation_id="transfer_super_admin",
+    tags=[USER_TAG],
+    operation_id="revoke_user_sessions",
 )
-async def transfer_super_admin(
+async def revoke_user_sessions(
     request: Request,
-    body: SuperAdminTransferRequest,
+    user_id: uuid.UUID,
     context: Annotated[
         AuthorizationContext,
-        Depends(require_permissions(PermissionKey.SUPER_ADMIN_TRANSFER)),
+        Depends(require_permissions(PermissionKey.USERS_SESSIONS_REVOKE)),
     ],
     service: RbacServiceDependency,
 ) -> ApiResponse[OperationResponse]:
-    await service.transfer_super_admin(
+    await service.revoke_user_sessions(
         context=context,
-        target_user_id=body.target_user_id,
+        target_user_id=user_id,
     )
     return api_response(
         request,

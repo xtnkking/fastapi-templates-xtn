@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = REPO_ROOT / "skills" / "fastapi-templates-xtn"
 ASSET_ROOT = SKILL_ROOT / "assets" / "postgresql-rbac"
 EXPECTED_NAME = "fastapi-templates-xtn"
-RELEASE_VERSION = "0.4.0"
+RELEASE_VERSION = "0.5.0"
 RELEASE_DATE = "2026-09-13"
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 RELEASE_INSTALL_URL = (
@@ -74,12 +74,12 @@ REQUIRED_SKILL_FILES = (
 )
 REQUIRED_ASSET_FILES = (
     ".env.example",
+    "README.md",
     "LICENSE",
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
     "pyproject.toml",
     "alembic/env.py",
-    "app/authentication.py",
     "app/abuse_flow.py",
     "app/api_contract.py",
     "app/abuse_defense.py",
@@ -88,6 +88,7 @@ REQUIRED_ASSET_FILES = (
     "app/authentication_schemas.py",
     "app/authentication_service.py",
     "app/business_audit.py",
+    "app/captcha.py",
     "app/observability.py",
     "app/password_models.py",
     "app/password_operator.py",
@@ -103,19 +104,19 @@ REQUIRED_ASSET_FILES = (
     "app/rbac/service.py",
     "app/security_policies.py",
     "app/settings.py",
-    "app/verification.py",
-    "app/verification_flow.py",
     "alembic/versions/0003_business_audit.py",
     "alembic/versions/0004_password_auth.py",
     "sql/bootstrap_super_admin.sql",
+    "sql/handover_super_admin.sql",
     "tests/test_abuse_flow.py",
     "tests/test_abuse_defense.py",
     "tests/test_audit.py",
-    "tests/test_authentication.py",
     "tests/test_authentication_api.py",
     "tests/test_authentication_service.py",
     "tests/test_integration_safety.py",
     "tests/test_business_audit.py",
+    "tests/test_captcha.py",
+    "tests/test_captcha_redis_live.py",
     "tests/test_dependency_observability.py",
     "tests/test_observability.py",
     "tests/test_observability_formatter.py",
@@ -133,11 +134,10 @@ REQUIRED_ASSET_FILES = (
     "tests/test_schemas.py",
     "tests/test_security.py",
     "tests/test_settings.py",
-    "tests/test_verification.py",
-    "tests/test_verification_flow.py",
     "tests/integration/test_abuse_defense_redis.py",
     "tests/integration/safety.py",
     "tests/integration/test_business_audit.py",
+    "tests/integration/test_captcha_redis.py",
     "tests/integration/test_password_authentication.py",
     "tests/integration/test_password_persistence.py",
     "tests/integration/test_migrations.py",
@@ -146,7 +146,6 @@ REQUIRED_ASSET_FILES = (
     "tests/integration/test_rate_limit_redis.py",
     "tests/integration/test_read_visibility.py",
     "tests/integration/test_user_role_limit.py",
-    "tests/integration/test_verification_redis.py",
 )
 MIRRORED_LEGAL_FILES = ("LICENSE", "NOTICE")
 BILINGUAL_DOC_PAIRS = (
@@ -311,17 +310,15 @@ def validate_identity_and_row_lifecycle(errors: list[str]) -> None:
     text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
     required_markers = {
         "entrypoint": (
-            "first ask whether `users` stores `email`,",
-            "`user_name`, or both",
+            "For a new service use `user_name` and password, not email login or recovery.",
+            "reserve deleted names",
             "classify its row lifecycle explicitly",
             "There is no unclassified table",
         ),
         "reference": (
             "## Choose The Identity And Login Contract Before Greenfield Work",
-            "Stored identifiers",
-            "Creation requirement",
-            "Namespace overlap",
-            "Reuse after soft deletion",
+            "Required `user_name` only in the new-project baseline",
+            "Permanently reserve a deleted user's username",
             "Classify every table before creating it",
             "Mutable runtime data",
             "Append-only evidence",
@@ -329,8 +326,8 @@ def validate_identity_and_row_lifecycle(errors: list[str]) -> None:
         ),
         "models": (
             "class User(Base):",
-            "email: Mapped[str | None]",
-            "user_name: Mapped[str | None]",
+            "user_name: Mapped[str]",
+            'UniqueConstraint("user_name", name="uq_users_user_name")',
             "class RbacState(Base):",
             "class Permission(Base):",
             "class Role(Base):",
@@ -339,25 +336,25 @@ def validate_identity_and_row_lifecycle(errors: list[str]) -> None:
             "class RbacAuditEvent(Base):",
         ),
         "migration": (
-            '"email", sa.String(length=320), nullable=True',
-            '"user_name", sa.String(length=160), nullable=True',
+            'sa.Column("user_name", sa.String(length=32), nullable=False)',
+            'sa.UniqueConstraint("user_name", name="uq_users_user_name")',
             '"deleted_at", sa.DateTime(timezone=True), nullable=True',
             'ondelete="RESTRICT"',
         ),
         "readme": (
-            "whether `users` stores email, `user_name`, or",
-            "Soft deletion for every mutable row",
+            "username/password login",
+            "cannot be reused after soft deletion",
         ),
         "readme zh-CN": (
-            "`users` 存储邮箱、`user_name` 或两者",
-            "所有允许运行时移除的可变数据都采用软删除",
+            "用户名密码",
+            "软删除",
         ),
         "checklist": (
-            "asked whether `users` stores `email`,",
+            "required `user_name`",
             "Inventory every table and row-removal path",
         ),
         "checklist zh-CN": (
-            "询问 `users` 存储 `email`、`user_name` 或",
+            "必填 `user_name`",
             "盘点全部表和所有数据移除路径",
         ),
     }
@@ -751,6 +748,7 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         "settings": ASSET_ROOT / "app" / "settings.py",
         "passwords": ASSET_ROOT / "app" / "passwords.py",
         "models": ASSET_ROOT / "app" / "password_models.py",
+        "users model": ASSET_ROOT / "app" / "rbac" / "models.py",
         "schemas": ASSET_ROOT / "app" / "authentication_schemas.py",
         "API": ASSET_ROOT / "app" / "authentication_api.py",
         "service": ASSET_ROOT / "app" / "authentication_service.py",
@@ -785,6 +783,7 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         "settings",
         "passwords",
         "models",
+        "users model",
         "schemas",
         "API",
         "service",
@@ -797,28 +796,23 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         trees[label] = tree
 
     question_markers = (
-        "What identifies an account, and what may be typed at login?",
-        "How is `user_name` compared?",
-        "Who may create an account?",
-        "How is ownership proved during recovery?",
-        "May one account have several logged-in devices?",
-        "What happens to existing users that have no password credential?",
+        "Is username comparison case-sensitive?",
+        "must the password contain uppercase,",
+        "maximum simultaneously active login count",
+        "If existing users have no password",
     )
     for marker in question_markers:
         if marker not in text["reference"]:
             fail(errors, f"local-password product-question batch is missing {marker!r}")
     for marker in (
-        "Ask only unresolved questions, in one batch",
-        "Send the actual questions, plain-language effect, and recommended answer",
-        "do not merely link this reference",
+        "once, in one batch",
         "`全部接受` / `Accept all`",
-        "as consent",
-        "to an unasked choice",
+        "an unasked product question",
     ):
-        if marker not in text["reference"]:
+        if marker not in text["skill"]:
             fail(errors, f"local-password decision gate is missing {marker!r}")
-    if "python -B -m app.password_operator --user-id" not in text["reference"]:
-        fail(errors, "local-password reference must document the offline command")
+    if "interactive operator command" not in text["reference"]:
+        fail(errors, "local-password reference must retain offline operator recovery")
     if "A general instruction to proceed" not in text["skill"]:
         fail(errors, "SKILL.md must reject premature acceptance of unasked choices")
 
@@ -848,6 +842,20 @@ def validate_local_password_authentication(errors: list[str]) -> None:
                 )
             )
     expected_routes = {
+        ("registration_router", "post", "/auth/captcha", "create_public_captcha"),
+        ("router", "post", "/me/captcha", "create_authenticated_captcha"),
+        (
+            "registration_router",
+            "get",
+            "/auth/registration/status",
+            "read_registration_status",
+        ),
+        (
+            "router",
+            "post",
+            "/auth/registration/status",
+            "update_registration_status",
+        ),
         (
             "registration_router",
             "post",
@@ -855,6 +863,7 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             "register_local_account",
         ),
         ("router", "post", "/auth/login", "login_with_local_password"),
+        ("router", "get", "/me/sessions", "my_active_sessions"),
         ("router", "post", "/me/password/change", "change_my_password"),
         (
             "router",
@@ -868,15 +877,18 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             "/auth/password/reset/complete",
             "complete_temporary_password_reset",
         ),
+        ("router", "post", "/users", "create_user_with_temporary_password"),
     }
     missing_routes = expected_routes - routes
     if missing_routes:
-        fail(errors, f"local-password API is missing POST routes: {missing_routes!r}")
-    non_post_routes = sorted(route for route in routes if route[1] != "post")
-    if non_post_routes:
+        fail(errors, f"local-password API is missing routes: {missing_routes!r}")
+    unexpected_routes = sorted(
+        route for route in routes if route not in expected_routes
+    )
+    if unexpected_routes:
         fail(
             errors,
-            f"local-password API contains non-POST commands: {non_post_routes!r}",
+            f"local-password API contains unexpected routes: {unexpected_routes!r}",
         )
 
     router_prefixes: dict[str, object] = {}
@@ -909,47 +921,20 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         fail(errors, "both local-password routers must use the /api/v1 prefix")
 
     router_selector = _function_node(api_tree.body, "authentication_routers")
-    enabled_return: tuple[str, ...] | None = None
-    disabled_return: tuple[str, ...] | None = None
-    if router_selector is not None:
-        for statement in router_selector.body:
-            if (
-                isinstance(statement, ast.If)
-                and isinstance(statement.test, ast.Name)
-                and statement.test.id == "public_registration_enabled"
-            ):
-                returned = next(
-                    (item for item in statement.body if isinstance(item, ast.Return)),
-                    None,
-                )
-                if returned is not None:
-                    enabled_return = _returned_names(returned)
-            elif isinstance(statement, ast.Return):
-                disabled_return = _returned_names(statement)
-    if enabled_return != ("registration_router", "router") or disabled_return != (
-        "router",
-    ):
+    router_returns = (
+        [
+            _returned_names(node)
+            for node in router_selector.body
+            if isinstance(node, ast.Return)
+        ]
+        if router_selector is not None
+        else []
+    )
+    if router_returns != [("registration_router", "router")]:
         fail(
             errors,
-            "public registration must add its router only when the setting is true",
+            "public registration route must remain installed while the persisted switch changes",
         )
-
-    settings_class = _class_node(trees["settings"], "Settings")
-    registration_default: object | None = None
-    if settings_class is not None:
-        for node in settings_class.body:
-            if (
-                isinstance(node, ast.AnnAssign)
-                and isinstance(node.target, ast.Name)
-                and node.target.id == "public_registration_enabled"
-                and node.value is not None
-            ):
-                try:
-                    registration_default = ast.literal_eval(node.value)
-                except (TypeError, ValueError):
-                    pass
-    if registration_default is not False:
-        fail(errors, "Settings.public_registration_enabled must default to false")
 
     active_environment = {
         key.strip(): value.strip()
@@ -957,23 +942,18 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         if line.strip() and not line.lstrip().startswith("#") and "=" in line
         for key, value in (line.split("=", 1),)
     }
-    if active_environment.get("PUBLIC_REGISTRATION_ENABLED", "").lower() != "false":
-        fail(errors, ".env.example must keep PUBLIC_REGISTRATION_ENABLED=false")
-
-    main_has_registration_setting = any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "authentication_routers"
-        and any(
-            keyword.arg == "public_registration_enabled"
-            and ast.unparse(keyword.value)
-            == "get_settings().public_registration_enabled"
-            for keyword in node.keywords
+    if "PUBLIC_REGISTRATION_ENABLED" in active_environment:
+        fail(
+            errors,
+            "registration switch must live in PostgreSQL, not a deployment setting",
         )
-        for node in ast.walk(trees["main"])
-    )
-    if not main_has_registration_setting:
-        fail(errors, "main.py must select authentication routers from the setting")
+    for label, marker in (
+        ("users model", "public_registration_enabled: Mapped[bool]"),
+        ("service", "if not state.public_registration_enabled:"),
+        ("API", "await service.set_registration_enabled("),
+    ):
+        if marker not in text[label]:
+            fail(errors, f"{label} must enforce persisted registration switch")
 
     password_constants = _module_literals(trees["passwords"])
     expected_password_constants = {
@@ -982,11 +962,10 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         "ARGON2_PARALLELISM": 4,
         "ARGON2_HASH_LENGTH": 32,
         "ARGON2_SALT_LENGTH": 16,
-        "MIN_PASSWORD_CHARACTERS": 15,
-        "MAX_PASSWORD_CHARACTERS": 128,
+        "MIN_PASSWORD_CHARACTERS": 8,
+        "MAX_PASSWORD_CHARACTERS": 60,
         "MAX_PASSWORD_UTF8_BYTES": 1_024,
         "DEFAULT_MAX_CONCURRENT_OPERATIONS": 2,
-        "LOCAL_PASSWORD_DENYLIST_VERSION": "xtn-minimal-v1",
     }
     for name, expected in expected_password_constants.items():
         if password_constants.get(name) != expected:
@@ -1040,6 +1019,7 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         "LoginRequest",
         "PasswordChangeRequest",
         "AdminPasswordResetRequest",
+        "AdminUserCreateRequest",
         "PasswordResetCompletionRequest",
     ):
         node = _class_node(trees["schemas"], class_name)
@@ -1054,7 +1034,8 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         "RegistrationRequest": {"password"},
         "LoginRequest": {"password"},
         "PasswordChangeRequest": {"current_password", "new_password"},
-        "AdminPasswordResetRequest": {"current_password", "temporary_password"},
+        "AdminPasswordResetRequest": {"temporary_password"},
+        "AdminUserCreateRequest": {"temporary_password"},
         "PasswordResetCompletionRequest": {"temporary_password", "new_password"},
     }
     for class_name, field_names in required_secret_fields.items():
@@ -1063,24 +1044,11 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             if actual.get(field_name) != "SecretStr":
                 fail(errors, f"{class_name}.{field_name} must use SecretStr")
 
-    password_model = _class_node(trees["models"], "PasswordCredential")
+    user_model = _class_node(trees["users model"], "User")
     audit_model = _class_node(trees["models"], "AccountSecurityAuditEvent")
-    if password_model is None or audit_model is None:
-        fail(
-            errors, "password credential and account-security audit models are required"
-        )
+    if user_model is None or audit_model is None:
+        fail(errors, "user password fields and account-security audit are required")
     else:
-        password_table = next(
-            (
-                ast.literal_eval(node.value)
-                for node in password_model.body
-                if isinstance(node, ast.Assign)
-                and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id == "__tablename__"
-            ),
-            None,
-        )
         audit_table = next(
             (
                 ast.literal_eval(node.value)
@@ -1092,33 +1060,35 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             ),
             None,
         )
-        if password_table != "user_password_credentials":
-            fail(errors, "PasswordCredential must use user_password_credentials")
         if audit_table != "account_security_audit_events":
             fail(errors, "AccountSecurityAuditEvent table name is incorrect")
         password_fields = {
             node.target.id
-            for node in password_model.body
+            for node in user_model.body
             if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
         }
         expected_fields = {
-            "id",
-            "user_id",
-            "created_by_user_id",
             "password_hash",
-            "version",
             "must_change_password",
-            "created_at",
             "password_changed_at",
-            "deleted_at",
-            "deleted_by_user_id",
         }
         if not expected_fields.issubset(password_fields):
             fail(
                 errors,
-                "PasswordCredential is missing episode/lifecycle fields: "
+                "User is missing password-state fields: "
                 f"{sorted(expected_fields - password_fields)!r}",
             )
+    if _class_node(trees["models"], "PasswordCredential") is not None:
+        fail(errors, "password state must not use a separate credential model")
+    for marker in (
+        'name="password_hash_shape"',
+        'name="password_state_coherent"',
+        'name="deleted_user_no_password"',
+        "password_changed_at IS NULL",
+        "deleted_at IS NULL OR password_hash IS NULL",
+    ):
+        if marker not in text["users model"]:
+            fail(errors, f"User password-state constraint is missing {marker!r}")
 
     migration_literals = _module_literals(trees["migration"])
     if (
@@ -1127,6 +1097,8 @@ def validate_local_password_authentication(errors: list[str]) -> None:
     ):
         fail(errors, "0004_password_auth must directly follow 0003_business_audit")
     migration_calls: dict[str, list[str]] = {"create_table": [], "drop_table": []}
+    added_columns: list[str] = []
+    dropped_columns: list[str] = []
     for node in ast.walk(trees["migration"]):
         if (
             isinstance(node, ast.Call)
@@ -1137,11 +1109,49 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             and isinstance(node.args[0].value, str)
         ):
             migration_calls[node.func.attr].append(node.args[0].value)
-    for table_name in ("user_password_credentials", "account_security_audit_events"):
-        if migration_calls["create_table"].count(table_name) != 1:
-            fail(errors, f"migration must create {table_name} exactly once")
-        if migration_calls["drop_table"].count(table_name) != 1:
-            fail(errors, f"migration must drop {table_name} exactly once")
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and len(node.args) >= 2
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "users"
+        ):
+            if node.func.attr == "add_column":
+                column = node.args[1]
+                if (
+                    isinstance(column, ast.Call)
+                    and isinstance(column.func, ast.Attribute)
+                    and column.func.attr == "Column"
+                    and column.args
+                    and isinstance(column.args[0], ast.Constant)
+                    and isinstance(column.args[0].value, str)
+                ):
+                    added_columns.append(column.args[0].value)
+            elif (
+                node.func.attr == "drop_column"
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+            ):
+                dropped_columns.append(node.args[1].value)
+    if "user_password_credentials" in (
+        migration_calls["create_table"] + migration_calls["drop_table"]
+    ):
+        fail(errors, "migration must not create or drop a password-episode table")
+    audit_table_name = "account_security_audit_events"
+    if migration_calls["create_table"].count(audit_table_name) != 1:
+        fail(errors, "migration must create account-security audit exactly once")
+    if migration_calls["drop_table"].count(audit_table_name) != 1:
+        fail(errors, "migration must drop account-security audit exactly once")
+    for field in ("password_hash", "must_change_password", "password_changed_at"):
+        if added_columns.count(field) != 1 or dropped_columns.count(field) != 1:
+            fail(errors, f"0004 must add and drop users.{field} exactly once")
+    for constraint in (
+        "ck_users_password_hash_shape",
+        "ck_users_password_state_coherent",
+        "ck_users_deleted_user_no_password",
+    ):
+        if constraint not in text["migration"]:
+            fail(errors, f"0004 must install {constraint}")
 
     revisions: dict[str, str | None] = {}
     for path in sorted((ASSET_ROOT / "alembic" / "versions").glob("*.py")):
@@ -1165,21 +1175,6 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         fail(
             errors, f"0004_password_auth must be the sole migration head, got {heads!r}"
         )
-
-    lifecycle_markers = (
-        "uq_user_password_credentials_live_user",
-        "deleted_at IS NULL AND password_hash IS NOT NULL",
-        "deleted_at IS NOT NULL AND password_hash IS NULL",
-        "old_credential.password_hash = None",
-        "old_credential.deleted_at = changed_at",
-        "PasswordCredential(",
-    )
-    for marker in lifecycle_markers:
-        source_name = "models" if marker.startswith("uq_") else "service"
-        if "deleted_at IS" in marker:
-            source_name = "models"
-        if marker not in text[source_name]:
-            fail(errors, f"credential episode lifecycle is missing {marker!r}")
 
     append_only_markers = (
         "reject_account_security_audit_mutation",
@@ -1226,8 +1221,10 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         "holder_ids != frozenset({user_id})",
         "load_live_super_admin_holder_ids(session)",
         "if verification.needs_rehash:",
-        "credential.password_hash = replacement_hash",
-        "func.max(PasswordCredential.version)",
+        "user.password_hash = replacement_hash",
+        "user.password_changed_at == snapshot.password_changed_at",
+        "user.password_changed_at = changed_at",
+        "self._same_password_state(user, concurrent_rehash_snapshot)",
         "if error.status_code >= 500:",
         "except Exception as exc:",
         '"audit.write.failed"',
@@ -1252,15 +1249,16 @@ def validate_local_password_authentication(errors: list[str]) -> None:
 
     required_test_markers = {
         "API tests": (
-            "test_public_registration_route_is_not_registered_when_disabled",
-            "test_public_registration_route_is_registered_only_when_enabled",
+            "test_public_registration_route_remains_present_for_runtime_switch",
+            "test_captcha_is_required_before_public_registration_calls_service",
+            "test_registration_status_public_read_exposes_only_boolean",
             "test_temporary_password_login_returns_403002_without_a_token",
             "test_password_routes_are_post_only_and_do_not_expose_the_mechanism",
         ),
         "service tests": (
             "test_unknown_and_wrong_passwords_use_one_public_failure",
             "test_successful_login_upgrades_a_stale_hash_after_rechecking_locks",
-            "test_password_rotation_continues_after_only_tombstones_remain",
+            "test_password_rotation_updates_user_row_and_timestamp",
             "test_service_self_change_rejects_reusing_the_current_password",
             "test_service_temporary_completion_rejects_reusing_the_temporary_password",
             "test_account_security_denial_audit_excludes_infrastructure_failures",
@@ -1273,12 +1271,13 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         ),
         "PostgreSQL authentication tests": (
             "test_registration_and_login_persist_complete_local_identity",
-            "test_self_password_change_rotates_episode_and_revokes_old_token",
-            "test_admin_reset_requires_reauth_and_forces_temporary_completion",
+            "test_registration_toggle_blocks_public_creation_but_not_admin_creation",
+            "test_self_password_change_updates_user_and_revokes_old_token",
+            "test_admin_reset_requires_captcha_and_forces_temporary_completion",
         ),
         "PostgreSQL persistence tests": (
-            "test_only_one_live_password_credential_is_allowed_per_user",
-            "test_rotation_uses_the_next_historical_version_without_a_live_episode",
+            "test_rotation_updates_same_user_row",
+            "test_deleted_user_cannot_retain_password_hash",
             "test_account_security_audit_rows_are_append_only",
         ),
     }
@@ -1291,14 +1290,14 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         fail(errors, "Alembic metadata must import password_models")
     for label, markers in {
         "README": (
-            "Complete local-password authentication",
-            "PUBLIC_REGISTRATION_ENABLED",
-            "offline sole-`super_admin` recovery",
+            "username/password login",
+            "Public registration is enabled by default",
+            "Changing that holder is another guarded, audited offline PostgreSQL script",
         ),
         "Chinese README": (
-            "完整的本地密码认证",
-            "PUBLIC_REGISTRATION_ENABLED",
-            "唯一 `super_admin` 的离线找回",
+            "用户名密码",
+            "公开注册初始开启",
+            "受保护的交接脚本",
         ),
     }.items():
         for marker in markers:
@@ -1319,15 +1318,18 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
         "actor dependency": ASSET_ROOT / "app" / "rate_limit_dependencies.py",
         "abuse defense": ASSET_ROOT / "app" / "abuse_defense.py",
         "identity abuse flow": ASSET_ROOT / "app" / "abuse_flow.py",
-        "verification": ASSET_ROOT / "app" / "verification.py",
-        "verification flow": ASSET_ROOT / "app" / "verification_flow.py",
+        "captcha": ASSET_ROOT / "app" / "captcha.py",
         "redis client": ASSET_ROOT / "app" / "redis_client.py",
         "application": ASSET_ROOT / "app" / "main.py",
         "environment": ASSET_ROOT / ".env.example",
         "settings tests": ASSET_ROOT / "tests" / "test_settings.py",
         "abuse-defense tests": ASSET_ROOT / "tests" / "test_abuse_defense.py",
         "identity-flow tests": ASSET_ROOT / "tests" / "test_abuse_flow.py",
-        "verification-flow tests": (ASSET_ROOT / "tests" / "test_verification_flow.py"),
+        "captcha tests": ASSET_ROOT / "tests" / "test_captcha.py",
+        "captcha Redis tests": ASSET_ROOT
+        / "tests"
+        / "integration"
+        / "test_captcha_redis.py",
         "abuse-defense Redis tests": (
             ASSET_ROOT / "tests" / "integration" / "test_abuse_defense_redis.py"
         ),
@@ -1345,8 +1347,7 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
         if not path.is_file():
             fail(
                 errors,
-                f"missing rate-limit/verification {name}: "
-                f"{path.relative_to(REPO_ROOT)}",
+                f"missing rate-limit/CAPTCHA {name}: {path.relative_to(REPO_ROOT)}",
             )
             missing = True
     if missing:
@@ -1354,127 +1355,77 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
 
     required_markers = {
         "rate-limit reference": (
-            "## Confirm The Complete Baseline Before Code",
-            "Reply `全部接受` / `Accept all`",
-            "`APP_ENVIRONMENT` is required and has no code default",
-            "`api_ip`",
-            "Login failure-risk retention",
-            "Verification wrong-attempt maximum",
-            "`RATE_LIMIT_VERIFICATION_TARGET_AVERAGE_PER_DAY`",
-            "## Concrete Token Bucket Contract",
-            "HTTP `429` and business code `429001`",
-            "return HTTP `503`, business code `503001`",
+            "## Redis Fixed Window",
+            "Do not add an `api_global`, `api_ip`",
+            "429001",
+            "503001",
         ),
         "verification reference": (
-            "## Decisions Before Generating Code",
-            "### Login attempt",
-            "same configured password-hash work",
-            "risk signal",
-            "### Registration attempt",
-            "## Verification Challenge Contract",
-            "It never stores the raw",
-            "allows only one concurrent success",
-            "## Delivery Adapter",
+            "CAPTCHA",
+            "login",
+            "register",
         ),
         "settings": (
             "app_environment: str = Field(",
             "rate_limit_redis_url: str | None = None",
             "rate_limit_hmac_key: SecretStr",
-            "verification_enabled: bool = False",
-            "verification_code_hmac_key: SecretStr | None = None",
-            "rate_limit_api_ip_per_minute: int = Field(default=1200",
-            "rate_limit_authenticated_read_per_minute: int = Field(default=300",
-            "rate_limit_authorization_write_per_minute: int = Field(default=30",
+            "max_active_sessions_per_user: int = Field(ge=1)",
+            "rate_limit_captcha_create_per_five_minutes: int = Field(default=10",
+            "rate_limit_authenticated_read_per_minute: int = Field(default=600",
+            "rate_limit_ordinary_write_per_minute: int = Field(default=120",
+            "rate_limit_management_read_per_minute: int = Field(default=300",
+            "rate_limit_authorization_write_per_minute: int = Field(default=60",
             "rate_limit_login_ip_per_five_minutes: int = Field(default=20",
             "rate_limit_registration_ip_per_hour: int = Field(default=5",
-            "verification_send_cooldown_seconds: int = Field(default=60",
-            "rate_limit_verification_target_average_per_day: int = Field(default=5",
-            "verification_code_ttl_seconds: int = Field(default=300",
-            "verification_max_attempts: int = Field(default=5",
-            'verification_enabled_purposes: str = ""',
-            'verification_enabled_channels: str = ""',
-            "login_failure_state_retention_seconds: int = Field(default=86400",
-            '@field_validator("verification_enabled_purposes")',
-            '@field_validator("verification_enabled_channels")',
-            "if self.verification_enabled:",
-            "verification_configured",
+            "rate_limit_temporary_complete_ip_per_five_minutes: int = Field(",
         ),
         "policy registry": (
             "class SecurityPolicies:",
-            "api_global=RateLimitPolicy(",
-            "login_pair=_token_bucket(",
-            "verification_target_average=_token_bucket(",
+            "captcha_create=RateLimitPolicy(",
+            "login=RateLimitPolicy(",
+            "registration=RateLimitPolicy(",
+            "temporary_complete=RateLimitPolicy(",
         ),
         "limiter": (
-            "class RateLimitCheck:",
-            "class RateLimitBatchDecision:",
-            "async def check_rate_limits(",
-            "redis.call('TIME')",
-            "if batch_allowed == 1",
+            "FIXED_WINDOW_SCRIPT:",
+            "redis.call('INCR', KEYS[1])",
+            "redis.call('EXPIRE', KEYS[1], window)",
+            "redis.call('PTTL', KEYS[1])",
+            "async def check_rate_limit(",
         ),
         "middleware": (
-            "class ApiRateLimitMiddleware:",
-            "RateLimitCheck(policies.api_global",
-            "RateLimitCheck(policies.api_ip",
-            "decision = await check_rate_limits(",
+            "def trusted_client_ip(",
+            "return ipaddress.ip_address(host).compressed",
+            'return ""',
+            "def semantic_rate_limit_headers(",
         ),
         "actor dependency": (
             "def actor_policy_for(",
             "async def enforce_principal_rate_limit(",
-            'operation_id == "logout_current_access_token"',
+            "name=operation_id",
             "policies.authorization_write",
         ),
         "abuse defense": (
             "class AbuseDefenseService:",
-            "class LoginFailureState:",
-            "_RECORD_LOGIN_FAILURE_SCRIPT",
-            "redis.call('INCR', key)",
-            "redis.call('EXPIRE', key, retention_seconds)",
             "async def check_login_attempt(",
             "async def check_registration_attempt(",
-            "async def check_verification_send(",
-            "async def check_verification_attempt(",
-            "async def record_login_failure(",
-            "async def record_login_success(",
+            "async def check_temporary_password_completion(",
+            "async def check_captcha_create(",
         ),
         "identity abuse flow": (
             "class InvalidLoginCredentialsError(RuntimeError):",
             "class IdentityAbuseFlow:",
             "async def authenticate(",
             "verify_real_or_dummy_credentials",
-            "Account failure counts are risk signals only",
+            "async def complete_temporary_password_reset(",
             "async def register(",
             "registration_action",
         ),
-        "verification": (
-            "class VerificationService:",
-            "allowed_purposes: frozenset[VerificationPurpose]",
-            "allowed_channels: frozenset[VerificationChannel]",
-            "secrets.choice(digits)",
-            "hmac.new(",
-            "async def issue_challenge(",
-            "async def verify_challenge(",
-            "async def cancel_challenge(",
-            "self._require_enabled(purpose, channel)",
-        ),
-        "verification flow": (
-            "class VerificationFlowConfigurationError(RuntimeError):",
-            "class VerificationDeliveryAdapter(Protocol):",
-            "class VerificationFlowService:",
-            "async def issue_and_send(",
-            "async def verify(",
-            "def build_verification_flow(",
-            "if not settings.verification_enabled:",
-            "verification is disabled; set VERIFICATION_ENABLED=true",
-            "VERIFICATION_CODE_HMAC_KEY is required when verification is enabled",
-            'settings.verification_enabled_purposes.split(",")',
-            'settings.verification_enabled_channels.split(",")',
-        ),
+        "captcha": ("class ", "async def "),
         "redis client": ("def create_rate_limit_redis_client(",),
         "application": (
             "create_rate_limit_redis_client(settings)",
             "app.state.rate_limit_redis",
-            "app.add_middleware(ApiRateLimitMiddleware)",
             "@app.exception_handler(RateLimitExceeded)",
             "@app.exception_handler(RateLimitUnavailable)",
         ),
@@ -1482,42 +1433,32 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
             "RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6380/0",
             "APP_ENVIRONMENT=development",
             "RATE_LIMIT_HMAC_KEY=",
-            "VERIFICATION_ENABLED=false",
-            "# VERIFICATION_CODE_HMAC_KEY=",
-            "# VERIFICATION_ENABLED_PURPOSES=registration,login,password_reset",
-            "# VERIFICATION_ENABLED_CHANNELS=email,sms",
-            "LOGIN_FAILURE_STATE_RETENTION_SECONDS=86400",
-            "RATE_LIMIT_API_IP_PER_MINUTE=1200",
-            "# RATE_LIMIT_VERIFICATION_TARGET_AVERAGE_PER_DAY=5",
-            "# VERIFICATION_CODE_TTL_SECONDS=300",
-            "# VERIFICATION_MAX_ATTEMPTS=5",
+            "MAX_ACTIVE_SESSIONS_PER_USER=",
+            "RATE_LIMIT_CAPTCHA_CREATE_PER_FIVE_MINUTES=10",
+            "RATE_LIMIT_LOGIN_IP_PER_FIVE_MINUTES=20",
+            "RATE_LIMIT_REGISTRATION_IP_PER_HOUR=5",
+            "RATE_LIMIT_TEMPORARY_COMPLETE_IP_PER_FIVE_MINUTES=20",
         ),
         "settings tests": (
             "test_app_environment_is_required_for_every_rate_limit_mode",
             "test_rate_limit_defaults_are_explicit_and_configurable",
-            "assert settings.verification_enabled is False",
-            "assert settings.verification_code_hmac_key is None",
-            "test_verification_can_be_enabled_with_complete_configuration",
-            "test_enabled_verification_requires_complete_configuration",
-            "test_disabled_verification_rejects_dormant_configuration",
+            "test_session_limit_must_be_positive_and_explicit",
         ),
         "abuse-defense tests": (
-            "test_login_checks_only_ip_pair_and_global",
-            "test_failure_counter_uses_configured_finite_retention",
+            "test_anonymous_quota_does_not_use_user_supplied_account",
+            "test_missing_trusted_ip_never_enters_a_shared_bucket",
+            "test_captcha_scene_is_independent_and_private_subject_is_actor",
         ),
         "identity-flow tests": (
-            "test_invalid_or_unknown_login_runs_hash_then_records_risk_signal",
-            "test_login_success_clears_failure_state_before_returning",
-        ),
-        "verification-flow tests": (
-            "test_builder_rejects_disabled_or_incomplete_optional_verification",
-            "test_builder_keeps_configured_verification_behavior",
+            "test_invalid_credentials_have_one_generic_error_without_failure_counter",
+            "test_admission_fails_before_credential_callback",
         ),
         "abuse-defense Redis tests": (
-            "test_concurrent_login_failures_do_not_lose_increments",
-            "test_failure_count_has_finite_ttl_and_success_clears_state",
-            "test_failure_signal_expires_and_never_blocks_correct_credentials",
+            "test_login_uses_only_per_business_ip_key",
+            "test_captcha_scenes_and_subjects_do_not_share_quota",
         ),
+        "captcha tests": ("test_",),
+        "captcha Redis tests": ("test_",),
         "compose": (
             "redis-rate-limit:",
             '"127.0.0.1:6380:6379"',
@@ -1527,44 +1468,12 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
             "redis-rate-limit:",
             "- 6380:6379",
         ),
-        "README": (
-            "## Default Security Quotas",
-            "accept them or list the values to change",
-            "dedicated rate-limit Redis",
-            "complete asset keeps these tested modules dormant",
-            "`verification_target_average`",
-            "does not promise a hard maximum of five",
-        ),
-        "Chinese README": (
-            "## 默认安全次数",
-            "接受全部默认值",
-            "独立的限流 Redis",
-            "完整资产会以 `VERIFICATION_ENABLED=false`",
-            "`verification_target_average`",
-            "不承诺任意连续 24 小时",
-        ),
-        "changelog": (
-            "two-layer HTTP rate limiting",
-            "username/password login and registration abuse defense",
-            "every applicable default",
-            "`verification_target_average`",
-        ),
-        "Chinese changelog": (
-            "两层 HTTP 限流",
-            "用户名密码登录与注册防滥用",
-            "未回复不算同意",
-            "`verification_target_average`",
-        ),
-        "release checklist": (
-            "accept all defaults or list only changed",
-            "distinct URLs",
-            "never creates an account-only `429`",
-        ),
-        "Chinese release checklist": (
-            "接受全部默认值还是只列出修改项",
-            "两个不同 URL",
-            "也不能阻止系统校验正确密码",
-        ),
+        "README": ("Redis fixed-window quotas", "no global or cross-business quotas"),
+        "Chinese README": ("Redis 限流使用简单固定窗口", "没有全站总额度"),
+        "changelog": ("rate",),
+        "Chinese changelog": ("限流",),
+        "release checklist": ("rate",),
+        "Chinese release checklist": ("限流",),
     }
     text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
     for name, markers in required_markers.items():
@@ -1627,38 +1536,32 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
     if not active_environment.get("APP_ENVIRONMENT"):
         fail(errors, ".env.example must explicitly set a non-empty APP_ENVIRONMENT")
 
-    active_optional_verification_setting = re.compile(
-        r"^\s*(?:VERIFICATION_CODE_HMAC_KEY|VERIFICATION_ENABLED_PURPOSES|"
-        r"VERIFICATION_ENABLED_CHANNELS)\s*=",
-        re.MULTILINE,
-    )
-    if active_optional_verification_setting.search(text["environment"]):
-        fail(
-            errors,
-            ".env.example must leave verification secrets, purposes, and channels "
-            "commented out while VERIFICATION_ENABLED=false",
-        )
-
-    retired_login_lock_markers = (
-        "LoginCooldownExceeded",
-        "login_account_failure",
-        "login_first_cooldown",
-        "login_second_cooldown",
+    retired_shared_quota_markers = (
+        "api_global",
+        "api_ip",
+        "login_pair",
+        "login_global",
+        "registration_target",
+        "registration_pair",
+        "registration_global",
+        "super_admin_transfer",
+        "login_failure_state_retention_seconds",
+        "verification_global",
+        "TOKEN_BUCKET_SCRIPT",
     )
     for name in (
         "settings",
         "policy registry",
         "abuse defense",
         "identity abuse flow",
-        "application",
         "environment",
     ):
-        for marker in retired_login_lock_markers:
+        for marker in retired_shared_quota_markers:
             if marker in text[name]:
                 relative = paths[name].relative_to(REPO_ROOT)
                 fail(
                     errors,
-                    f"{relative} reintroduces retired account-lock marker: {marker!r}",
+                    f"{relative} reintroduces retired quota marker: {marker!r}",
                 )
 
     login_check_start = text["abuse defense"].find("async def check_login_attempt(")
@@ -1666,27 +1569,82 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
         "async def check_registration_attempt(", login_check_start
     )
     login_check_body = text["abuse defense"][login_check_start:registration_check_start]
-    for policy_name in ("login_ip", "login_pair", "login_global"):
-        if f"self._policies.{policy_name}" not in login_check_body:
-            fail(errors, f"login admission is missing the {policy_name!r} policy")
-    if "login_failure_state(" in login_check_body:
-        fail(errors, "login admission must not hard-block an account by failure state")
+    if "self._policies.login" not in login_check_body:
+        fail(errors, "login admission must use its single per-IP business quota")
+    if "normalized_identifier)" in login_check_body:
+        fail(errors, "login quota must not key on a submitted username")
 
     flow_source = text["identity abuse flow"]
     flow_order = (
         flow_source.find("await self._abuse_defense.check_login_attempt("),
         flow_source.find("result = await verify_real_or_dummy_credentials()"),
-        flow_source.find("await self._abuse_defense.record_login_failure("),
-        flow_source.find("await self._abuse_defense.record_login_success("),
     )
     if any(position < 0 for position in flow_order) or flow_order != tuple(
         sorted(flow_order)
     ):
         fail(
             errors,
-            "login flow must check admission, verify real/dummy credentials, record "
-            "invalid-password risk, and clear that risk on success in order",
+            "login flow must admit by IP before real/dummy credentials",
         )
+
+
+def validate_simplified_authentication_and_administration(errors: list[str]) -> None:
+    """Keep retired baseline features out of the executable asset."""
+
+    retired_files = (
+        "app/verification.py",
+        "app/verification_flow.py",
+        "tests/test_verification.py",
+        "tests/test_verification_flow.py",
+        "tests/integration/test_verification_redis.py",
+        "app/authentication.py",
+    )
+    for relative in retired_files:
+        if (ASSET_ROOT / relative).exists():
+            fail(
+                errors,
+                f"retired optional authentication module is still bundled: {relative}",
+            )
+
+    app_root = ASSET_ROOT / "app"
+    for path in sorted(app_root.rglob("*.py")):
+        if any(part in FORBIDDEN_DIRECTORY_NAMES for part in path.parts):
+            continue
+        content = path.read_text(encoding="utf-8")
+        for marker in ("can_delegate", "super_admin_transfer", "logout-all"):
+            if marker in content:
+                fail(errors, f"{path.relative_to(REPO_ROOT)} reintroduces {marker!r}")
+
+    migration_path = ASSET_ROOT / "alembic" / "versions" / "0004_password_auth.py"
+    if migration_path.is_file():
+        migration = migration_path.read_text(encoding="utf-8")
+        if (
+            '"public_registration_enabled"' not in migration
+            or 'sa.text("true")' not in migration
+        ):
+            fail(
+                errors,
+                "registration switch must be persisted with a true database default",
+            )
+
+    reference_paths = (
+        SKILL_ROOT / "references" / "country-catalog.md",
+        SKILL_ROOT / "references" / "proxy-availability-backend.md",
+    )
+    for path in reference_paths:
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8")
+        marker = (
+            "implicit anonymous API from this Skill"
+            if path.name == "country-catalog.md"
+            else "never add an all-user or cross-business request quota"
+        )
+        if marker not in re.sub(r"\s+", " ", content):
+            fail(
+                errors,
+                f"{path.relative_to(REPO_ROOT)} must preserve optional-feature security scope",
+            )
 
 
 def validate_single_project_scope(errors: list[str]) -> None:
@@ -1806,7 +1764,6 @@ def validate_user_role_limit(errors: list[str]) -> None:
         ),
         "service": (
             "live_role_count + len(changed_ids) > MAX_ROLES_PER_USER",
-            "live_role_count >= MAX_ROLES_PER_USER",
             'conflict("user_role_limit_exceeded")',
         ),
         "migration": (
@@ -1829,7 +1786,7 @@ def validate_user_role_limit(errors: list[str]) -> None:
             "test_service_enforces_limit_and_keeps_bind_idempotent",
             "test_database_counts_disabled_roles_and_ignores_tombstones",
             "test_concurrent_bind_cannot_create_an_eleventh_live_role",
-            "test_super_admin_transfer_rejects_a_full_target_atomically",
+            "test_operator_handover_rejects_a_full_target_atomically",
         ),
         "bootstrap tests": (
             "test_operator_sql_uses_the_tenth_role_slot_and_replays_idempotently",
@@ -1841,8 +1798,9 @@ def validate_user_role_limit(errors: list[str]) -> None:
         ),
     }
     for name, markers in required_markers.items():
+        normalized_content = re.sub(r"\s+", " ", text[name])
         for marker in markers:
-            if marker not in text[name]:
+            if re.sub(r"\s+", " ", marker) not in normalized_content:
                 relative = paths[name].relative_to(REPO_ROOT)
                 fail(
                     errors,
@@ -2103,7 +2061,7 @@ def validate_administrative_read_visibility(errors: list[str]) -> None:
         ),
         "role write gate": (
             "async def _lock_shared_role_change(",
-            "async def _lock_super_admin_transfer(",
+            "def _require_role_administration(",
             (
                 "if required_permission.value not in actor.permissions:",
                 "role = locked_roles.get(role_id)",
@@ -2115,6 +2073,10 @@ def validate_administrative_read_visibility(errors: list[str]) -> None:
         start = service_source.find(start_marker)
         end = service_source.find(end_marker, start + 1)
         if start < 0 or end < 0:
+            fail(
+                errors,
+                f"{paths['service'].relative_to(REPO_ROOT)} {name} section missing",
+            )
             continue
         section = service_source[start:end]
         positions = [section.find(marker) for marker in ordered_markers]
@@ -2130,6 +2092,7 @@ def validate_administrative_read_visibility(errors: list[str]) -> None:
 
 def validate_super_admin_bootstrap(errors: list[str]) -> None:
     sql_path = ASSET_ROOT / "sql" / "bootstrap_super_admin.sql"
+    handover_path = ASSET_ROOT / "sql" / "handover_super_admin.sql"
     legacy_python_path = ASSET_ROOT / "app" / "rbac" / "bootstrap.py"
     if legacy_python_path.exists():
         fail(
@@ -2161,6 +2124,24 @@ def validate_super_admin_bootstrap(errors: list[str]) -> None:
 
     if "INSERT INTO users" in sql:
         fail(errors, "super-admin bootstrap SQL must require an existing user")
+    if not handover_path.is_file():
+        fail(errors, "offline super-admin handover SQL is missing")
+        return
+    handover = handover_path.read_text(encoding="utf-8")
+    for marker in (
+        "\\set ON_ERROR_STOP on",
+        "BEGIN;",
+        "rbac_state",
+        "FOR UPDATE",
+        "UPDATE user_roles",
+        "INSERT INTO user_roles",
+        "INSERT INTO rbac_audit_events",
+        "COMMIT;",
+    ):
+        if marker not in handover:
+            fail(errors, f"offline super-admin handover SQL is missing {marker!r}")
+    if "INSERT INTO users" in handover:
+        fail(errors, "offline super-admin handover must require an existing user")
 
 
 def validate_rbac_database_naming(errors: list[str]) -> None:
@@ -2310,7 +2291,6 @@ def validate_api_response_contract(errors: list[str]) -> None:
         "service": (
             "_require_expected_role_version",
             "decide_role_permissions_change",
-            "decide_role_delegation_change",
         ),
         "proxy backend": ("business code `503002`",),
         "proxy frontend": ("business code\n`503002`",),
@@ -2339,7 +2319,6 @@ def validate_api_response_contract(errors: list[str]) -> None:
         "set_role_active": "_require_role_administration",
         "soft_delete_role": "_require_role_administration",
         "change_role_permissions": "decide_role_permissions_change",
-        "change_role_delegation": "decide_role_delegation_change",
     }
     for method_name, policy_marker in policy_markers.items():
         start = service_text.find(f"    async def {method_name}(")
@@ -2778,19 +2757,12 @@ def validate_country_catalog(errors: list[str]) -> None:
             "test_cli_requires_an_authoritative_or_structure_only_mode",
         ),
         "readme": (
-            "country/region catalog contract",
-            "no third-party country dataset is bundled",
-            "explicit allowlist of approved",
-            "ASCII DNS hostnames",
-            "`membership_checked=false`",
-            "is never import approval",
+            "country catalog guide",
+            "The country dataset is not bundled.",
         ),
         "Chinese readme": (
-            "国家/地区目录规范",
-            "仓库也不捆绑第三方",
-            "ASCII DNS",
-            "`membership_checked=false`",
-            "绝不代表数据",
+            "国家目录",
+            "仓库不捆绑第三方国家数据集",
         ),
         "changelog": (
             "Release validation rejects bundled CSV/TSV country",
@@ -2961,6 +2933,7 @@ def main() -> int:
     validate_access_token_baseline(errors)
     validate_local_password_authentication(errors)
     validate_rate_limiting_and_verification(errors)
+    validate_simplified_authentication_and_administration(errors)
     validate_user_role_limit(errors)
     validate_administrative_read_visibility(errors)
     validate_super_admin_bootstrap(errors)

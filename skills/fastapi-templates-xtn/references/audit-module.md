@@ -29,8 +29,8 @@ rbac_audit_events
 ```
 
 It contains only access-control administration and decisions: role lifecycle,
-role-permission/delegation changes, user-role binding, protected user status,
-default-role provisioning, super-admin bootstrap or transfer, and relevant
+role-permission changes, user-role binding, protected user status,
+default-role provisioning, offline super-admin bootstrap or handover, and relevant
 denials. It is not a Token, login, proxy, or general application activity table.
 When a product needs account-security or material business audit, follow the
 separate business-audit contract. Do not silently broaden the meaning of
@@ -114,8 +114,6 @@ role.disable
 role.delete
 role.permissions.bind
 role.permissions.unbind
-role.delegation.bind
-role.delegation.unbind
 super_admin.bootstrap
 super_admin.transfer
 api.protected_write
@@ -243,10 +241,10 @@ indexes increase write and storage cost.
 Define alerts from stable action/reason codes after events commit. High-signal
 examples include:
 
-- super-admin bootstrap or transfer;
+- offline super-admin bootstrap or handover;
 - attempted system-role mutation;
 - repeated peer/upward/self-elevation denials;
-- permission or delegation changes on widely assigned roles;
+- permission changes on widely assigned roles;
 - user suspension/reactivation by privileged actors;
 - audit insert failure, append-only trigger changes, or archival failure; and
 - unusual audit export or read volume.

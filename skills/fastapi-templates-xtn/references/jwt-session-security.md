@@ -119,6 +119,13 @@ device monitoring.
   and reads must never extend it. Unknown script results fail closed.
 - Only the trusted login or token-issuance path activates a JTI. Never recreate a
   missing entry from a presented JWT; doing so reactivates a revoked credential.
+- Maintain a per-user active-login index with login timestamps in Redis. The
+  project owner chooses a positive simultaneous-login maximum before using the
+  asset. Issuance atomically registers a new JTI and, only when it succeeds,
+  evicts the oldest active login if the account is at its limit. Index entries
+  from an older `users.token_version` cannot count or consume slots after
+  password rotation or administrator revocation. A login record is not an
+  assertion about physical devices; a phone may have several logins.
 - Use bounded connection/socket timeouts, TLS and ACLs outside a trusted local
   network, a dedicated namespace, sufficient capacity, and preferably
   `noeviction`. Read through a path whose consistency meets the revocation
@@ -192,7 +199,8 @@ Choose persistence, replication, and failover guarantees for the product's risk,
 and document the residual window. This lighter Redis-only gate must not be
 described as PostgreSQL-grade linearizable revocation.
 
-For account-wide logout, password compromise, or identity disablement, increment
+For administrator-forced logout of a strictly lower user, password compromise,
+or identity disablement, increment
 `users.token_version` in the authoritative PostgreSQL transaction. Existing
 Redis records may remain until their `exp`, but every later request compares their
 bound version with the current user row and rejects them. User status transitions
@@ -206,12 +214,13 @@ account-security audit, issues no replacement Token, performs no Redis scan, and
 never stores password state in the JWT. See
 [Local password authentication](local-password-authentication.md).
 
-Expose account-wide logout as a separate authenticated command, such as
-`POST /api/v1/auth/logout-all`. It must pass the normal JWT, Redis, active-user,
-and PostgreSQL authority checks, then lock `rbac_state` before the current user,
-recheck the Redis-bound `token_version`, and increment it in one transaction.
-Do not scan Redis keys and do not claim that their physical deletion is required.
-If the transaction fails, return failure and leave the version unchanged.
+Do not expose self-service account-wide logout. Ordinary users may call only
+`POST /api/v1/auth/logout` for the current JTI. A separate administrator
+command may revoke a strictly lower target's account-wide sessions only with
+the exact capability, locked current hierarchy check, and account-security
+audit in one PostgreSQL transaction. It increments the target's
+`users.token_version`; never scan Redis keys or claim physical deletion is
+required. A failed transaction leaves the version unchanged.
 
 PostgreSQL and Redis do not share an ACID transaction. This design remains
 fail-closed because issuance returns no Token until Redis succeeds, and request
@@ -273,7 +282,7 @@ The active-JTI gate materially limits, but does not erase, signing-key risk:
 
 ## Included Asset Status
 
-The current `Unreleased` asset implements the core Redis active-JTI adapter:
+The working-tree asset implements the core Redis active-JTI adapter:
 minimal claims without `ver`, configurable one-hour default, registration before
 return, Redis-first validation, current PostgreSQL user/RBAC reload, user-version
 comparison, confirmed current-Token logout, and account-wide logout through

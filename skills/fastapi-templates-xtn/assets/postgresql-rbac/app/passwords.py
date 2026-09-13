@@ -13,11 +13,10 @@ ARGON2_TIME_COST: Final = 3
 ARGON2_PARALLELISM: Final = 4
 ARGON2_HASH_LENGTH: Final = 32
 ARGON2_SALT_LENGTH: Final = 16
-MIN_PASSWORD_CHARACTERS: Final = 15
-MAX_PASSWORD_CHARACTERS: Final = 128
+MIN_PASSWORD_CHARACTERS: Final = 8
+MAX_PASSWORD_CHARACTERS: Final = 60
 MAX_PASSWORD_UTF8_BYTES: Final = 1_024
 DEFAULT_MAX_CONCURRENT_OPERATIONS: Final = 2
-LOCAL_PASSWORD_DENYLIST_VERSION: Final = "xtn-minimal-v1"
 
 # This is a real Argon2id hash with the production parameters. Unknown accounts use
 # it so a login attempt still performs password verification work. The plaintext is
@@ -25,23 +24,6 @@ LOCAL_PASSWORD_DENYLIST_VERSION: Final = "xtn-minimal-v1"
 DUMMY_PASSWORD_HASH: Final = (
     "$argon2id$v=19$m=65536,t=3,p=4$LXt4vIgFZ6WkGw0A38ssxg$"
     "FHhivkBqhiWg1sDCem36CG0Ob137XKSwAlPuAVbeAp8"
-)
-
-# This intentionally small, versioned set is a runnable fallback, not a complete
-# compromised-password corpus. Replace it with a maintained offline dataset for
-# the target product and update LOCAL_PASSWORD_DENYLIST_VERSION with the data.
-_LOCAL_PASSWORD_DENYLIST: Final = frozenset(
-    {
-        "123456789012345",
-        "adminadminadmin",
-        "changemechangeme",
-        "iloveyouiloveyou",
-        "letmeinletmeinletmein",
-        "password123456789",
-        "passwordpassword",
-        "qwertyuiopasdfgh",
-        "welcome123456789",
-    }
 )
 
 _T = TypeVar("_T")
@@ -94,17 +76,13 @@ def validate_login_password_input(password: str) -> str:
 
 
 def _identity_fragments(identity_values: Iterable[str]) -> frozenset[str]:
-    fragments: set[str] = set()
+    identities: set[str] = set()
     for value in identity_values:
         if not isinstance(value, str):
             raise TypeError("identity values must be strings")
         folded = _comparison_form(value)
-        if len(folded) >= 3:
-            fragments.add(folded)
-        local_part, separator, _domain = folded.partition("@")
-        if separator and len(local_part) >= 3:
-            fragments.add(local_part)
-    return frozenset(fragments)
+        identities.add(folded)
+    return frozenset(identities)
 
 
 def validate_new_password(
@@ -121,10 +99,22 @@ def validate_new_password(
         raise PasswordPolicyError("password_contains_control_character")
 
     folded = _comparison_form(password)
-    if folded in _LOCAL_PASSWORD_DENYLIST or len(set(folded)) == 1:
+    if len(set(folded)) == 1:
         raise PasswordPolicyError("password_common_or_weak")
-    if any(fragment in folded for fragment in _identity_fragments(identity_values)):
-        raise PasswordPolicyError("password_contains_identity")
+    if (
+        len(folded) > 1
+        and folded.isascii()
+        and folded.isalnum()
+        and (folded.isdecimal() or folded.isalpha())
+    ):
+        steps = [
+            ord(right) - ord(left)
+            for left, right in zip(folded, folded[1:], strict=False)
+        ]
+        if len(set(steps)) == 1 and steps[0] in (-1, 1):
+            raise PasswordPolicyError("password_common_or_weak")
+    if folded in _identity_fragments(identity_values):
+        raise PasswordPolicyError("password_same_as_user_name")
     return password
 
 

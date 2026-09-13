@@ -33,22 +33,30 @@ from app.base import Base
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
-        UniqueConstraint("email", name="uq_users_email"),
         UniqueConstraint("user_name", name="uq_users_user_name"),
         CheckConstraint(
-            "email IS NOT NULL OR user_name IS NOT NULL",
-            name="identity_present",
-        ),
-        CheckConstraint(
-            "email IS NULL OR btrim(email) <> ''",
-            name="email_not_blank",
-        ),
-        CheckConstraint(
-            "user_name IS NULL OR btrim(user_name) <> ''",
-            name="user_name_not_blank",
+            "user_name ~ '^[A-Za-z0-9_]{3,32}$'",
+            name="user_name_format",
         ),
         CheckConstraint("token_version >= 0", name="token_version_nonnegative"),
         CheckConstraint("authz_version >= 0", name="authz_version_nonnegative"),
+        CheckConstraint(
+            "password_hash IS NULL OR password_hash ~ "
+            "'^\\$argon2id\\$v=19\\$m=[1-9][0-9]*,t=[1-9][0-9]*,"
+            "p=[1-9][0-9]*\\$[A-Za-z0-9+/]{16,}\\$"
+            "[A-Za-z0-9+/]{16,}$'",
+            name="password_hash_shape",
+        ),
+        CheckConstraint(
+            "(password_hash IS NULL AND password_changed_at IS NULL "
+            "AND NOT must_change_password) OR "
+            "(password_hash IS NOT NULL AND password_changed_at IS NOT NULL)",
+            name="password_state_coherent",
+        ),
+        CheckConstraint(
+            "deleted_at IS NULL OR password_hash IS NULL",
+            name="deleted_user_no_password",
+        ),
         CheckConstraint(
             "deleted_at IS NULL OR NOT is_active",
             name="deleted_user_inactive",
@@ -66,8 +74,14 @@ class User(Base):
         default=uuid.uuid4,
         server_default=text("gen_random_uuid()"),
     )
-    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
-    user_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    user_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    password_hash: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    password_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
     )
@@ -107,6 +121,9 @@ class RbacState(Base):
     scope: Mapped[str] = mapped_column(String(16), primary_key=True)
     epoch: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0, server_default="0"
+    )
+    public_registration_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
     )
 
 
@@ -285,9 +302,6 @@ class RolePermission(Base):
         UUID(as_uuid=True),
         ForeignKey("permissions.id", ondelete="RESTRICT"),
         nullable=False,
-    )
-    can_delegate: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="false"
     )
     assigned_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

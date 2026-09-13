@@ -192,7 +192,6 @@ async def test_shared_role_change_observes_new_high_authority_holder(
                         permission_id=world.permissions[
                             PermissionKey.PROJECTS_READ.value
                         ].id,
-                        can_delegate=False,
                     ),
                     UserRole(
                         user_id=world.users["lower"].id,

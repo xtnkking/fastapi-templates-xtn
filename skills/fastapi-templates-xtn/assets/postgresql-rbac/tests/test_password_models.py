@@ -2,42 +2,37 @@ import uuid
 from typing import cast
 
 import pytest
-from sqlalchemy import Table
+from sqlalchemy import CheckConstraint, Table
 
 from app.audit import AuditSource
+from app.base import Base
 from app.password_models import (
     AccountSecurityActorType,
     AccountSecurityAuditEvent,
     AccountSecurityAuditOutcome,
-    PasswordCredential,
 )
-from app.passwords import DUMMY_PASSWORD_HASH
+from app.rbac.models import User
 
 
-def test_password_credential_model_has_episode_constraints() -> None:
-    table = cast(Table, PasswordCredential.__table__)
+def test_user_model_owns_nullable_password_state_without_an_episode_table() -> None:
+    table = cast(Table, User.__table__)
 
-    assert table.name == "user_password_credentials"
-    assert table.primary_key.name == "pk_user_password_credentials"
-    assert {constraint.name for constraint in table.constraints} == {
-        "ck_user_password_credentials_deleted_actor_requires_timestamp",
-        "ck_user_password_credentials_id_uuid4",
-        "ck_user_password_credentials_live_hash_or_tombstone",
-        "ck_user_password_credentials_password_changed_after_created",
-        "ck_user_password_credentials_password_hash_shape",
-        "ck_user_password_credentials_tombstone_not_change_required",
-        "ck_user_password_credentials_version_positive",
-        "fk_user_password_credentials_created_by_user_id_users",
-        "fk_user_password_credentials_deleted_by_user_id_users",
-        "fk_user_password_credentials_user_id_users",
-        "pk_user_password_credentials",
-        "uq_user_password_credentials_user_version",
+    assert table.name == "users"
+    assert "user_password_credentials" not in Base.metadata.tables
+    assert table.c.password_hash.nullable
+    assert table.c.password_changed_at.nullable
+    assert not table.c.must_change_password.nullable
+    assert table.c.must_change_password.server_default is not None
+    checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
     }
-    assert {index.name for index in table.indexes} == {
-        "ix_user_password_credentials_deleted_at",
-        "ix_user_password_credentials_user_created",
-        "uq_user_password_credentials_live_user",
-    }
+    assert "ck_users_password_hash_shape" in checks
+    assert "ck_users_password_state_coherent" in checks
+    assert "ck_users_deleted_user_no_password" in checks
+    assert "password_changed_at IS NULL" in checks["ck_users_password_state_coherent"]
+    assert "must_change_password" in checks["ck_users_password_state_coherent"]
 
 
 def test_account_security_audit_model_is_narrow_and_unambiguous() -> None:
@@ -93,11 +88,4 @@ def test_models_reject_non_uuid4_event_ids() -> None:
             target_user_id=uuid.uuid4(),
             source="http",
             request_id=str(uuid.uuid4()),
-        )
-
-    with pytest.raises(ValueError, match="UUIDv4"):
-        PasswordCredential(
-            id=uuid.uuid1(),
-            user_id=uuid.uuid4(),
-            password_hash=DUMMY_PASSWORD_HASH,
         )

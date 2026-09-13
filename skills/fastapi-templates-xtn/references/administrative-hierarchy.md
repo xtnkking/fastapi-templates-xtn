@@ -1,7 +1,7 @@
 # Administrative Hierarchy And Anti-Escalation
 
 Read this reference when an actor can assign roles, edit roles, manage users,
-change the sole super administrator, reset authentication factors, revoke
+perform an offline handover of the sole super administrator, reset authentication factors, revoke
 Access Tokens, impersonate another identity, or otherwise change another principal's
 authority.
 
@@ -12,15 +12,15 @@ indirectly affected by the change.
 The complete PostgreSQL example implements these rules in
 [`app/rbac/policy.py`](../assets/postgresql-rbac/app/rbac/policy.py) and
 [`app/rbac/service.py`](../assets/postgresql-rbac/app/rbac/service.py), including
-user and custom-role lifecycle, immutable system roles, and the super-admin
-delegation and transfer boundary.
+user and custom-role lifecycle, immutable system roles, and offline-only
+super-admin handover boundary.
 
 When the task includes login identifiers, user deletion/restoration, or relation
 storage, also read
 [Identity and soft-delete lifecycle](identity-soft-delete.md). Greenfield work
-must ask which email/`user_name` fields `users` stores and separately settle the
-login-input contract; existing work preserves it unless a
-change is requested.
+uses the required `user_name` and password baseline, asks whether ASCII username
+case is significant, and reserves soft-deleted usernames; existing work preserves
+its identity contract unless a change is requested.
 
 ## Model Authority Explicitly
 
@@ -29,7 +29,6 @@ keys are invariants, but authorization decisions still use the complete
 authority model:
 
 - `effective_permissions`: capabilities the user can exercise now;
-- `delegable_permissions`: capabilities the user may grant to others;
 - `management_tier`: a server-controlled rank; larger values are higher;
 - `protected_identity` and `protected_role`: the current `super_admin`,
   break-glass subjects, or other authority excluded from ordinary management;
@@ -45,8 +44,9 @@ This baseline uses one application-wide hierarchy. If product resources need
 department, project, ownership, or other row-level boundaries, model and test
 those separately. A high tier never bypasses an independent resource policy.
 
-By default, `delegable_permissions` is a subset of effective permissions. Any
-exception must be explicit and must never permit direct or indirect self-grant.
+Granting a permission requires the actor to hold that permission now, along
+with the exact operation capability and strict lower-target hierarchy. Do not
+add a separate delegation subset or management API.
 
 ## Fixed System Roles
 
@@ -55,11 +55,11 @@ Seed these roles before provisioning users:
 | Role | Tier | Required behavior |
 | --- | ---: | --- |
 | `super_admin` | `1000` | System, protected, active; exactly one current holder after bootstrap |
-| `admin` | `500` | System and active; manages only strictly lower custom roles and users within its delegation ceiling |
+| `admin` | `500` | System and active; manages only strictly lower custom roles and users with capabilities it holds |
 | `user` | `0` | System and active; mandatory base role with no authorization-management capability |
 
 The three roles cannot be disabled, soft-deleted, renamed, re-ranked, or have
-their permission/delegation grants changed through a public API. This restriction
+their permission grants changed through a public API. This restriction
 also applies to `super_admin`; the super administrator controls assignments and
 custom roles, not the definition of the three system roles. A reviewed migration
 is the only way to change a system-role specification.
@@ -72,8 +72,8 @@ or `super_admin`.
 The seeded `admin` has an intentionally incomplete capability set. It may read
 permissions and roles; create, update, enable, disable, and change permissions on
 manageable custom roles; assign and revoke manageable roles; and read or update
-manageable users. It cannot soft-delete roles, change delegation policy, mutate
-system roles, or transfer `super_admin`. Strict tier comparison also prevents
+manageable users. It cannot soft-delete roles, mutate system roles, or change
+the sole `super_admin` through any API. Strict tier comparison also prevents
 one `admin` from managing another `admin`.
 
 ## Default Manageability Rule
@@ -91,10 +91,10 @@ applicable conditions are true:
 3. The actor's current tier is strictly greater than the target's current tier,
    the target's proposed tier, and every assigned, proposed, or changed role
    tier. Peer, higher, and otherwise incomparable changes are denied.
-4. The target's current and proposed permissions are subsets of the actor's
-   explicit delegable permissions.
-5. The change does not increase the actor's own effective permissions, delegable
-   permissions, tier, `super_admin` status, protected status, impersonation
+4. Any newly granted permission is one the actor currently possesses, and
+   affected users' complete authority remains manageable by this actor.
+5. The change does not increase the actor's own effective permissions,
+   tier, `super_admin` status, protected status, impersonation
    reach, or other authorization power.
 6. Mandatory-`user`, sole-`super_admin`, separation-of-duties, approval,
    soft-delete, and protected-role invariants still hold after the complete
@@ -145,7 +145,7 @@ For user-role bind or unbind, apply that check to the target user and separately
 to every requested role ID; one hidden or unknown role makes the whole atomic
 request return `404001`.
 
-After a target passes visibility, run delegation, affected-user, system-role,
+After a target passes visibility, run granted-permission, affected-user, system-role,
 self-elevation, and operation-specific policy. A visible target that fails one
 of those checks returns `403001`. Keep these stages distinct so `404001` does not
 become a general substitute for authorization denial and `403001` does not leak
@@ -154,7 +154,7 @@ hidden administrative objects.
 ## Direct And Indirect Self-Elevation
 
 Deny a request whose direct target is the actor when it grants a role,
-permission, tier, `super_admin` status, delegable capability, protected status,
+permission, tier, `super_admin` status, protected status,
 or impersonation capability. Detect indirect effects too:
 
 - editing a role currently assigned to the actor;
@@ -162,14 +162,13 @@ or impersonation capability. Detect indirect effects too:
 - changing a role template, permission catalog, group, or inheritance edge that
   contributes to the actor's authority;
 - modifying a shared role whose change expands the actor's permissions;
-- changing the super-admin assignment or delegation policy so the actor can grant
-  itself authority later;
+- changing the super-admin assignment so the actor can grant itself authority later;
 - using a bulk endpoint, background job, alternate route, or service API to
   perform the same effect indirectly.
 
 For every authorization mutation, compute the actor's complete authority before
 and after the proposed change inside the authoritative transaction. The after
-permissions and delegable set must contain no new element, and the tier must not
+permissions must contain no new element, and the tier must not
 increase. Checking only `actor.id != target.id` is insufficient.
 
 A dedicated self-service endpoint may let a user remove a non-mandatory role or
@@ -183,17 +182,17 @@ endpoint's no-self-target rule.
 - Role assignment checks both the target user and every assigned role. The actor
   must dominate the target's complete current and proposed authority. The
   proposal must also leave the target with at most 10 live role bindings.
-- Ordinary role binding never grants `super_admin`; only the dedicated atomic
-  `super_admin` transfer command changes that assignment. Only `super_admin` can
+- Ordinary role binding never grants `super_admin`; only guarded offline SQL
+  changes its holder. Only `super_admin` can
   bind or unbind `admin`, and no actor can unbind `user`.
 - Role creation checks the proposed tier and starts with no permissions.
   Permission binding is a separate capability and transaction.
 - Role information update changes only explicitly mutable custom-role fields.
-  System keys, tiers, flags, lifecycle fields, permissions, and delegation never
+  System keys, tiers, flags, lifecycle fields, and permissions never
   enter an ordinary update body.
 - Permission bind and unbind check the complete resulting role and every live
   direct or indirect assignee. They reject an actor-held role, a permission
-  outside the actor's delegable set, and any affected protected, peer, or higher
+  outside the actor's effective set, and any affected protected, peer, or higher
   user.
 - Disabling, enabling, or deleting a shared custom role affects every live
   assignment that could become effective now or after user reactivation.
@@ -202,7 +201,7 @@ endpoint's no-self-target rule.
   atomically tombstones every live grant and assignment, and permanently
   reserves its key.
 - User profile or login-identifier changes, suspension, deletion, credential or
-  MFA reset, Token revocation, super-admin transfer, and impersonation use the
+  MFA reset, Token revocation, and impersonation use the
   same manageability rule. They can control or disrupt a higher identity without
   directly editing a role.
 - Distinguish disable/enable from delete/restore. Enable may revalidate still-live
@@ -222,20 +221,18 @@ Reserve tier `1000` for `super_admin`; reserve tier `500` for `admin`; use tier
 dominance means the seeded `admin` can manage only custom roles below `500`.
 
 Keep super-admin grants in an explicit allowlist instead of granting every
-permission-catalog row automatically. `roles:delegation:update` and
-`super_admin:transfer` are never delegable. Both delegation changes and
-`super_admin` transfer require the current `super_admin` identity after canonical
-locks and authoritative reload, not merely possession of a permission key.
+permission-catalog row automatically. There is no online handover permission,
+route, or independent permission-delegation policy.
 
-Transfer must atomically create a new `super_admin` episode for the target,
-tombstone the actor's live episode, preserve both users' `user` assignment,
+The offline operator handover script must atomically create a new `super_admin`
+episode for the target, tombstone the former holder's live episode, preserve both users' `user` assignment,
 update both users' authorization versions and the global authorization epoch,
 and write the allowed audit. There must be exactly one live active holder after
-a successful transaction.
+a successful transaction. No administrator can invoke this operation over HTTP.
 
 A deferred PostgreSQL constraint enforces exactly one live holder whenever a
 `super_admin` assignment changes. It permits the first offline bootstrap and a
-single-transaction transfer, while rejecting a final-holder tombstone or a
+single-transaction offline handover, while rejecting a final-holder tombstone or a
 second live holder. There is no legacy `owner` system-role alias or migration
 compatibility rule in this fresh baseline; `owner` remains available as an
 ordinary custom-role key and receives no special authority.
@@ -261,7 +258,11 @@ global epoch only when the binding changes, and writes audit in the same
 PostgreSQL transaction. It never creates the identity or changes its password,
 Token version, or protected flag. Re-running it for the same holder is
 idempotent; naming a deleted or different holder after bootstrap is refused and
-rolled back. It accepts only immutable `users.id`, never email or `user_name`.
+rolled back. It accepts only immutable `users.id`, never a username. For a later
+holder change, use `sql/handover_super_admin.sql` from the same trusted host,
+supplying both immutable old and new user IDs after operator verification. The
+script checks sole ownership and eligibility, swaps the relation in one guarded
+transaction, increments both authorization versions and the epoch, and audits.
 
 ## Transaction And Concurrency Boundary
 
@@ -277,7 +278,7 @@ query while holding the global authorization guard; cost does not justify
 omitting impact analysis.
 
 Require a nonnegative body `expected_version` for custom-role update, lifecycle,
-deletion, permission, and delegation commands. Require a strict JSON integer and
+deletion, and permission commands. Require a strict JSON integer and
 check it only after locks, reload, and the complete authorization and hierarchy
 decision. Missing or malformed input returns `422001`; an unauthorized stale
 attempt still returns `403001`; an authorized stale value returns HTTP `409` with
@@ -301,14 +302,6 @@ mix a newer nested collection with the command's older result or turn a committe
 success into a later read failure.
 Follow [API response standard](api-response-standard.md).
 
-## Break-Glass Access
-
-Do not express emergency elevation as a normal high-tier role assignment. Use a
-separate time-limited path with strong reauthentication, explicit reason,
-approval when required, narrow effects, automatic expiry, Token revocation,
-and high-priority audit or alerting. An `admin` cannot grant, renew, or conceal
-break-glass access.
-
 ## Errors And Audit
 
 - A caller missing the operation capability receives `403001` before target
@@ -316,12 +309,12 @@ break-glass access.
 - After the capability recheck, a missing or concealed self, peer, higher, or
   protected user or role returns `404001`; the same rule covers every role ID in
   a bind or unbind request.
-- A visible target that fails delegation, affected-user, system-role,
+- A visible target that fails granted-permission, affected-user, system-role,
   self-elevation, or another operation-specific rule returns `403001`.
 - Use the neutral numeric public business code `403001`; do not reveal RBAC as
   the implementation mechanism through paths, OpenAPI metadata, or errors.
 - Do not reveal the target's tier, protection, assigned roles, or missing
-  delegable permission in external errors.
+  grantable permission in external errors.
 - Audit allowed and denied high-risk administration with actor, target,
   operation, reason code, request ID, and timestamp. Include safe before/after
   summaries when available. Never log credentials, tokens, or secrets.
@@ -331,14 +324,14 @@ break-glass access.
 | Actor and operation | Expected result |
 | --- | --- |
 | Authenticated `user` calls any administration endpoint | Deny |
-| `admin` manages a lower user or custom role within delegation | Allow |
-| `admin` deletes a role, edits a system role, changes delegation, or transfers `super_admin` | Deny |
+| `admin` manages a lower user or custom role with permissions it holds | Allow |
+| `admin` deletes a role, edits a system role, or attempts online super-admin transfer | Deny |
 | Lower actor modifies, suspends, resets, impersonates, or revokes a higher target | Deny |
 | Peer actor modifies an equal-tier target | Deny |
 | An apparently ordinary target also holds a peer or higher role | Deny using the complete snapshot |
 | Actor assigns a role at or above its own tier | Deny |
-| Actor grants a permission outside its delegable set | Deny |
-| Actor grants a role, tier, `super_admin` status, or delegation to itself | Deny |
+| Actor grants a permission it does not hold | Deny |
+| Actor grants a role, tier, or `super_admin` status to itself | Deny |
 | Actor edits a shared role it holds | Deny; use dedicated self-reduction for a reduction |
 | Actor edits a shared role affecting an unmanageable user | Deny atomically |
 | Suspended higher user retains the affected shared role | Deny or revalidate safely before reactivation |

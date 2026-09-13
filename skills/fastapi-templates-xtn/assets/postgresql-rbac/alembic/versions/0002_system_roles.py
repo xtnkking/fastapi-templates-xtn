@@ -25,7 +25,9 @@ NEW_PERMISSIONS: tuple[tuple[str, str], ...] = (
     ("roles:delete", "Soft-delete a manageable role"),
     ("roles:permissions:bind", "Bind one permission to a manageable role"),
     ("roles:permissions:unbind", "Unbind one permission from a manageable role"),
-    ("super_admin:transfer", "Transfer the sole super administrator atomically"),
+    ("users:sessions:revoke", "End every login of a strictly lower user"),
+    ("users:create", "Create a user with the mandatory base role"),
+    ("registration:configure", "Change the public registration switch"),
 )
 
 SUPER_ADMIN_PERMISSION_KEYS = frozenset(
@@ -40,18 +42,15 @@ SUPER_ADMIN_PERMISSION_KEYS = frozenset(
         "roles:revoke",
         "roles:permissions:bind",
         "roles:permissions:unbind",
-        "roles:delegation:update",
         "users:read",
+        "users:create",
         "users:status:update",
-        "super_admin:transfer",
+        "users:sessions:revoke",
+        "registration:configure",
         "projects:read",
         "projects:update",
     }
 )
-SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS = SUPER_ADMIN_PERMISSION_KEYS - {
-    "roles:delegation:update",
-    "super_admin:transfer",
-}
 ADMIN_PERMISSION_KEYS = frozenset(
     {
         "permissions:read",
@@ -64,12 +63,13 @@ ADMIN_PERMISSION_KEYS = frozenset(
         "roles:permissions:bind",
         "roles:permissions:unbind",
         "users:read",
+        "users:create",
         "users:status:update",
+        "users:sessions:revoke",
         "projects:read",
         "projects:update",
     }
 )
-ADMIN_DELEGABLE_PERMISSION_KEYS = frozenset({"projects:read", "projects:update"})
 USER_PERMISSION_KEYS: frozenset[str] = frozenset()
 
 SYSTEM_ROLE_SPECS: dict[str, dict[str, Any]] = {
@@ -80,7 +80,6 @@ SYSTEM_ROLE_SPECS: dict[str, dict[str, Any]] = {
         "is_protected": True,
         "is_super_admin": True,
         "permissions": SUPER_ADMIN_PERMISSION_KEYS,
-        "delegable_permissions": SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS,
     },
     "admin": {
         "name": "Administrator",
@@ -89,7 +88,6 @@ SYSTEM_ROLE_SPECS: dict[str, dict[str, Any]] = {
         "is_protected": False,
         "is_super_admin": False,
         "permissions": ADMIN_PERMISSION_KEYS,
-        "delegable_permissions": ADMIN_DELEGABLE_PERMISSION_KEYS,
     },
     "user": {
         "name": "User",
@@ -98,7 +96,6 @@ SYSTEM_ROLE_SPECS: dict[str, dict[str, Any]] = {
         "is_protected": False,
         "is_super_admin": False,
         "permissions": USER_PERMISSION_KEYS,
-        "delegable_permissions": frozenset(),
     },
 }
 
@@ -201,7 +198,6 @@ def _replace_system_role_grants(
     *,
     role_id: uuid.UUID,
     permission_keys: frozenset[str],
-    delegable_permission_keys: frozenset[str],
 ) -> None:
     rows = (
         connection.execute(
@@ -247,16 +243,15 @@ def _replace_system_role_grants(
     if permission_keys:
         connection.execute(
             sa.text(
-                "INSERT INTO role_permissions (role_id, permission_id, can_delegate) "
-                "VALUES (:role_id, :permission_id, :can_delegate) "
+                "INSERT INTO role_permissions (role_id, permission_id) "
+                "VALUES (:role_id, :permission_id) "
                 "ON CONFLICT (role_id, permission_id) WHERE deleted_at IS NULL "
-                "DO UPDATE SET can_delegate = EXCLUDED.can_delegate"
+                "DO NOTHING"
             ),
             [
                 {
                     "role_id": role_id,
                     "permission_id": permission_ids[key],
-                    "can_delegate": key in delegable_permission_keys,
                 }
                 for key in sorted(permission_keys)
             ],
@@ -330,7 +325,6 @@ def upgrade() -> None:
             connection,
             role_id=role_id,
             permission_keys=spec["permissions"],
-            delegable_permission_keys=spec["delegable_permissions"],
         )
 
     inserted_user_ids = list(

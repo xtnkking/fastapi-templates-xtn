@@ -117,32 +117,10 @@ class RolePermissionsReplaceRequest(BaseModel):
         return value
 
 
-class RoleDelegationReplaceRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    delegable_permissions: list[PermissionKeyInput] = Field(
-        default_factory=list,
-        max_length=200,
-    )
-
-    @field_validator("delegable_permissions")
-    @classmethod
-    def unique_permissions(cls, value: list[str]) -> list[str]:
-        if len(value) != len(set(value)):
-            raise ValueError("permission keys must be unique")
-        return value
-
-
 class UserStatusUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     is_active: bool
-
-
-class SuperAdminTransferRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    target_user_id: uuid.UUID
 
 
 class RoleResponse(BaseModel):
@@ -157,7 +135,6 @@ class RoleResponse(BaseModel):
     is_system: bool
     is_protected: bool
     permissions: tuple[str, ...]
-    delegable_permissions: tuple[str, ...]
     version: int
     deleted_at: datetime | None
 
@@ -196,9 +173,6 @@ class UserResponse(BaseModel):
     effective_permissions: tuple[str, ...] = Field(
         description="Permission union from effective roles only."
     )
-    effective_delegable_permissions: tuple[str, ...] = Field(
-        description="Delegable permission union from effective roles only."
-    )
     authz_version: int
 
 
@@ -217,6 +191,5 @@ class AuthorityResponse(BaseModel):
     user_id: uuid.UUID
     management_tier: int
     permissions: list[str]
-    delegable_permissions: list[str]
     authz_version: int
     authorization_epoch: int

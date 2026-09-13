@@ -111,6 +111,33 @@ def confirmed_redis_targets() -> tuple[str, str]:
     return raw_urls[0] or "", raw_urls[1] or ""
 
 
+def confirmed_redis_only_target() -> str:
+    token_url, limiter_url = confirmed_redis_targets()
+    url = os.environ.get("TEST_CAPTCHA_REDIS_URL")
+    if not url:
+        _refuse("a separate disposable Redis-only target must be configured")
+    try:
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme not in {"redis", "rediss"}
+            or not parsed.hostname
+            or parsed.port == 0
+            or parsed.query
+            or parsed.fragment
+            or not parsed.path.startswith("/")
+            or not parsed.path[1:].isdigit()
+        ):
+            raise ValueError
+        database = int(parsed.path[1:])
+    except ValueError:
+        _refuse("invalid disposable Redis-only test target")
+    if database in (
+        int(urlsplit(target).path[1:]) for target in (token_url, limiter_url)
+    ):
+        _refuse("Redis-only target must use a database distinct from integration tests")
+    return url
+
+
 def verify_empty_redis_targets(redis_url: str, rate_limit_redis_url: str) -> None:
     urls = confirmed_redis_targets()
     if (redis_url, rate_limit_redis_url) != urls:
