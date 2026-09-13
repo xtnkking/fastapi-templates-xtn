@@ -2,6 +2,8 @@ import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 
+from app.audit import AuditSource
+
 
 class PermissionKey(StrEnum):
     PERMISSIONS_READ = "permissions:read"
@@ -14,12 +16,11 @@ class PermissionKey(StrEnum):
     ROLES_REVOKE = "roles:revoke"
     ROLES_PERMISSIONS_BIND = "roles:permissions:bind"
     ROLES_PERMISSIONS_UNBIND = "roles:permissions:unbind"
-    ROLES_PERMISSIONS_UPDATE = "roles:permissions:update"
     ROLES_DELEGATION_UPDATE = "roles:delegation:update"
     USERS_READ = "users:read"
     USERS_STATUS_UPDATE = "users:status:update"
+    USERS_PASSWORD_RESET = "users:password:reset"
     SUPER_ADMIN_TRANSFER = "super_admin:transfer"
-    SYSTEM_OWNER_TRANSFER = "system_owner:transfer"
     PROJECTS_READ = "projects:read"
     PROJECTS_UPDATE = "projects:update"
 
@@ -37,18 +38,17 @@ PERMISSION_CATALOG: dict[PermissionKey, str] = {
     PermissionKey.ROLES_PERMISSIONS_UNBIND: (
         "Unbind one permission from a manageable role"
     ),
-    PermissionKey.ROLES_PERMISSIONS_UPDATE: (
-        "Replace permission grants on a manageable role"
-    ),
     PermissionKey.ROLES_DELEGATION_UPDATE: (
         "Replace delegable grants on a manageable role"
     ),
     PermissionKey.USERS_READ: "Read users and their current authority",
     PermissionKey.USERS_STATUS_UPDATE: "Activate or suspend a manageable user",
+    PermissionKey.USERS_PASSWORD_RESET: (
+        "Reset the local password of a strictly lower user"
+    ),
     PermissionKey.SUPER_ADMIN_TRANSFER: (
         "Transfer the sole super administrator atomically"
     ),
-    PermissionKey.SYSTEM_OWNER_TRANSFER: "Transfer the sole system Owner atomically",
     PermissionKey.PROJECTS_READ: "Read projects",
     PermissionKey.PROJECTS_UPDATE: "Update projects",
 }
@@ -67,7 +67,7 @@ class SystemRoleSpec:
     description: str
     management_tier: int
     is_protected: bool
-    is_owner: bool
+    is_super_admin: bool
     permissions: frozenset[str]
     delegable_permissions: frozenset[str]
 
@@ -86,12 +86,11 @@ SUPER_ADMIN_PERMISSION_KEYS = frozenset(
         PermissionKey.ROLES_REVOKE.value,
         PermissionKey.ROLES_PERMISSIONS_BIND.value,
         PermissionKey.ROLES_PERMISSIONS_UNBIND.value,
-        PermissionKey.ROLES_PERMISSIONS_UPDATE.value,
         PermissionKey.ROLES_DELEGATION_UPDATE.value,
         PermissionKey.USERS_READ.value,
         PermissionKey.USERS_STATUS_UPDATE.value,
+        PermissionKey.USERS_PASSWORD_RESET.value,
         PermissionKey.SUPER_ADMIN_TRANSFER.value,
-        PermissionKey.SYSTEM_OWNER_TRANSFER.value,
         PermissionKey.PROJECTS_READ.value,
         PermissionKey.PROJECTS_UPDATE.value,
     }
@@ -99,8 +98,8 @@ SUPER_ADMIN_PERMISSION_KEYS = frozenset(
 NON_DELEGABLE_CONTROL_PERMISSIONS = frozenset(
     {
         PermissionKey.ROLES_DELEGATION_UPDATE.value,
+        PermissionKey.USERS_PASSWORD_RESET.value,
         PermissionKey.SUPER_ADMIN_TRANSFER.value,
-        PermissionKey.SYSTEM_OWNER_TRANSFER.value,
     }
 )
 SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS = (
@@ -119,6 +118,7 @@ ADMIN_PERMISSION_KEYS = frozenset(
         PermissionKey.ROLES_PERMISSIONS_UNBIND.value,
         PermissionKey.USERS_READ.value,
         PermissionKey.USERS_STATUS_UPDATE.value,
+        PermissionKey.USERS_PASSWORD_RESET.value,
         PermissionKey.PROJECTS_READ.value,
         PermissionKey.PROJECTS_UPDATE.value,
     }
@@ -138,7 +138,7 @@ SYSTEM_ROLE_SPECS: dict[SystemRoleKey, SystemRoleSpec] = {
         description="Sole protected administrator for the application",
         management_tier=1000,
         is_protected=True,
-        is_owner=True,
+        is_super_admin=True,
         permissions=SUPER_ADMIN_PERMISSION_KEYS,
         delegable_permissions=SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS,
     ),
@@ -148,7 +148,7 @@ SYSTEM_ROLE_SPECS: dict[SystemRoleKey, SystemRoleSpec] = {
         description="Built-in administrator for strictly lower authority",
         management_tier=500,
         is_protected=False,
-        is_owner=False,
+        is_super_admin=False,
         permissions=ADMIN_PERMISSION_KEYS,
         delegable_permissions=ADMIN_DELEGABLE_PERMISSION_KEYS,
     ),
@@ -158,18 +158,14 @@ SYSTEM_ROLE_SPECS: dict[SystemRoleKey, SystemRoleSpec] = {
         description="Mandatory lowest-authority role for every user",
         management_tier=0,
         is_protected=False,
-        is_owner=False,
+        is_super_admin=False,
         permissions=USER_PERMISSION_KEYS,
         delegable_permissions=frozenset(),
     ),
 }
 SYSTEM_ROLE_KEYS = frozenset(item.value for item in SystemRoleKey)
-RESERVED_ROLE_KEYS = SYSTEM_ROLE_KEYS | {"owner"}
-
-# Compatibility names for code adapting the v0.2 Owner terminology. These are
-# aliases for the new contract, not separate authority sets.
-OWNER_PERMISSION_KEYS = SUPER_ADMIN_PERMISSION_KEYS
-OWNER_DELEGABLE_PERMISSION_KEYS = SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS
+RESERVED_ROLE_KEYS = SYSTEM_ROLE_KEYS
+MAX_ROLES_PER_USER = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +173,8 @@ class Principal:
     user_id: uuid.UUID
     token_version: int
     token_id: uuid.UUID
+    issued_at: int
+    expires_at: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,7 +186,7 @@ class RoleGrant:
     delegable_permissions: frozenset[str]
     is_system: bool
     is_protected: bool
-    is_owner: bool
+    is_super_admin: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,12 +194,13 @@ class AuthoritySnapshot:
     user_id: uuid.UUID
     user_is_active: bool
     user_is_protected: bool
+    token_version: int
     roles: tuple[RoleGrant, ...]
     permissions: frozenset[str]
     delegable_permissions: frozenset[str]
     management_tier: int
     is_protected: bool
-    is_owner: bool
+    is_super_admin: bool
     authz_version: int
 
     @classmethod
@@ -211,6 +210,7 @@ class AuthoritySnapshot:
         user_id: uuid.UUID,
         user_is_active: bool,
         user_is_protected: bool,
+        token_version: int = 0,
         authz_version: int,
         roles: tuple[RoleGrant, ...],
     ) -> "AuthoritySnapshot":
@@ -224,6 +224,7 @@ class AuthoritySnapshot:
             user_id=user_id,
             user_is_active=user_is_active,
             user_is_protected=user_is_protected,
+            token_version=token_version,
             roles=tuple(sorted(roles, key=lambda role: str(role.role_id))),
             permissions=permissions,
             delegable_permissions=delegable,
@@ -231,7 +232,7 @@ class AuthoritySnapshot:
             is_protected=(
                 user_is_protected or any(role.is_protected for role in roles)
             ),
-            is_owner=any(role.is_owner for role in roles),
+            is_super_admin=any(role.is_super_admin for role in roles),
             authz_version=authz_version,
         )
 
@@ -250,6 +251,7 @@ class AuthoritySnapshot:
             user_id=self.user_id,
             user_is_active=self.user_is_active,
             user_is_protected=self.user_is_protected,
+            token_version=self.token_version,
             authz_version=self.authz_version,
             roles=roles,
         )
@@ -261,6 +263,7 @@ class AuthorizationContext:
     authorization_epoch: int
     authority: AuthoritySnapshot
     request_id: str
+    audit_source: AuditSource = AuditSource.SERVICE
 
     @property
     def permissions(self) -> frozenset[str]:

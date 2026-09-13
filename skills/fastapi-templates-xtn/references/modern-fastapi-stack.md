@@ -98,6 +98,10 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 ## Schemas And Endpoints
 
+- For JSON envelopes, numeric business codes, server-generated request IDs,
+  simple page-number pagination, and error handlers, read
+  [API response standard](api-response-standard.md). Do not invent a competing
+  response shape in this general stack layer.
 - Use `model_config = ConfigDict(from_attributes=True)` for output models that
   validate ORM objects.
 - Use `model_dump()` instead of the Pydantic 1 `dict()` API.
@@ -107,8 +111,11 @@ async def get_session() -> AsyncIterator[AsyncSession]:
   hashes and authorization state never belong in public response models.
 - Prefer `Annotated[T, Depends(...)]` aliases for shared dependencies when that
   improves signatures.
-- Validate pagination bounds and make ordering deterministic.
-- Return `204` responses without a body.
+- Validate pagination bounds and make ordering deterministic. Under the XTN
+  baseline, page data contains only `items`, `page`, `page_size`, and `total`.
+- Use `200` with the standard envelope for an ordinary JSON command such as
+  logout. A true `204`, `304`, file, or stream has no JSON envelope and carries
+  its mandatory request ID in `X-Request-ID` only.
 - Translate known domain failures to stable error codes at the HTTP boundary;
   do not expose raw exception strings or database details.
 
@@ -116,13 +123,15 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 - Use a maintained password hashing implementation with a memory-hard default
   such as Argon2 when local passwords are required.
-- For JWT claims, opaque subjects, signing, access/refresh separation, Redis JTI
-  validation, and revocation, read
-  [JWT session security](jwt-session-security.md). Its minimal payload and
+- For JWT claims, opaque subjects, signing, Redis active-JTI validation, login,
+  logout, and revocation, read
+  [JWT access-token security](jwt-session-security.md). Its minimal payload and
   server-side authority rules replace generic JWT examples.
-- Load the current active user and required session state after cryptographic
-  validation. A correctly signed token for a disabled user or revoked session is
-  not an authenticated application principal.
+- After cryptographic validation, require the exact Redis active-JTI record, then
+  load the existing current active PostgreSQL user and RBAC authority and compare
+  the Redis-bound user version. A correctly signed Token with a missing JTI or a
+  disabled user is not an authenticated application principal. Do not add a
+  PostgreSQL Token table or another per-request query for an individual Token.
 
 ## Application Lifecycle And Operations
 
@@ -131,6 +140,7 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 - Provide separate liveness and readiness behavior when deployment needs them;
   readiness may check critical dependencies without leaking their details.
 - Configure structured logs and request correlation at the application boundary.
-  Never log authorization headers, cookies, passwords, or secret settings.
+  Never log authorization headers, cookies, passwords, or secret settings. Read
+  [Operational logging](operational-logging.md) when implementing this boundary.
 - Put trusted-proxy, host, HTTPS, payload-limit, timeout, and CORS configuration
   under deployment-aware policy instead of pretending one default fits all.

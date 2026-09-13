@@ -6,6 +6,199 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-13
+
+- **BREAKING:** Greenfield services must first choose whether `users` stores
+  `email`, `user_name`, or both, then separately settle per-flow requiredness,
+  login input, normalization, uniqueness, cross-field ambiguity, and
+  post-deletion reuse before modeling users. Existing services preserve their
+  contract by default. JWT `sub` and the offline
+  first-super-admin bootstrap now identify users only by immutable `users.id`;
+  the bootstrap parameter is `super_admin_user_id`.
+- **BREAKING:** The default Access Token claim contract is now exactly `sub`,
+  `jti`, `iat`, `exp`, and `token_type`. `iss` and `aud` are an optional pair:
+  before enabling them for a new project, the Skill explains in plain language
+  that they reduce cross-service Token confusion but add signer/verifier
+  configuration, then requires explicit user consent. No reply is not consent.
+  Existing projects that already configure both keep them by default. The Redis
+  active-JTI namespace no longer depends on the optional public issuer claim.
+- Added centrally configured, two-layer HTTP rate limiting with one atomic Redis
+  decision for all buckets applying to an event. The runnable asset covers the
+  early global/trusted-IP gate, authenticated read and write classes,
+  administration writes, `super_admin` transfer, and logout-all. Denials use
+  HTTP `429`/`429001` plus `Retry-After`; an unavailable or malformed limiter
+  fails closed as `503001`. Redis keys use purpose-bound HMAC fingerprints and
+  never expose raw IPs, account names, user IDs, Tokens, or JTI values. CI and
+  the development stack now exercise this state in a dedicated Redis separate
+  from the active-JTI service. `APP_ENVIRONMENT` is now required and has no code
+  default, so omission cannot silently select `development`. Disabling the
+  limiter is rejected outside an explicitly named local or test environment,
+  preventing deployed registration, login, temporary-reset, and
+  password-reauthentication paths from bypassing `IdentityAbuseFlow` through
+  configuration.
+- Added reusable username/password login and registration abuse defense, plus an
+  optional email/SMS verification service that is disabled by default. The only
+  hard login-admission limits are IP, IP plus normalized account, and global
+  traffic. Login failures update an atomic, expiring private risk signal; the
+  count never denies a request by itself or prevents correct credentials from
+  being checked. CAPTCHA, email/SMS codes, and MFA are added only after an
+  explicit product choice. When code verification is selected, codes are
+  generated with `secrets`, bound to purpose/channel/target, stored only as HMAC
+  digests, expire after five minutes, allow at most five wrong attempts, replace
+  older active challenges, and can be consumed only once. Provider and public
+  login/registration route integration remain product-owned adapter points.
+  Before generating a selected control, the Skill shows every applicable default
+  and asks the user to accept all values or list changes; silence is not
+  acceptance, and production-wide/provider capacities still require
+  deployment-specific review. The optional per-target send policy is named
+  `verification_target_average`: it begins with five sends and continuously
+  refills at an average of five per 24 hours, rather than resetting by calendar
+  day or enforcing a hard maximum over every arbitrary 24-hour interval.
+- Added the complete local-password baseline that the earlier abuse primitives
+  were missing: Argon2id hashing outside the event loop, soft-deleted credential
+  episodes, public registration/login, self password change, strictly
+  lower-target administrator reset, one-time temporary reset completion, and an
+  offline sole-`super_admin` recovery command. Password rotations increment
+  `users.token_version` and commit with append-only account-security evidence.
+  Authentication uses one short-lived Access Token, requires login again after
+  expiry, and introduces no per-Token PostgreSQL table. The Skill now
+  asks one compact set of product questions about identity/login input,
+  registration, verified recovery proof, simultaneous devices, and enrollment
+  of existing accounts while keeping cryptographic and transaction details as
+  fixed defaults. Release validation now inspects the Python route, settings,
+  Argon2, model, operator, and Alembic structures instead of accepting a set of
+  documentation files as proof that this baseline is complete. Credential
+  episode versions continue above the user's historical maximum even when only
+  tombstones remain; direct service calls cannot reuse the current or temporary
+  password as the replacement; and infrastructure failures are not mislabeled
+  as denied account-security decisions.
+- Public self-registration is now opt-in through
+  `PUBLIC_REGISTRATION_ENABLED=false`: when disabled, its route is not registered
+  and does not appear in OpenAPI; enabling it preserves the protected `POST`
+  flow and mandatory lowest-role assignment.
+- **BREAKING:** Each user is limited to 10 live role bindings, including the
+  mandatory `user` and any `super_admin` assignment. Disabled-role bindings still
+  count; tombstoned history does not. The service validates the complete final
+  set under the global guard, bootstrap and `super_admin` transfer apply the same
+  rule, and PostgreSQL serializes and rejects direct or concurrent over-limit
+  writes. The fresh baseline now installs this database guard in `0001`, removes
+  the unnecessary follow-up compatibility revision, and leaves
+  `0004_password_auth` as the sole migration head.
+- **BREAKING:** Ordinary administrators can now list or view only live users and
+  roles with strictly lower authority, while `super_admin` can read every live
+  entry; hidden details are indistinguishable from missing resources. Role and
+  user list hydration now uses batch queries whose SELECT count does not grow
+  with page size. User responses separate `assigned_role_ids` from
+  `effective_role_ids` and effective authority: disabled roles remain assigned
+  and count toward the limit but grant no current authority. Administrative
+  writes now check capability first (`403001`), then conceal self, peer, higher,
+  protected, unknown, and hidden requested-role targets uniformly as `404001`;
+  `403001` remains the result for a visible target that fails delegation or
+  affected-authority policy. Internal bind/unbind service entry points now reject
+  unknown operation values before opening a transaction instead of treating a
+  misspelling as the opposite operation.
+- **BREAKING:** Authentication startup now rejects public example placeholders
+  and obviously weak JWT secrets. Incoming Bearer Tokens and generated Access
+  Tokens are both limited to 4096 UTF-8 bytes. Added
+  `POST /api/v1/auth/logout-all`, which increments `users.token_version` so all
+  Tokens previously issued to the account fail subsequent authentication; it
+  does not bulk-delete their Redis records.
+- **BREAKING:** Removed the unused `roles:permissions:update` and
+  `system_owner:transfer` permission keys. Public API responses and OpenAPI now
+  use `super_admin` terminology without exposing `is_super_admin` or application-level
+  ownership language. The implementation-only role flag is now consistently
+  named `is_super_admin`, including ORM, SQL, constraints, indexes, and tests.
+  The legacy `owner` role key is no longer reserved or interpreted by the
+  system; it is available as an ordinary custom-role key without special
+  authority.
+- **BREAKING:** Every mutable row that may be removed at runtime now uses soft
+  deletion, including users, custom roles, business entities, and RBAC unbinds.
+  RBAC joins are non-sequentially identified relation
+  episodes with partial live-pair uniqueness; unbind tombstones the live episode,
+  rebind inserts a new one, parent deletion tombstones its live relations in the
+  same transaction, and restore never revives old privileges or Redis JTI state.
+  System roles and the fixed permission catalog expose no runtime deletion
+  command. This contract applies to every lifecycle path the product exposes;
+  the bundled asset directly implements custom-role deletion and the two RBAC
+  unbind paths, while user, permission-catalog, and business-entity lifecycle
+  remain explicit product adaptation points.
+- Clarified that audit rows remain append-only without a soft-delete path and
+  reject runtime update, delete, and truncate. The singleton
+  `rbac_state(scope='global')` is never deleted or truncated. Physical purge is
+  restricted to separately controlled, eligible non-audit tombstones; destructive
+  audit retention requires a separately approved product and legal exception.
+- Preserved the original HTTP `403`, `404`, or `409` authorization result when a
+  denied-audit write itself fails, while still logging the audit-storage failure.
+- Made PostgreSQL migration/runtime-role separation an initialization-time,
+  optional production-hardening decision. Recommend separate roles when
+  professional operations support can manage them, but do not block small or
+  learning projects; PostgreSQL owner or superuser SQL can bypass application
+  soft deletion and remains outside the application guarantee.
+- Added an optional, progressively loaded country/region catalog contract and
+  PostgreSQL implementation guide. It uses the alpha-2 code as a natural key,
+  keeps shared calling codes as strings, separates inactive and soft-deleted
+  states, defines atomic imports that never infer deletion or restoration, and
+  exposes only active read APIs by default. Added a read-only UTF-8 CSV validator
+  with exact approved-code-set comparison and focused tests. Formal imports with
+  any non-empty `flag_url` now require an explicit allowlist of approved ASCII DNS
+  hostnames; `--structure-only` remains non-authoritative and reports
+  `membership_checked=false`. Release validation rejects bundled CSV/TSV country
+  data and likely country/flag media assets. No third-party country dataset is
+  redistributed without documented provenance and permission.
+- Added a separate, progressively loaded business-audit module and reusable
+  PostgreSQL asset. It provides an explicit per-action catalog and state
+  allowlists, `succeeded`/`failed`/`denied` outcome semantics, append-only
+  database controls, caller-owned atomic success writes, safe post-rollback
+  failure recording, retention/access guidance, and focused unit and PostgreSQL
+  tests without broadening `rbac_audit_events`. The asset also rejects
+  recognizable email and network values, supports durable outer-transaction
+  savepoint evidence, and blocks direct update, delete, and truncate. Operational
+  guidance covers read access, export, retention, partitioning, legal hold,
+  alerts, backup, and recovery. The proposed
+  `business_audit_delivery_outbox` table and its worker, lease, retry, and
+  dead-letter design were removed because external audit delivery is not part
+  of this Skill's baseline.
+- Added progressively loaded operational-logging and durable-audit modules. The
+  runnable asset now emits safe one-line JSON request events with request-ID
+  correlation and defensive redaction, validates bounded audit snapshots, records
+  trusted source and schema version, and enforces append-only RBAC audit rows with
+  PostgreSQL constraints and an update/delete trigger.
+- **BREAKING:** Added one four-field JSON response envelope with real HTTP
+  statuses, six-digit integer business codes, mandatory server-generated
+  request IDs in both body and header, and simple `items`/`page`/`page_size`/
+  `total` pagination. The runnable asset now applies it to success, domain,
+  validation, framework, and unexpected-error responses.
+- **BREAKING:** Replaced strong role ETag/`If-Match` handling with body
+  `expected_version`, accepted only as a strict JSON integer and checked against
+  `roles.version` after authoritative locks and the complete authorization
+  decision. Authorized stale writes now return HTTP `409` with business code
+  `409002`, avoiding both a version oracle and an invalid strong ETag over
+  envelopes whose `request_id` changes per request.
+- Renamed the RBAC global guard and administration audit internals from ambiguous
+  authorization naming to `rbac_state`, `RbacState`, `rbac_audit_events`, and
+  `RbacAuditEvent`. Because the Skill has no adopters yet, the initial revisions
+  now create and use the final names directly without compatibility migrations.
+- Replaced the Python first-super-admin bootstrap entry point with a supplied
+  PostgreSQL transaction script. The intended account must already exist with
+  `user`, and the user personally runs the guarded, audited binding against the
+  target database; the script never creates an identity or silently promotes
+  the first registrant.
+- Made UUIDv4 a supported identifier profile rather than a universal mandate.
+  New projects without an established strategy now prefer registered business
+  prefixes plus CSPRNG uppercase suffixes sized by lifetime namespace volume;
+  the published PostgreSQL asset remains on its compatible UUIDv4 profile.
+- Standardized authentication guidance on one minimal Access Token with a
+  configurable 3600-second default. Implementers must tell users to review the
+  lifetime against product risk and login experience.
+- Simplified per-Token revocation to a required Redis active-JTI gate followed by
+  the existing PostgreSQL user-status, user-version, and RBAC reload. The target
+  design adds no individual Token database record or per-request Token-record
+  query.
+- Required Redis registration before issuance returns a Token, exact
+  `sub`/type/`iat`/`exp`/user-version binding, fail-closed outage behavior, and
+  confirmed compare-and-delete logout. Documented in-flight request and Redis
+  failover limits prevent overstating revocation guarantees.
+
 ## [0.3.0] - 2026-09-07
 
 - **BREAKING:** Replaced public `/rbac` routes and non-GET/POST administration

@@ -3,13 +3,21 @@
 Read this reference for authorization-changing writes, immediate revocation,
 concurrent administration, high-risk protected mutations, or coordination of
 RBAC state with audits, caches, messages, and other external effects.
+For login identity, parent/relationship tombstones, restore behavior, or
+physical-purge boundaries, also read
+[Identity and soft-delete lifecycle](identity-soft-delete.md).
 
 This is the Skill's canonical transaction and locking contract. Other references
 define policy and schema and link here instead of restating the protocol.
+Use [RBAC audit module](audit-module.md) for access-control event fields and
+[Business audit module](business-audit-module.md) for domain-event fields, safe
+payload construction, append-only controls, access, and retention; this file
+owns transaction outcomes.
 
 ## Scope And Outcomes
 
-Every authorization writer follows this protocol. A protected business write
+Every authorization writer follows this protocol, including RBAC unbind and
+authorization-affecting parent soft deletion/restoration. A protected business write
 also follows it when the product promises that a revocation which commits first
 will prevent that write. Ordinary reads may use a documented bounded stale-cache
 window instead.
@@ -53,9 +61,13 @@ The transaction owner must:
    protection, ownership, versions, and relevant resource state.
 3. Re-evaluate complete current and proposed authority.
 4. Check any client concurrency precondition.
-5. Apply the mutation and all affected version or epoch increments.
+5. Apply the mutation, including all required parent/relation tombstones or new
+   relation episodes, and all affected version or epoch increments.
 6. Insert the allowed audit and required transactional outbox rows.
-7. Commit once and return only after commit succeeds.
+7. Build the immutable public response snapshot from the post-mutation rows while
+   the same locks are held, using the actor's read-visibility projection for any
+   nested role or grant collection.
+8. Commit once and return only that snapshot after commit succeeds.
 
 Called repositories may flush but must not commit independently:
 
@@ -74,7 +86,12 @@ async def run_authorized_write(command: Command) -> Result:
                 bump_authorization_versions(current, result)
                 session.add(allowed_audit(decision, current, result))
                 session.add_all(outbox_events(result))
-        return result
+                response = await build_immutable_response_snapshot(
+                    session,
+                    actor=current.actor,
+                    result=result,
+                )
+        return response
     except PolicyDenied as exc:
         # The rejected transaction has exited and rolled back before this call.
         await attempt_denied_audit_in_new_transaction(command, exc.reason_code)
@@ -85,9 +102,9 @@ Do not catch policy denial inside `session.begin()`, add a denied audit, and let
 that transaction commit; earlier flushes could be committed. Use the savepoint
 design above when denial-audit durability is mandatory.
 
-## Global Authorization Guard
+## Global RBAC Guard
 
-Create `authorization_state` with exactly one well-known row. Its fixed
+Create `rbac_state` with exactly one well-known row. Its fixed
 `scope='global'` string is a control key rather than a business or API identifier;
 the row carries the shared authorization epoch and serializes all RBAC writers.
 Enforce the fixed value with a primary key and check constraint, create the row
@@ -98,19 +115,39 @@ The global row intentionally serializes authorization changes in this
 single-project baseline. This makes assignment, revocation, user status, shared
 role edits, delegation, and super-admin transfer participate in one proof. Keep
 transactions short; do not perform network I/O while holding the guard.
+The row exists for the database lifetime: runtime and production-maintenance
+roles cannot delete, truncate, disable, or soft-delete it. Missing state fails
+closed and is never repaired opportunistically.
+
+## Soft Delete And Controlled Purge
+
+Every mutable row that may be removed at runtime uses a tombstone, including
+users, custom roles, business entities, and relationship unbinds; these paths
+never issue physical `DELETE` or rely on a hard cascade. Parent tombstone,
+complete live relation tombstones, versions, epoch, and allowed audit are one
+transaction. Restore creates only explicitly authorized new relation episodes
+and cannot revive tombstones. System roles and the fixed permission catalog have
+no runtime deletion path.
+
+A separately authorized maintenance purge may physically remove only eligible
+non-audit tombstones after retention, legal-hold, backup, and reference checks.
+It uses deterministic lock order and cannot be called through an ordinary HTTP,
+service, job, or CLI deletion command. Disposable test-schema teardown and a
+reviewed destructive migration/downgrade are the other narrow exceptions.
+Append-only audit rows and production `rbac_state` are never purge targets under
+this baseline.
 
 ## Canonical PostgreSQL Lock Order
 
-Use one order across authorization changes, identity disablement, session
+Use one order across authorization changes, identity disablement, user-version
 revocation, super-admin transfer, and protected business writes:
 
 ```text
-class 10: singleton authorization_state row
+class 10: singleton rbac_state row
 -> class 20: users or principal authorization rows
--> class 30: authentication session rows
--> class 40: roles
--> class 50: role permissions, assignments, delegation, and other policy rows
--> class 60+: protected business rows
+-> class 30: roles
+-> class 40: role permissions, assignments, delegation, and other policy rows
+-> class 50+: protected business rows
 ```
 
 Give tables within a class a stable rank and sort multiple targets by
@@ -130,9 +167,14 @@ explicit expiration, or an equivalent identity-map refresh.
 
 Acquire the global guard before scanning any assignment rows. This freezes the
 affected-set topology because every assignment writer must acquire the same guard
-first. For a shared-role edit, discover and lock every retained assignee in UUID
-order while the guard is held, including suspended users whose role becomes
-effective after reactivation. Reload the actor and each target's complete current
+first. It also serializes the authoritative count used to keep each user at no
+more than 10 live role bindings. For a shared-role edit, discover and lock every
+live assignee in the project's canonical ID order while the guard is held,
+including suspended users
+whose role remains live and could become effective after reactivation. For a
+parent delete, lock the parent and every live owned child or relation before
+tombstoning them. Reload the actor and each
+target's complete current
 and proposed multi-role authority after locks are held. Never authorize from a
 scan performed before acquiring the guard.
 
@@ -158,18 +200,36 @@ authorized administrators can read version 4, then submit different full
 replacements; without a precondition, the second silently overwrites the first.
 
 For role information update, lifecycle, soft deletion, and permission or
-delegation bind/unbind commands, require a strong `If-Match` derived from
-`roles.version`. Reject a missing precondition with `428`; reject malformed,
-weak, wildcard, or wrong-resource tags with `422`; and compare the expected
-version only after locks, fresh reload, visibility, and manageability checks.
-Return `412` on version mismatch and `409` for another server-detected state
-conflict. Build the successful body and new strong `ETag` from the same immutable
+delegation bind/unbind commands, require a nonnegative `expected_version` in the
+JSON body. Compare it with `roles.version` only after locks, fresh reload,
+visibility, and manageability checks. Missing or malformed input follows the
+ordinary `422001` validation contract. Return HTTP `409` with business code
+`409002` on version mismatch and use `409001` for another client-visible state
+conflict. Build the successful role body and new version from the same immutable
 in-transaction snapshot before locks are released; never requery part of a
-response after commit.
+response after commit. Follow
+[API response standard](api-response-standard.md) for the full wire contract.
 
 User-role bind/unbind is an incremental, idempotent, single-transaction command
-and does not require a user ETag in this baseline. It still requires the global
-guard, post-lock authority reload, and complete hierarchy decision.
+and does not require a user version in this baseline. Unbind tombstones the one
+live episode; a later bind inserts a new episode rather than clearing history. It
+still requires the global guard, post-lock authority reload, and complete
+hierarchy decision. Before inserting a genuinely new binding, calculate the
+target's complete final live set under the guard and reject the transaction with
+`409001` if it would exceed 10. The required `user` and any `super_admin` binding
+count, disabled roles still count, and tombstones do not count. A deferred
+PostgreSQL constraint trigger checks the same final state, including direct SQL;
+its statement-level guard lock prevents concurrent writers from both claiming
+the last available slot.
+
+User-role bind/unbind, user disable/enable, and every other administrative write
+that returns user state use the same response boundary as role writes. Construct
+the response before releasing locks, freeze collection fields, and return it only
+after commit. Public nested collections such as `assigned_role_ids` use the
+actor-aware read predicate, even though policy and audit evaluate the complete
+unfiltered assignment set. Do not reopen a route/request `Session` or another
+session after commit to assemble the response; that creates a race in which a
+concurrent authority change contaminates the result of the completed command.
 
 An expected version is a concurrency condition, not authorization. It never
 allows the caller to skip the post-lock policy decision.
@@ -208,6 +268,15 @@ authoritative reread or reconciliation before another non-idempotent attempt.
   consumers tolerate at-least-once delivery.
 - Never call an external service while holding authorization locks.
 
+The Redis active-JTI gate is not a PostgreSQL lock class. Do not add an
+individual Token table merely to place it in this order. When an authorization
+transaction increments `users.token_version`, later authentication compares the
+new value with the version already bound in Redis. A one-Token logout deletes the
+exact Redis record outside these PostgreSQL locks. Confirmed deletion prevents
+later gate checks but cannot cancel a request already past the gate, and Redis
+failover may restore an older key; do not claim database-grade linearizable Token
+revocation from this design.
+
 ## PostgreSQL Asset Coverage
 
 The included asset implements the core boundary in:
@@ -217,6 +286,9 @@ The included asset implements the core boundary in:
   transaction;
 - [`app/rbac/queries.py`](../assets/postgresql-rbac/app/rbac/queries.py): canonical
   user, global guard, role, and policy locks with identity-map refresh;
+- [`alembic/versions/0001_single_project_rbac.py`](../assets/postgresql-rbac/alembic/versions/0001_single_project_rbac.py):
+  baseline database enforcement of the 10-live-role limit and serialized
+  assignment writes;
 - [`tests/integration/test_rbac_api.py`](../assets/postgresql-rbac/tests/integration/test_rbac_api.py):
   audit behavior and rollback after forced post-flush denial;
 - [`tests/integration/test_postgresql_locking.py`](../assets/postgresql-rbac/tests/integration/test_postgresql_locking.py):
@@ -224,9 +296,9 @@ The included asset implements the core boundary in:
 
 The asset does not by itself prove crash-proof denied-audit delivery, generic
 request idempotency, database lock timeouts, a business outbox, or
-product-specific protected writes. It implements strong role `If-Match` for the
-shared role commands named above. Add and test other relevant pieces when
-adapting those surfaces.
+product-specific protected writes. It implements body `expected_version` checks
+for the shared role commands named above. Add and test other relevant pieces
+when adapting those surfaces.
 
 ## Verification Matrix
 
@@ -236,13 +308,30 @@ For the changed surface, cover:
 - forced denial after flush leaves mutation and versions unchanged;
 - allowed-audit failure rolls back the protected mutation;
 - denial-audit failure never converts rejection into success;
+- role and user mutation responses are immutable snapshots created before lock
+  release, with no post-commit requery and no concurrent-state contamination;
+- ordinary administrators receive only visible roles in nested
+  `assigned_role_ids`, while `super_admin` receives every live assignment to a
+  non-deleted role;
 - revocation-first and protected-write-first commit orders;
 - actor disablement, target promotion, super-admin changes, and a shared-role
   assignment racing the constrained write in both lock acquisition orders;
-- stale `If-Match` in both administrator commit orders;
+- two bindings racing for a user's tenth live role slot, proving only one commits,
+  plus direct SQL, bootstrap, and `super_admin` transfer attempts against a full
+  user;
+- parent soft deletion racing a child/relation bind, proving either the new live
+  relation commits first and is tombstoned or the bind observes deletion and
+  fails;
+- unbind racing rebind, proving at most one live relation episode and preserving
+  every historical tombstone;
+- restore committing only a new mandatory base-role episode and never old
+  privilege or an old Redis JTI;
+- stale `expected_version` in both administrator commit orders;
 - actual isolation, lock and statement timeouts, retry exhaustion, and deadlocks;
 - response loss after commit resolves through idempotency rather than replay;
 - outbox and cache invalidation remain absent on rollback and occur after commit.
+- direct `DELETE`/`TRUNCATE` of audits or `rbac_state` fails, and controlled
+  purge entry points reject both as targets.
 
 Run locking, isolation, and PostgreSQL constraint tests against PostgreSQL.
 SQLite cannot establish these guarantees.

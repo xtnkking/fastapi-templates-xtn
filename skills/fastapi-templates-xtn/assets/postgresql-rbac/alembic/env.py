@@ -7,6 +7,8 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
+from app import business_audit as business_audit_models  # noqa: F401
+from app import password_models  # noqa: F401
 from app.base import Base
 from app.rbac import models as rbac_models  # noqa: F401
 

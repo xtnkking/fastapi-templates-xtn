@@ -17,7 +17,10 @@ from app.rbac.policy import (
     decide_role_delegation_change,
     decide_role_permissions_change,
     decide_super_admin_transfer,
+    decide_user_password_reset,
     decide_user_status_change,
+    is_administrative_role_visible,
+    is_administrative_user_visible,
 )
 
 
@@ -30,7 +33,7 @@ def role(
     delegable: frozenset[str] = frozenset(),
     system: bool = False,
     protected: bool = False,
-    owner: bool = False,
+    super_admin: bool = False,
 ) -> RoleGrant:
     return RoleGrant(
         role_id=uuid.UUID(int=number),
@@ -40,7 +43,7 @@ def role(
         delegable_permissions=delegable,
         is_system=system,
         is_protected=protected,
-        is_owner=owner,
+        is_super_admin=super_admin,
     )
 
 
@@ -48,11 +51,12 @@ def authority(
     number: int,
     *roles: RoleGrant,
     active: bool = True,
+    protected: bool = False,
 ) -> AuthoritySnapshot:
     return AuthoritySnapshot.build(
         user_id=uuid.UUID(int=number),
         user_is_active=active,
-        user_is_protected=False,
+        user_is_protected=protected,
         authz_version=0,
         roles=roles,
     )
@@ -66,7 +70,7 @@ SUPER_ADMIN = role(
     delegable=SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS,
     system=True,
     protected=True,
-    owner=True,
+    super_admin=True,
 )
 ADMIN = role(
     2,
@@ -83,6 +87,49 @@ VIEWER = role(
     tier=20,
     permissions=frozenset({PermissionKey.PROJECTS_READ.value}),
 )
+
+
+def test_administrative_user_visibility_is_strictly_downward_for_admin() -> None:
+    admin = authority(10, ADMIN)
+
+    assert is_administrative_user_visible(
+        actor=admin,
+        target=authority(11, USER),
+    )
+    for hidden in (
+        admin,
+        authority(12, USER, ADMIN),
+        authority(13, USER, role(5, key="higher", tier=700)),
+        authority(14, USER, protected=True),
+    ):
+        assert not is_administrative_user_visible(actor=admin, target=hidden)
+
+
+def test_super_admin_can_see_every_non_deleted_administrative_user() -> None:
+    super_admin = authority(10, SUPER_ADMIN)
+
+    for target in (
+        super_admin,
+        authority(11, USER, ADMIN),
+        authority(12, USER, protected=True),
+    ):
+        assert is_administrative_user_visible(actor=super_admin, target=target)
+
+
+def test_administrative_role_visibility_is_strictly_downward_for_admin() -> None:
+    admin = authority(10, ADMIN)
+
+    assert is_administrative_role_visible(actor=admin, role=VIEWER)
+    for hidden in (
+        ADMIN,
+        role(5, key="higher", tier=700),
+        SUPER_ADMIN,
+    ):
+        assert not is_administrative_role_visible(actor=admin, role=hidden)
+        assert is_administrative_role_visible(
+            actor=authority(11, SUPER_ADMIN),
+            role=hidden,
+        )
 
 
 def test_admin_can_bind_a_delegable_lower_role() -> None:
@@ -277,7 +324,7 @@ def test_system_role_permissions_cannot_be_changed() -> None:
 
 def test_only_super_admin_can_change_delegation() -> None:
     admin = authority(10, ADMIN)
-    owner = authority(11, SUPER_ADMIN)
+    super_admin = authority(11, SUPER_ADMIN)
     desired = frozenset({PermissionKey.PROJECTS_READ.value})
 
     denied = decide_role_delegation_change(
@@ -288,7 +335,7 @@ def test_only_super_admin_can_change_delegation() -> None:
         affected_after=(),
     )
     allowed = decide_role_delegation_change(
-        actor=owner,
+        actor=super_admin,
         changed_role_before=VIEWER,
         delegable_permission_keys_after=desired,
         actor_holds_role=False,
@@ -316,12 +363,38 @@ def test_admin_can_change_status_only_for_a_strictly_lower_user() -> None:
     ).allowed
 
 
-def test_super_admin_transfer_requires_current_owner_and_another_user() -> None:
-    owner = authority(10, SUPER_ADMIN)
+def test_password_reset_requires_capability_and_strictly_lower_target() -> None:
+    admin = authority(10, ADMIN)
+    lower = authority(11, USER)
+    peer = authority(12, USER, ADMIN)
+
+    assert decide_user_password_reset(actor=admin, target_before=lower).allowed
+    assert not decide_user_password_reset(actor=admin, target_before=admin).allowed
+    assert not decide_user_password_reset(actor=admin, target_before=peer).allowed
+    assert not decide_user_password_reset(
+        actor=authority(13, USER),
+        target_before=lower,
+    ).allowed
+
+
+def test_super_admin_cannot_reset_own_password_through_management_api() -> None:
+    super_admin = authority(10, SUPER_ADMIN)
+
+    decision = decide_user_password_reset(
+        actor=super_admin,
+        target_before=super_admin,
+    )
+
+    assert not decision.allowed
+    assert decision.reason_code == "self_management_forbidden"
+
+
+def test_super_admin_transfer_requires_current_super_admin_and_another_user() -> None:
+    super_admin = authority(10, SUPER_ADMIN)
     target = authority(11, USER)
 
     assert decide_super_admin_transfer(
-        actor=owner,
+        actor=super_admin,
         target_before=target,
     ).allowed
     assert not decide_super_admin_transfer(
@@ -329,6 +402,6 @@ def test_super_admin_transfer_requires_current_owner_and_another_user() -> None:
         target_before=target,
     ).allowed
     assert not decide_super_admin_transfer(
-        actor=owner,
-        target_before=owner,
+        actor=super_admin,
+        target_before=super_admin,
     ).allowed

@@ -12,6 +12,7 @@ settings = get_settings()
 engine = create_async_engine(
     settings.database_url,
     echo=settings.sql_echo,
+    hide_parameters=True,
     pool_pre_ping=True,
     isolation_level="READ COMMITTED",
 )

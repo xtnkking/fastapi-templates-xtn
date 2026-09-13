@@ -1,14 +1,18 @@
+import logging
 import uuid
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Literal, TypeVar
 
-from sqlalchemy import delete, select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import SessionFactory
+from app.observability import safe_exception_metadata, safe_log
 from app.rbac.domain import (
+    MAX_ROLES_PER_USER,
     RESERVED_ROLE_KEYS,
     SUPER_ADMIN_PERMISSION_KEYS,
     AuthoritySnapshot,
@@ -23,12 +27,12 @@ from app.rbac.errors import (
     forbidden,
     invalid_request,
     not_found,
-    precondition_failed,
+    stale_resource_version,
     unauthenticated,
 )
 from app.rbac.models import (
-    AuthorizationAuditEvent,
-    AuthorizationState,
+    RbacAuditEvent,
+    RbacState,
     Role,
     RolePermission,
     User,
@@ -42,12 +46,19 @@ from app.rbac.policy import (
     decide_role_permissions_change,
     decide_super_admin_transfer,
     decide_user_status_change,
+    is_administrative_role_visible,
+    is_administrative_user_visible,
 )
 from app.rbac.queries import (
+    UserAccessView,
+    count_live_user_roles,
     load_authority_snapshot,
+    load_authority_snapshots_for_users,
     load_permission_keys,
     load_role_grant,
-    lock_authorization_state,
+    load_role_grants_for_roles,
+    load_user_access_views,
+    lock_rbac_state,
     lock_role_permissions,
     lock_roles,
     lock_users,
@@ -58,12 +69,29 @@ from app.rbac.schemas import (
     RoleMutationResponse,
     RoleResponse,
     RoleUpdateRequest,
+    UserResponse,
+    UserRoleMutationResponse,
     UserStatusUpdateRequest,
 )
 
 T = TypeVar("T")
 RoleOperation = Literal["bind", "unbind"]
 RoleAdministrationOperation = Literal["update", "enable", "disable", "delete"]
+
+logger = logging.getLogger(__name__)
+
+
+class _RoleOperation(StrEnum):
+    BIND = "bind"
+    UNBIND = "unbind"
+
+
+def _require_role_operation(operation: RoleOperation) -> RoleOperation:
+    try:
+        validated = _RoleOperation(operation)
+    except ValueError as exc:
+        raise ValueError("operation must be 'bind' or 'unbind'") from exc
+    return validated.value
 
 
 @dataclass(slots=True)
@@ -82,7 +110,7 @@ class _LockedSharedRole:
     role_before: RoleGrant
     affected_before: tuple[AuthoritySnapshot, ...]
     affected_ids: frozenset[uuid.UUID]
-    state: AuthorizationState
+    state: RbacState
     users: dict[uuid.UUID, User]
     permission_rows: dict[str, RolePermission]
 
@@ -97,7 +125,7 @@ def _snapshot_payload(snapshot: AuthoritySnapshot) -> dict[str, object]:
         "delegable_permissions": sorted(snapshot.delegable_permissions),
         "management_tier": snapshot.management_tier,
         "is_protected": snapshot.is_protected,
-        "is_owner": snapshot.is_owner,
+        "is_super_admin": snapshot.is_super_admin,
         "authz_version": snapshot.authz_version,
     }
 
@@ -112,7 +140,6 @@ def _role_response(role: Role, grant: RoleGrant) -> RoleResponse:
         is_active=role.is_active,
         is_system=role.is_system,
         is_protected=role.is_protected,
-        is_owner=role.is_owner,
         permissions=tuple(sorted(grant.permissions)),
         delegable_permissions=tuple(sorted(grant.delegable_permissions)),
         version=role.version,
@@ -134,6 +161,20 @@ def _role_payload(role: RoleResponse) -> dict[str, object]:
         "delegable_permissions": list(role.delegable_permissions),
         "version": role.version,
     }
+
+
+def _user_response(access: UserAccessView) -> UserResponse:
+    authority = access.authority
+    return UserResponse(
+        id=authority.user_id,
+        is_active=authority.user_is_active,
+        assigned_role_ids=access.assigned_role_ids,
+        effective_role_ids=tuple(role.role_id for role in authority.roles),
+        effective_management_tier=authority.management_tier,
+        effective_permissions=tuple(sorted(authority.permissions)),
+        effective_delegable_permissions=tuple(sorted(authority.delegable_permissions)),
+        authz_version=authority.authz_version,
+    )
 
 
 class RbacService:
@@ -170,13 +211,25 @@ class RbacService:
                     )
         except RbacError as exc:
             if exc.status_code < 500:
-                await self._write_denied_audit(
-                    context=context,
-                    action=action,
-                    reason_code=exc.reason_code,
-                    target_user_id=target_user_id,
-                    target_role_id=target_role_id,
-                )
+                try:
+                    await self._write_denied_audit(
+                        context=context,
+                        action=action,
+                        reason_code=exc.reason_code,
+                        target_user_id=target_user_id,
+                        target_role_id=target_role_id,
+                    )
+                except Exception as audit_exc:
+                    # Denied evidence is best effort and cannot replace the denial.
+                    safe_log(
+                        logger,
+                        logging.ERROR,
+                        "audit.write.failed",
+                        extra={
+                            "audit_action": action,
+                            **safe_exception_metadata(audit_exc),
+                        },
+                    )
             raise
         return outcome.value
 
@@ -220,7 +273,7 @@ class RbacService:
     @staticmethod
     def _require_expected_role_version(role: Role, expected_version: int) -> None:
         if role.version != expected_version:
-            raise precondition_failed("stale_role_version")
+            raise stale_resource_version("stale_role_version")
 
     @staticmethod
     def _audit_event(
@@ -233,14 +286,15 @@ class RbacService:
         target_role_id: uuid.UUID | None,
         before_state: dict[str, object] | None = None,
         after_state: dict[str, object] | None = None,
-    ) -> AuthorizationAuditEvent:
-        return AuthorizationAuditEvent(
+    ) -> RbacAuditEvent:
+        return RbacAuditEvent(
             actor_user_id=context.principal.user_id,
             target_user_id=target_user_id,
             target_role_id=target_role_id,
             action=action,
             decision=decision,
             reason_code=reason_code,
+            source=context.audit_source.value,
             before_state=before_state,
             after_state=after_state,
             request_id=context.request_id,
@@ -254,8 +308,14 @@ class RbacService:
         target_user_id: uuid.UUID,
         required_permission: PermissionKey,
         additional_role_ids: set[uuid.UUID] | None = None,
-    ) -> tuple[AuthoritySnapshot, AuthoritySnapshot, User, AuthorizationState]:
-        state = await lock_authorization_state(session)
+    ) -> tuple[
+        AuthoritySnapshot,
+        AuthoritySnapshot,
+        User,
+        RbacState,
+        dict[uuid.UUID, Role],
+    ]:
+        state = await lock_rbac_state(session)
         actor_user_id = context.principal.user_id
         users = await lock_users(session, {actor_user_id, target_user_id})
         self._require_current_locked_actor_row(
@@ -276,11 +336,14 @@ class RbacService:
         assigned_role_ids = set(
             (
                 await session.scalars(
-                    select(UserRole.role_id).where(UserRole.user_id.in_(user_ids))
+                    select(UserRole.role_id).where(
+                        UserRole.user_id.in_(user_ids),
+                        UserRole.deleted_at.is_(None),
+                    )
                 )
             ).all()
         )
-        await lock_roles(
+        locked_roles = await lock_roles(
             session,
             role_ids=assigned_role_ids | (additional_role_ids or set()),
         )
@@ -289,12 +352,18 @@ class RbacService:
             actor_user_id=actor_user_id,
             token_version=context.principal.token_version,
         )
+        visible_target = await load_authority_snapshot(
+            session,
+            user_id=target_user_id,
+        )
+        if not is_administrative_user_visible(actor=actor, target=visible_target):
+            raise not_found("target_user_not_found")
         target = await load_authority_snapshot(
             session,
             user_id=target_user_id,
             include_disabled_roles=True,
         )
-        return actor, target, users[target_user_id], state
+        return actor, target, users[target_user_id], state, locked_roles
 
     async def update_user_status(
         self,
@@ -302,15 +371,19 @@ class RbacService:
         context: AuthorizationContext,
         target_user_id: uuid.UUID,
         request: UserStatusUpdateRequest,
-    ) -> User:
-        async def operation(session: AsyncSession) -> _MutationOutcome[User]:
-            actor, target_before, target_row, state = (
-                await self._lock_actor_and_target_user(
-                    session,
-                    context=context,
-                    target_user_id=target_user_id,
-                    required_permission=PermissionKey.USERS_STATUS_UPDATE,
-                )
+    ) -> UserResponse:
+        async def operation(session: AsyncSession) -> _MutationOutcome[UserResponse]:
+            (
+                actor,
+                target_before,
+                target_row,
+                state,
+                _locked_roles,
+            ) = await self._lock_actor_and_target_user(
+                session,
+                context=context,
+                target_user_id=target_user_id,
+                required_permission=PermissionKey.USERS_STATUS_UPDATE,
             )
             decision = decide_user_status_change(
                 actor=actor,
@@ -331,8 +404,16 @@ class RbacService:
                     target_after,
                     authz_version=target_row.authz_version,
                 )
+            await session.flush()
+            access = (
+                await load_user_access_views(
+                    session,
+                    users=(target_row,),
+                    actor=actor,
+                )
+            )[target_user_id]
             return _MutationOutcome(
-                value=target_row,
+                value=_user_response(access),
                 reason_code=(
                     "user_status_updated" if changed else "user_status_unchanged"
                 ),
@@ -355,46 +436,65 @@ class RbacService:
         target_user_id: uuid.UUID,
         role_ids: Iterable[uuid.UUID],
         operation: RoleOperation,
-    ) -> bool:
+    ) -> UserRoleMutationResponse:
+        operation = _require_role_operation(operation)
         requested_role_ids = frozenset(role_ids)
         if not requested_role_ids:
             raise invalid_request("role_ids_required")
 
-        async def mutate(session: AsyncSession) -> _MutationOutcome[bool]:
+        async def mutate(
+            session: AsyncSession,
+        ) -> _MutationOutcome[UserRoleMutationResponse]:
             required_permission = (
                 PermissionKey.ROLES_ASSIGN
                 if operation == "bind"
                 else PermissionKey.ROLES_REVOKE
             )
-            actor, target_before, target_row, state = (
-                await self._lock_actor_and_target_user(
-                    session,
-                    context=context,
-                    target_user_id=target_user_id,
-                    required_permission=required_permission,
-                    additional_role_ids=set(requested_role_ids),
-                )
+            (
+                actor,
+                target_before,
+                target_row,
+                state,
+                locked_roles,
+            ) = await self._lock_actor_and_target_user(
+                session,
+                context=context,
+                target_user_id=target_user_id,
+                required_permission=required_permission,
+                additional_role_ids=set(requested_role_ids),
             )
-            grants: list[RoleGrant] = []
-            for role_id in sorted(requested_role_ids, key=str):
-                grants.append(
-                    await load_role_grant(
-                        session,
-                        role_id=role_id,
-                        include_disabled=(operation == "unbind"),
-                    )
-                )
-
             existing_ids = set(
                 (
                     await session.scalars(
                         select(UserRole.role_id).where(
                             UserRole.user_id == target_user_id,
                             UserRole.role_id.in_(requested_role_ids),
+                            UserRole.deleted_at.is_(None),
                         )
                     )
                 ).all()
             )
+            requested_roles: list[Role] = []
+            for role_id in sorted(requested_role_ids, key=str):
+                role = locked_roles.get(role_id)
+                if role is None or (
+                    operation == "bind"
+                    and role_id not in existing_ids
+                    and not role.is_active
+                ):
+                    raise not_found("role_not_found")
+                requested_roles.append(role)
+            grants_by_role_id = await load_role_grants_for_roles(
+                session,
+                roles=requested_roles,
+            )
+            grants = [grants_by_role_id[role.id] for role in requested_roles]
+            if any(
+                not is_administrative_role_visible(actor=actor, role=grant)
+                for grant in grants
+            ):
+                raise not_found("role_not_found")
+
             target_after = target_before
             if operation == "bind":
                 for grant in grants:
@@ -414,6 +514,13 @@ class RbacService:
             )
             if not decision.allowed:
                 raise forbidden(decision.reason_code)
+            if operation == "bind" and changed_ids:
+                live_role_count = await count_live_user_roles(
+                    session,
+                    user_id=target_user_id,
+                )
+                if live_role_count + len(changed_ids) > MAX_ROLES_PER_USER:
+                    raise conflict("user_role_limit_exceeded")
 
             changed = bool(changed_ids)
             if changed:
@@ -427,10 +534,17 @@ class RbacService:
                         for role_id in sorted(changed_ids, key=str)
                     )
                 else:
+                    deleted_at = datetime.now(UTC)
                     await session.execute(
-                        delete(UserRole).where(
+                        update(UserRole)
+                        .where(
                             UserRole.user_id == target_user_id,
                             UserRole.role_id.in_(changed_ids),
+                            UserRole.deleted_at.is_(None),
+                        )
+                        .values(
+                            deleted_at=deleted_at,
+                            deleted_by_user_id=actor.user_id,
                         )
                     )
                 target_row.authz_version += 1
@@ -439,8 +553,19 @@ class RbacService:
                     target_after,
                     authz_version=target_row.authz_version,
                 )
+            await session.flush()
+            access = (
+                await load_user_access_views(
+                    session,
+                    users=(target_row,),
+                    actor=actor,
+                )
+            )[target_user_id]
             return _MutationOutcome(
-                value=changed,
+                value=UserRoleMutationResponse(
+                    changed=changed,
+                    user=_user_response(access),
+                ),
                 reason_code=(
                     (
                         "user_roles_bound"
@@ -501,7 +626,7 @@ class RbacService:
         async def operation(
             session: AsyncSession,
         ) -> _MutationOutcome[RoleMutationResponse]:
-            state = await lock_authorization_state(session)
+            state = await lock_rbac_state(session)
             actor_id = context.principal.user_id
             users = await lock_users(session, {actor_id})
             self._require_current_locked_actor_row(
@@ -511,7 +636,10 @@ class RbacService:
             actor_role_ids = set(
                 (
                     await session.scalars(
-                        select(UserRole.role_id).where(UserRole.user_id == actor_id)
+                        select(UserRole.role_id).where(
+                            UserRole.user_id == actor_id,
+                            UserRole.deleted_at.is_(None),
+                        )
                     )
                 ).all()
             )
@@ -541,7 +669,7 @@ class RbacService:
                 is_active=True,
                 is_protected=False,
                 is_system=False,
-                is_owner=False,
+                is_super_admin=False,
             )
             session.add(role)
             await session.flush()
@@ -554,7 +682,7 @@ class RbacService:
                 delegable_permissions=frozenset(),
                 is_system=False,
                 is_protected=False,
-                is_owner=False,
+                is_super_admin=False,
             )
             role_after = _role_response(role, empty_grant)
             return _MutationOutcome(
@@ -589,8 +717,8 @@ class RbacService:
                 required_permission=PermissionKey.ROLES_UPDATE,
                 include_inactive=True,
             )
-            self._require_expected_role_version(locked.role, expected_version)
             self._require_role_administration(locked, operation="update")
+            self._require_expected_role_version(locked.role, expected_version)
             role_before = _role_response(locked.role, locked.role_before)
 
             changed = False
@@ -642,8 +770,8 @@ class RbacService:
                 required_permission=PermissionKey.ROLES_STATUS_UPDATE,
                 include_inactive=True,
             )
-            self._require_expected_role_version(locked.role, expected_version)
             self._require_role_administration(locked, operation=verb)
+            self._require_expected_role_version(locked.role, expected_version)
             role_before = _role_response(locked.role, locked.role_before)
             changed = locked.role.is_active != is_active
             if changed:
@@ -682,14 +810,44 @@ class RbacService:
                 required_permission=PermissionKey.ROLES_DELETE,
                 include_inactive=True,
             )
-            self._require_expected_role_version(locked.role, expected_version)
             self._require_role_administration(locked, operation="delete")
+            self._require_expected_role_version(locked.role, expected_version)
             role_before = _role_response(locked.role, locked.role_before)
+            deleted_at = datetime.now(UTC)
             locked.role.is_active = False
-            locked.role.deleted_at = datetime.now(UTC)
+            locked.role.deleted_at = deleted_at
             locked.role.deleted_by_user_id = locked.actor.user_id
+            await session.execute(
+                update(UserRole)
+                .where(
+                    UserRole.role_id == role_id,
+                    UserRole.deleted_at.is_(None),
+                )
+                .values(
+                    deleted_at=deleted_at,
+                    deleted_by_user_id=locked.actor.user_id,
+                )
+            )
+            await session.execute(
+                update(RolePermission)
+                .where(
+                    RolePermission.role_id == role_id,
+                    RolePermission.deleted_at.is_(None),
+                )
+                .values(
+                    deleted_at=deleted_at,
+                    deleted_by_user_id=locked.actor.user_id,
+                )
+            )
             self._bump_shared_authority(locked)
-            role_after = _role_response(locked.role, locked.role_before)
+            role_after = _role_response(
+                locked.role,
+                replace(
+                    locked.role_before,
+                    permissions=frozenset(),
+                    delegable_permissions=frozenset(),
+                ),
+            )
             return _MutationOutcome(
                 value=RoleMutationResponse(changed=True, role=role_after),
                 reason_code="role_soft_deleted",
@@ -714,6 +872,7 @@ class RbacService:
         operation: RoleOperation,
         expected_version: int,
     ) -> RoleMutationResponse:
+        operation = _require_role_operation(operation)
         requested_ids = frozenset(permission_ids)
         if not requested_ids:
             raise invalid_request("permission_ids_required")
@@ -731,7 +890,6 @@ class RbacService:
                     else PermissionKey.ROLES_PERMISSIONS_UNBIND
                 ),
             )
-            self._require_expected_role_version(locked.role, expected_version)
             permission_keys_by_id = await load_permission_keys(session, requested_ids)
             if set(permission_keys_by_id) != set(requested_ids):
                 raise invalid_request("unknown_permission_id")
@@ -752,8 +910,7 @@ class RbacService:
                 delegable_permissions=retained_delegable,
             )
             affected_after = tuple(
-                snapshot.with_role(replacement)
-                for snapshot in locked.affected_before
+                snapshot.with_role(replacement) for snapshot in locked.affected_before
             )
             decision = decide_role_permissions_change(
                 operation=operation,
@@ -766,6 +923,7 @@ class RbacService:
             if not decision.allowed:
                 raise forbidden(decision.reason_code)
 
+            self._require_expected_role_version(locked.role, expected_version)
             role_before = _role_response(locked.role, locked.role_before)
             changed = locked.role_before.permissions != permission_keys_after
             if changed:
@@ -776,15 +934,23 @@ class RbacService:
                             role_id=role_id,
                             permission_id=permission_id,
                             can_delegate=False,
+                            assigned_by_user_id=locked.actor.user_id,
                         )
                         for permission_id, key in permission_keys_by_id.items()
                         if key not in existing
                     )
                 else:
+                    deleted_at = datetime.now(UTC)
                     await session.execute(
-                        delete(RolePermission).where(
+                        update(RolePermission)
+                        .where(
                             RolePermission.role_id == role_id,
                             RolePermission.permission_id.in_(requested_ids),
+                            RolePermission.deleted_at.is_(None),
+                        )
+                        .values(
+                            deleted_at=deleted_at,
+                            deleted_by_user_id=locked.actor.user_id,
                         )
                     )
                 self._bump_shared_authority(locked)
@@ -822,6 +988,7 @@ class RbacService:
         operation: RoleOperation,
         expected_version: int,
     ) -> RoleMutationResponse:
+        operation = _require_role_operation(operation)
         requested_ids = frozenset(permission_ids)
         if not requested_ids:
             raise invalid_request("permission_ids_required")
@@ -835,7 +1002,6 @@ class RbacService:
                 role_id=role_id,
                 required_permission=PermissionKey.ROLES_DELEGATION_UPDATE,
             )
-            self._require_expected_role_version(locked.role, expected_version)
             permission_keys_by_id = await load_permission_keys(session, requested_ids)
             if set(permission_keys_by_id) != set(requested_ids):
                 raise invalid_request("unknown_permission_id")
@@ -853,8 +1019,7 @@ class RbacService:
                 delegable_permissions=delegable_after,
             )
             affected_after = tuple(
-                snapshot.with_role(replacement)
-                for snapshot in locked.affected_before
+                snapshot.with_role(replacement) for snapshot in locked.affected_before
             )
             decision = decide_role_delegation_change(
                 actor=locked.actor,
@@ -868,6 +1033,7 @@ class RbacService:
                     raise invalid_request(decision.reason_code)
                 raise forbidden(decision.reason_code)
 
+            self._require_expected_role_version(locked.role, expected_version)
             role_before = _role_response(locked.role, locked.role_before)
             changed = locked.role_before.delegable_permissions != delegable_after
             if changed:
@@ -898,14 +1064,14 @@ class RbacService:
             operation=mutate,
         )
 
-    async def transfer_ownership(
+    async def transfer_super_admin(
         self,
         *,
         context: AuthorizationContext,
         target_user_id: uuid.UUID,
     ) -> None:
         async def operation(session: AsyncSession) -> _MutationOutcome[None]:
-            state = await lock_authorization_state(session)
+            state = await lock_rbac_state(session)
             actor_id = context.principal.user_id
             users = await lock_users(session, {actor_id, target_user_id})
             self._require_current_locked_actor_row(
@@ -919,34 +1085,38 @@ class RbacService:
             )
             if (
                 PermissionKey.SUPER_ADMIN_TRANSFER.value not in actor.permissions
-                or not actor.is_owner
+                or not actor.is_super_admin
             ):
                 raise forbidden("actor_is_not_super_admin")
             if target_user_id not in users:
                 raise not_found("target_user_not_found")
 
-            owner_role_id = await session.scalar(
+            super_admin_role_id = await session.scalar(
                 select(Role.id).where(
                     Role.key == SystemRoleKey.SUPER_ADMIN.value,
-                    Role.is_owner.is_(True),
+                    Role.is_super_admin.is_(True),
+                    Role.deleted_at.is_(None),
                 )
             )
-            if owner_role_id is None:
+            if super_admin_role_id is None:
                 raise conflict("super_admin_role_missing")
             user_ids = {actor_id, target_user_id}
             all_role_ids = set(
                 (
                     await session.scalars(
-                        select(UserRole.role_id).where(UserRole.user_id.in_(user_ids))
+                        select(UserRole.role_id).where(
+                            UserRole.user_id.in_(user_ids),
+                            UserRole.deleted_at.is_(None),
+                        )
                     )
                 ).all()
             )
             locked_roles = await lock_roles(
                 session,
-                role_ids=all_role_ids | {owner_role_id},
+                role_ids=all_role_ids | {super_admin_role_id},
             )
-            owner_role = locked_roles.get(owner_role_id)
-            if owner_role is None:
+            super_admin_role = locked_roles.get(super_admin_role_id)
+            if super_admin_role is None:
                 raise conflict("super_admin_role_missing")
             actor = await require_current_actor(
                 session,
@@ -965,11 +1135,15 @@ class RbacService:
             if not decision.allowed:
                 raise forbidden(decision.reason_code)
 
-            owner_grant = await load_role_grant(session, role_id=owner_role.id)
+            super_admin_grant = await load_role_grant(
+                session, role_id=super_admin_role.id
+            )
+            target_after = target_before.with_role(super_admin_grant)
             actor_assignment = await session.scalar(
                 select(UserRole).where(
                     UserRole.user_id == actor.user_id,
-                    UserRole.role_id == owner_role.id,
+                    UserRole.role_id == super_admin_role.id,
+                    UserRole.deleted_at.is_(None),
                 )
             )
             if actor_assignment is None:
@@ -977,16 +1151,25 @@ class RbacService:
             target_assignment = await session.scalar(
                 select(UserRole).where(
                     UserRole.user_id == target_user_id,
-                    UserRole.role_id == owner_role.id,
+                    UserRole.role_id == super_admin_role.id,
+                    UserRole.deleted_at.is_(None),
                 )
             )
-            await session.delete(actor_assignment)
+            if target_assignment is None:
+                live_role_count = await count_live_user_roles(
+                    session,
+                    user_id=target_user_id,
+                )
+                if live_role_count >= MAX_ROLES_PER_USER:
+                    raise conflict("user_role_limit_exceeded")
+            actor_assignment.deleted_at = datetime.now(UTC)
+            actor_assignment.deleted_by_user_id = actor.user_id
             await session.flush()
             if target_assignment is None:
                 session.add(
                     UserRole(
                         user_id=target_user_id,
-                        role_id=owner_role.id,
+                        role_id=super_admin_role.id,
                         assigned_by_user_id=actor.user_id,
                     )
                 )
@@ -994,7 +1177,7 @@ class RbacService:
             users[target_user_id].authz_version += 1
             state.epoch += 1
             target_after = replace(
-                target_before.with_role(owner_grant),
+                target_after,
                 authz_version=users[target_user_id].authz_version,
             )
             return _MutationOutcome(
@@ -1008,7 +1191,7 @@ class RbacService:
                     "previous_super_admin_user_id": str(actor.user_id),
                     "next_super_admin": _snapshot_payload(target_after),
                 },
-                audit_target_role_id=owner_role.id,
+                audit_target_role_id=super_admin_role.id,
             )
 
         await self._run_audited(
@@ -1028,12 +1211,20 @@ class RbacService:
         required_permission: PermissionKey,
         include_inactive: bool = False,
     ) -> _LockedSharedRole:
-        state = await lock_authorization_state(session)
+        state = await lock_rbac_state(session)
         actor_id = context.principal.user_id
         affected_ids = set(
             (
                 await session.scalars(
-                    select(UserRole.user_id).where(UserRole.role_id == role_id)
+                    select(UserRole.user_id)
+                    .join(
+                        User,
+                        (User.id == UserRole.user_id) & User.deleted_at.is_(None),
+                    )
+                    .where(
+                        UserRole.role_id == role_id,
+                        UserRole.deleted_at.is_(None),
+                    )
                 )
             ).all()
         )
@@ -1047,7 +1238,10 @@ class RbacService:
         all_role_ids = set(
             (
                 await session.scalars(
-                    select(UserRole.role_id).where(UserRole.user_id.in_(user_ids))
+                    select(UserRole.role_id).where(
+                        UserRole.user_id.in_(user_ids),
+                        UserRole.deleted_at.is_(None),
+                    )
                 )
             ).all()
         )
@@ -1076,16 +1270,17 @@ class RbacService:
             role_id=role_id,
             include_disabled=True,
         )
-        affected_before = tuple(
-            [
-                await load_authority_snapshot(
-                    session,
-                    user_id=user_id,
-                    include_disabled_roles=True,
-                )
-                for user_id in sorted(affected_ids, key=str)
-            ]
+        if not is_administrative_role_visible(actor=actor, role=role_before):
+            raise not_found("role_not_found")
+        affected_users = tuple(
+            users[user_id] for user_id in sorted(affected_ids, key=str)
         )
+        affected_by_user_id = await load_authority_snapshots_for_users(
+            session,
+            users=affected_users,
+            include_disabled_roles=True,
+        )
+        affected_before = tuple(affected_by_user_id[user.id] for user in affected_users)
         return _LockedSharedRole(
             actor=actor,
             role=role,

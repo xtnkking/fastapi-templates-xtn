@@ -4,15 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fastapi-postgresql-rbac-example"
-version = "0.3.0"
+version = "0.4.0"
 description = "Opinionated single-project RBAC reference for FastAPI and PostgreSQL"
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.14,<2",
+  "argon2-cffi>=23.1,<26",
   "asyncpg>=0.30,<1",
   "fastapi>=0.115,<1",
   "PyJWT>=2.10,<3",
   "pydantic-settings>=2.7,<3",
+  "redis>=5.2,<6",
   "sqlalchemy[asyncio]>=2.0.36,<2.1",
   "uvicorn[standard]>=0.34,<1",
 ]
@@ -35,7 +37,7 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 addopts = "-ra"
 markers = [
-  "postgresql: requires the PostgreSQL service from compose.dev.yaml",
+  "postgresql: requires the PostgreSQL and Redis services from compose.dev.yaml",
 ]
 
 [tool.ruff]

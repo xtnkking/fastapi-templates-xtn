@@ -1,15 +1,18 @@
 import asyncio
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import event, select, text, update
 
-from app.database import SessionFactory
+from app.database import SessionFactory, engine
 from app.rbac.domain import AuthorizationContext, PermissionKey, Principal
 from app.rbac.errors import RbacError
 from app.rbac.models import (
-    AuthorizationState,
     Permission,
+    RbacState,
     Role,
     RolePermission,
     User,
@@ -17,7 +20,7 @@ from app.rbac.models import (
 )
 from app.rbac.queries import (
     load_authority_snapshot,
-    lock_authorization_state,
+    lock_rbac_state,
     lock_roles,
     lock_users,
 )
@@ -25,6 +28,24 @@ from app.rbac.service import RbacService
 from tests.integration.conftest import World
 
 pytestmark = pytest.mark.postgresql
+
+
+@contextmanager
+def _capture_selects() -> Iterator[list[str]]:
+    statements: list[str] = []
+
+    def capture(*args: object) -> None:
+        statement = args[2]
+        if isinstance(statement, str) and statement.lstrip().upper().startswith(
+            "SELECT"
+        ):
+            statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        yield statements
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", capture)
 
 
 async def context_for(
@@ -35,13 +56,15 @@ async def context_for(
             session,
             user_id=world.users[user_name].id,
         )
-        state = await session.get(AuthorizationState, "global")
+        state = await session.get(RbacState, "global")
         assert state is not None
     return AuthorizationContext(
         principal=Principal(
             user_id=world.users[user_name].id,
             token_version=world.users[user_name].token_version,
             token_id=uuid.uuid4(),
+            issued_at=0,
+            expires_at=1,
         ),
         authorization_epoch=state.epoch,
         authority=authority,
@@ -56,7 +79,7 @@ async def test_engine_uses_required_read_committed_isolation() -> None:
     assert isolation == "read committed"
 
 
-async def test_user_lock_refreshes_preloaded_identity_map(world: World) -> None:
+async def test_user_lock_reloads_preloaded_identity_map(world: World) -> None:
     user_id = world.users["lower"].id
     async with SessionFactory() as first_session:
         stale = await first_session.get(User, user_id)
@@ -80,13 +103,13 @@ async def test_global_guard_serializes_authorization_changes() -> None:
 
     async with SessionFactory() as first_session:
         async with first_session.begin():
-            await lock_authorization_state(first_session)
+            await lock_rbac_state(first_session)
 
             async def take_same_guard() -> None:
                 async with SessionFactory() as second_session:
                     async with second_session.begin():
                         attempted.set()
-                        await lock_authorization_state(second_session)
+                        await lock_rbac_state(second_session)
 
             second_writer = asyncio.create_task(take_same_guard())
             await attempted.wait()
@@ -106,15 +129,19 @@ async def test_actor_role_revocation_commits_before_waiting_mutation(
 
     async with SessionFactory() as revocation_session:
         async with revocation_session.begin():
-            state = await lock_authorization_state(revocation_session)
+            state = await lock_rbac_state(revocation_session)
             users = await lock_users(revocation_session, {manager_user_id})
             await lock_roles(revocation_session, role_ids={manager_role_id})
-            assignment = await revocation_session.get(
-                UserRole,
-                (manager_user_id, manager_role_id),
+            assignment = await revocation_session.scalar(
+                select(UserRole).where(
+                    UserRole.user_id == manager_user_id,
+                    UserRole.role_id == manager_role_id,
+                    UserRole.deleted_at.is_(None),
+                )
             )
             assert assignment is not None
-            await revocation_session.delete(assignment)
+            assignment.deleted_at = datetime.now(UTC)
+            assignment.deleted_by_user_id = world.users["super_admin"].id
             users[manager_user_id].authz_version += 1
             state.epoch += 1
 
@@ -136,9 +163,12 @@ async def test_actor_role_revocation_commits_before_waiting_mutation(
     assert caught.value.status_code == 403
 
     async with SessionFactory() as session:
-        forbidden_assignment = await session.get(
-            UserRole,
-            (world.users["blank"].id, world.roles["viewer"].id),
+        forbidden_assignment = await session.scalar(
+            select(UserRole).where(
+                UserRole.user_id == world.users["blank"].id,
+                UserRole.role_id == world.roles["viewer"].id,
+                UserRole.deleted_at.is_(None),
+            )
         )
     assert forbidden_assignment is None
 
@@ -178,7 +208,7 @@ async def test_shared_role_change_observes_new_high_authority_holder(
 
     async with SessionFactory() as writer_session:
         async with writer_session.begin():
-            state = await lock_authorization_state(writer_session)
+            state = await lock_rbac_state(writer_session)
             users = await lock_users(writer_session, {high_user_id})
             await lock_roles(writer_session, role_ids={shared_role.id})
 
@@ -220,8 +250,66 @@ async def test_shared_role_change_observes_new_high_authority_holder(
                     select(Permission.key)
                     .select_from(RolePermission)
                     .join(Permission, Permission.id == RolePermission.permission_id)
-                    .where(RolePermission.role_id == shared_role.id)
+                    .where(
+                        RolePermission.role_id == shared_role.id,
+                        RolePermission.deleted_at.is_(None),
+                        Permission.deleted_at.is_(None),
+                    )
                 )
             ).all()
         )
     assert granted_keys == {PermissionKey.PROJECTS_READ.value}
+
+
+async def test_shared_role_lock_select_count_does_not_grow_with_holders(
+    world: World,
+) -> None:
+    shared_role = Role(
+        key="query-count-shared-role",
+        name="Query count shared role",
+        management_tier=25,
+    )
+    async with SessionFactory() as session:
+        async with session.begin():
+            session.add(shared_role)
+            await session.flush()
+            session.add(
+                UserRole(
+                    user_id=world.users["lower"].id,
+                    role_id=shared_role.id,
+                    assigned_by_user_id=world.users["super_admin"].id,
+                )
+            )
+
+    context = await context_for(world, "manager", "shared-role-query-count")
+    service = RbacService(SessionFactory)
+
+    async def lock_select_count() -> int:
+        with _capture_selects() as statements:
+            async with SessionFactory() as session:
+                async with session.begin():
+                    await service._lock_shared_role_change(
+                        session,
+                        context=context,
+                        role_id=shared_role.id,
+                        required_permission=PermissionKey.ROLES_UPDATE,
+                    )
+        return len(statements)
+
+    one_holder_count = await lock_select_count()
+
+    async with SessionFactory() as session:
+        async with session.begin():
+            session.add_all(
+                UserRole(
+                    user_id=world.users[name].id,
+                    role_id=shared_role.id,
+                    assigned_by_user_id=world.users["super_admin"].id,
+                )
+                for name in ("junior", "blank", "disabled", "newcomer")
+            )
+
+    five_holder_count = await lock_select_count()
+
+    assert one_holder_count > 0
+    assert five_holder_count == one_holder_count

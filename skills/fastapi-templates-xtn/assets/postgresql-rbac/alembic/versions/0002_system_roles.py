@@ -40,12 +40,10 @@ SUPER_ADMIN_PERMISSION_KEYS = frozenset(
         "roles:revoke",
         "roles:permissions:bind",
         "roles:permissions:unbind",
-        "roles:permissions:update",
         "roles:delegation:update",
         "users:read",
         "users:status:update",
         "super_admin:transfer",
-        "system_owner:transfer",
         "projects:read",
         "projects:update",
     }
@@ -53,7 +51,6 @@ SUPER_ADMIN_PERMISSION_KEYS = frozenset(
 SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS = SUPER_ADMIN_PERMISSION_KEYS - {
     "roles:delegation:update",
     "super_admin:transfer",
-    "system_owner:transfer",
 }
 ADMIN_PERMISSION_KEYS = frozenset(
     {
@@ -81,7 +78,7 @@ SYSTEM_ROLE_SPECS: dict[str, dict[str, Any]] = {
         "description": "Sole protected administrator for the application",
         "management_tier": 1000,
         "is_protected": True,
-        "is_owner": True,
+        "is_super_admin": True,
         "permissions": SUPER_ADMIN_PERMISSION_KEYS,
         "delegable_permissions": SUPER_ADMIN_DELEGABLE_PERMISSION_KEYS,
     },
@@ -90,7 +87,7 @@ SYSTEM_ROLE_SPECS: dict[str, dict[str, Any]] = {
         "description": "Built-in administrator for strictly lower authority",
         "management_tier": 500,
         "is_protected": False,
-        "is_owner": False,
+        "is_super_admin": False,
         "permissions": ADMIN_PERMISSION_KEYS,
         "delegable_permissions": ADMIN_DELEGABLE_PERMISSION_KEYS,
     },
@@ -99,7 +96,7 @@ SYSTEM_ROLE_SPECS: dict[str, dict[str, Any]] = {
         "description": "Mandatory lowest-authority role for every user",
         "management_tier": 0,
         "is_protected": False,
-        "is_owner": False,
+        "is_super_admin": False,
         "permissions": USER_PERMISSION_KEYS,
         "delegable_permissions": frozenset(),
     },
@@ -125,41 +122,13 @@ def _role_by_key(connection: sa.Connection, key: str) -> sa.RowMapping | None:
         connection.execute(
             sa.text(
                 "SELECT id, key, name, management_tier, is_active, is_protected, "
-                "is_system, is_owner FROM roles WHERE key = :key"
+                "is_system, is_super_admin FROM roles WHERE key = :key"
             ),
             {"key": key},
         )
         .mappings()
         .one_or_none()
     )
-
-
-def _preflight_legacy_owner_assignment(connection: sa.Connection) -> None:
-    owners = (
-        connection.execute(
-            sa.text("SELECT id, key FROM roles WHERE is_owner ORDER BY id")
-        )
-        .mappings()
-        .all()
-    )
-    if not owners:
-        return
-    if len(owners) > 1:
-        raise RuntimeError(
-            "multiple Owner roles exist; repair authority before upgrading"
-        )
-
-    holder_count = connection.scalar(
-        sa.text("SELECT count(*) FROM user_roles WHERE role_id = :role_id"),
-        {"role_id": owners[0]["id"]},
-    )
-    if holder_count is None:
-        raise RuntimeError("could not count legacy Owner assignments")
-    if holder_count > 1:
-        raise RuntimeError(
-            "legacy Owner role has multiple holders; reduce it to exactly one "
-            "before upgrading"
-        )
 
 
 def _insert_system_role(
@@ -173,9 +142,9 @@ def _insert_system_role(
         sa.text(
             "INSERT INTO roles "
             "(id, key, name, description, management_tier, is_active, "
-            "is_protected, is_system, is_owner, version) VALUES "
+            "is_protected, is_system, is_super_admin, version) VALUES "
             "(:id, :key, :name, :description, :management_tier, true, "
-            ":is_protected, true, :is_owner, 0)"
+            ":is_protected, true, :is_super_admin, 0)"
         ),
         {
             "id": role_id,
@@ -184,12 +153,12 @@ def _insert_system_role(
             "description": spec["description"],
             "management_tier": spec["management_tier"],
             "is_protected": spec["is_protected"],
-            "is_owner": spec["is_owner"],
+            "is_super_admin": spec["is_super_admin"],
         },
     )
 
 
-def _ensure_non_owner_system_role(
+def _ensure_system_role(
     connection: sa.Connection,
     *,
     key: str,
@@ -206,7 +175,7 @@ def _ensure_non_owner_system_role(
         "is_active": True,
         "is_protected": spec["is_protected"],
         "is_system": True,
-        "is_owner": False,
+        "is_super_admin": spec["is_super_admin"],
     }
     if any(existing[field] != value for field, value in expected.items()):
         raise RuntimeError(
@@ -227,66 +196,6 @@ def _ensure_non_owner_system_role(
     return _uuid_value(existing["id"])
 
 
-def _ensure_super_admin_role(connection: sa.Connection) -> uuid.UUID:
-    legacy = _role_by_key(connection, "owner")
-    named = _role_by_key(connection, "super_admin")
-    owners = (
-        connection.execute(
-            sa.text("SELECT id, key FROM roles WHERE is_owner ORDER BY id")
-        )
-        .mappings()
-        .all()
-    )
-    if len(owners) > 1:
-        raise RuntimeError(
-            "multiple Owner roles exist; repair authority before upgrading"
-        )
-    if legacy is not None and not legacy["is_owner"]:
-        raise RuntimeError(
-            "role key 'owner' is occupied by a non-Owner role; resolve the "
-            "collision before upgrading"
-        )
-
-    if owners:
-        owner = owners[0]
-        if owner["key"] not in {"owner", "super_admin"}:
-            raise RuntimeError(
-                "the Owner role has an unexpected key; resolve it before upgrading"
-            )
-        if named is not None and named["id"] != owner["id"]:
-            raise RuntimeError(
-                "role key 'super_admin' is already occupied; resolve the collision "
-                "before upgrading"
-            )
-        role_id = _uuid_value(owner["id"])
-        spec = SYSTEM_ROLE_SPECS["super_admin"]
-        connection.execute(
-            sa.text(
-                "UPDATE roles SET key = 'super_admin', name = :name, "
-                "description = :description, management_tier = 1000, "
-                "is_active = true, is_protected = true, is_system = true, "
-                "is_owner = true, deleted_at = NULL, deleted_by_user_id = NULL "
-                "WHERE id = :role_id"
-            ),
-            {
-                "role_id": role_id,
-                "name": spec["name"],
-                "description": spec["description"],
-            },
-        )
-        return role_id
-
-    if named is not None:
-        raise RuntimeError(
-            "role key 'super_admin' is occupied by a non-Owner role; resolve the "
-            "collision before upgrading"
-        )
-
-    role_id = _system_role_id("super_admin")
-    _insert_system_role(connection, key="super_admin", role_id=role_id)
-    return role_id
-
-
 def _replace_system_role_grants(
     connection: sa.Connection,
     *,
@@ -296,7 +205,10 @@ def _replace_system_role_grants(
 ) -> None:
     rows = (
         connection.execute(
-            sa.text("SELECT id, key FROM permissions WHERE key = ANY(:keys)"),
+            sa.text(
+                "SELECT id, key FROM permissions "
+                "WHERE key = ANY(:keys) AND deleted_at IS NULL"
+            ),
             {"keys": sorted(permission_keys)},
         )
         .mappings()
@@ -309,15 +221,36 @@ def _replace_system_role_grants(
             "permission catalog is incomplete: " + ", ".join(sorted(missing))
         )
 
-    connection.execute(
-        sa.text("DELETE FROM role_permissions WHERE role_id = :role_id"),
-        {"role_id": role_id},
-    )
+    desired_permission_ids = list(permission_ids.values())
+    if desired_permission_ids:
+        connection.execute(
+            sa.text(
+                "UPDATE role_permissions "
+                "SET deleted_at = now(), deleted_by_user_id = NULL "
+                "WHERE role_id = :role_id AND deleted_at IS NULL "
+                "AND NOT (permission_id = ANY(:permission_ids))"
+            ),
+            {
+                "role_id": role_id,
+                "permission_ids": desired_permission_ids,
+            },
+        )
+    else:
+        connection.execute(
+            sa.text(
+                "UPDATE role_permissions "
+                "SET deleted_at = now(), deleted_by_user_id = NULL "
+                "WHERE role_id = :role_id AND deleted_at IS NULL"
+            ),
+            {"role_id": role_id},
+        )
     if permission_keys:
         connection.execute(
             sa.text(
                 "INSERT INTO role_permissions (role_id, permission_id, can_delegate) "
-                "VALUES (:role_id, :permission_id, :can_delegate)"
+                "VALUES (:role_id, :permission_id, :can_delegate) "
+                "ON CONFLICT (role_id, permission_id) WHERE deleted_at IS NULL "
+                "DO UPDATE SET can_delegate = EXCLUDED.can_delegate"
             ),
             [
                 {
@@ -333,11 +266,8 @@ def _replace_system_role_grants(
 def upgrade() -> None:
     connection = op.get_bind()
     connection.execute(
-        sa.text(
-            "SELECT scope FROM authorization_state WHERE scope = 'global' FOR UPDATE"
-        )
+        sa.text("SELECT scope FROM rbac_state WHERE scope = 'global' FOR UPDATE")
     )
-    _preflight_legacy_owner_assignment(connection)
 
     op.add_column(
         "roles",
@@ -363,6 +293,7 @@ def upgrade() -> None:
         ["id"],
         ondelete="RESTRICT",
     )
+    op.create_index("ix_roles_deleted_at", "roles", ["deleted_at"])
     op.drop_constraint("system_protection_match", "roles", type_="check")
 
     permission_table = sa.table(
@@ -370,6 +301,8 @@ def upgrade() -> None:
         sa.column("id", postgresql.UUID(as_uuid=True)),
         sa.column("key", sa.String()),
         sa.column("description", sa.Text()),
+        sa.column("deleted_at", sa.DateTime(timezone=True)),
+        sa.column("deleted_by_user_id", postgresql.UUID(as_uuid=True)),
     )
     insert_permissions = postgresql.insert(permission_table).values(
         [
@@ -380,14 +313,16 @@ def upgrade() -> None:
     connection.execute(
         insert_permissions.on_conflict_do_update(
             index_elements=[permission_table.c.key],
-            set_={"description": insert_permissions.excluded.description},
+            set_={
+                "description": insert_permissions.excluded.description,
+                "deleted_at": None,
+                "deleted_by_user_id": None,
+            },
         )
     )
 
     role_ids = {
-        "super_admin": _ensure_super_admin_role(connection),
-        "admin": _ensure_non_owner_system_role(connection, key="admin"),
-        "user": _ensure_non_owner_system_role(connection, key="user"),
+        key: _ensure_system_role(connection, key=key) for key in SYSTEM_ROLE_SPECS
     }
     for key, role_id in role_ids.items():
         spec = SYSTEM_ROLE_SPECS[key]
@@ -404,7 +339,9 @@ def upgrade() -> None:
                 "INSERT INTO user_roles "
                 "(user_id, role_id, assigned_by_user_id) "
                 "SELECT users.id, :role_id, NULL FROM users "
-                "ON CONFLICT (user_id, role_id) DO NOTHING RETURNING user_id"
+                "WHERE users.deleted_at IS NULL "
+                "ON CONFLICT (user_id, role_id) WHERE deleted_at IS NULL "
+                "DO NOTHING RETURNING user_id"
             ),
             {"role_id": role_ids["user"]},
         ).all()
@@ -418,20 +355,13 @@ def upgrade() -> None:
             {"user_ids": inserted_user_ids},
         )
     connection.execute(
-        sa.text(
-            "UPDATE authorization_state SET epoch = epoch + 1 WHERE scope = 'global'"
-        )
+        sa.text("UPDATE rbac_state SET epoch = epoch + 1 WHERE scope = 'global'")
     )
 
     op.create_check_constraint(
         "custom_role_tier_range",
         "roles",
         "is_system OR (management_tier >= 1 AND management_tier <= 999)",
-    )
-    op.create_check_constraint(
-        "legacy_owner_role_key_reserved",
-        "roles",
-        "key <> 'owner'",
     )
     op.create_check_constraint(
         "protected_role_is_system", "roles", "NOT is_protected OR is_system"
@@ -449,30 +379,30 @@ def upgrade() -> None:
         "roles",
         "deleted_by_user_id IS NULL OR deleted_at IS NOT NULL",
     )
-    op.drop_constraint("owner_shape", "roles", type_="check")
+    op.drop_constraint("super_admin_flag_shape", "roles", type_="check")
     op.create_check_constraint(
-        "owner_shape",
+        "super_admin_flag_shape",
         "roles",
-        "NOT is_owner OR (is_system AND is_protected AND is_active "
+        "NOT is_super_admin OR (is_system AND is_protected AND is_active "
         "AND management_tier = 1000 AND key = 'super_admin' "
         "AND deleted_at IS NULL)",
     )
     op.create_check_constraint(
         "super_admin_role_shape",
         "roles",
-        "key <> 'super_admin' OR (is_system AND is_protected AND is_owner "
+        "key <> 'super_admin' OR (is_system AND is_protected AND is_super_admin "
         "AND is_active AND management_tier = 1000 AND deleted_at IS NULL)",
     )
     op.create_check_constraint(
         "admin_role_shape",
         "roles",
-        "key <> 'admin' OR (is_system AND NOT is_protected AND NOT is_owner "
+        "key <> 'admin' OR (is_system AND NOT is_protected AND NOT is_super_admin "
         "AND is_active AND management_tier = 500 AND deleted_at IS NULL)",
     )
     op.create_check_constraint(
         "user_role_shape",
         "roles",
-        "key <> 'user' OR (is_system AND NOT is_protected AND NOT is_owner "
+        "key <> 'user' OR (is_system AND NOT is_protected AND NOT is_super_admin "
         "AND is_active AND management_tier = 0 AND deleted_at IS NULL)",
     )
 
@@ -493,7 +423,7 @@ def upgrade() -> None:
                 NEW.is_active IS DISTINCT FROM OLD.is_active OR
                 NEW.is_protected IS DISTINCT FROM OLD.is_protected OR
                 NEW.is_system IS DISTINCT FROM OLD.is_system OR
-                NEW.is_owner IS DISTINCT FROM OLD.is_owner OR
+                NEW.is_super_admin IS DISTINCT FROM OLD.is_super_admin OR
                 NEW.deleted_at IS DISTINCT FROM OLD.deleted_at OR
                 NEW.deleted_by_user_id IS DISTINCT FROM OLD.deleted_by_user_id
             ) THEN
@@ -558,13 +488,19 @@ def upgrade() -> None:
         CREATE FUNCTION assert_user_has_base_role(candidate_user_id uuid)
         RETURNS void LANGUAGE plpgsql AS $$
         BEGIN
-            PERFORM scope FROM authorization_state
+            PERFORM scope FROM rbac_state
             WHERE scope = 'global' FOR UPDATE;
-            IF EXISTS (SELECT 1 FROM users WHERE id = candidate_user_id)
+            IF EXISTS (
+                SELECT 1 FROM users
+                WHERE id = candidate_user_id AND deleted_at IS NULL
+            )
                AND NOT EXISTS (
                    SELECT 1 FROM user_roles ur
                    JOIN roles r ON r.id = ur.role_id
-                   WHERE ur.user_id = candidate_user_id AND r.key = 'user'
+                   WHERE ur.user_id = candidate_user_id
+                     AND ur.deleted_at IS NULL
+                     AND r.key = 'user'
+                     AND r.deleted_at IS NULL
                ) THEN
                 RAISE EXCEPTION 'every user must retain the user system role'
                     USING ERRCODE = '23514';
@@ -619,7 +555,8 @@ def upgrade() -> None:
             assignment_changed boolean := false;
         BEGIN
             SELECT id INTO STRICT super_admin_role_id
-            FROM roles WHERE key = 'super_admin';
+            FROM roles
+            WHERE key = 'super_admin' AND deleted_at IS NULL;
 
             IF TG_OP IN ('UPDATE', 'DELETE') THEN
                 IF OLD.role_id = super_admin_role_id THEN
@@ -635,11 +572,12 @@ def upgrade() -> None:
                 RETURN NULL;
             END IF;
 
-            PERFORM scope FROM authorization_state
+            PERFORM scope FROM rbac_state
             WHERE scope = 'global' FOR UPDATE;
 
             SELECT count(*) INTO holder_count
-            FROM user_roles WHERE role_id = super_admin_role_id;
+            FROM user_roles
+            WHERE role_id = super_admin_role_id AND deleted_at IS NULL;
             IF holder_count = 0 THEN
                 RAISE EXCEPTION 'the final super_admin assignment cannot be removed'
                     USING ERRCODE = '23514';
@@ -666,10 +604,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     connection = op.get_bind()
     connection.execute(
-        sa.text(
-            "SELECT scope FROM authorization_state WHERE scope = 'global' FOR UPDATE"
-        )
+        sa.text("SELECT scope FROM rbac_state WHERE scope = 'global' FOR UPDATE")
     )
+    connection.execute(sa.text("SET CONSTRAINTS ct_users_require_base_role IMMEDIATE"))
 
     op.execute(
         "DROP TRIGGER IF EXISTS ct_user_roles_exactly_one_super_admin ON user_roles"
@@ -691,8 +628,7 @@ def downgrade() -> None:
         "user_role_shape",
         "admin_role_shape",
         "super_admin_role_shape",
-        "owner_shape",
-        "legacy_owner_role_key_reserved",
+        "super_admin_flag_shape",
         "deleted_role_actor_requires_timestamp",
         "deleted_role_inactive",
         "system_role_always_available",
@@ -701,20 +637,25 @@ def downgrade() -> None:
     ):
         op.drop_constraint(name, "roles", type_="check")
 
+    op.drop_index("ix_roles_deleted_at", table_name="roles")
+
     connection.execute(
         sa.text(
             "DELETE FROM user_roles USING roles "
-            "WHERE user_roles.role_id = roles.id AND roles.key IN ('admin', 'user')"
+            "WHERE user_roles.role_id = roles.id "
+            "AND roles.key IN ('super_admin', 'admin', 'user')"
         )
     )
     connection.execute(
         sa.text(
             "DELETE FROM role_permissions USING roles "
             "WHERE role_permissions.role_id = roles.id "
-            "AND roles.key IN ('admin', 'user')"
+            "AND roles.key IN ('super_admin', 'admin', 'user')"
         )
     )
-    connection.execute(sa.text("DELETE FROM roles WHERE key IN ('admin', 'user')"))
+    connection.execute(
+        sa.text("DELETE FROM roles WHERE key IN ('super_admin', 'admin', 'user')")
+    )
     connection.execute(
         sa.text(
             "DELETE FROM role_permissions USING permissions "
@@ -727,17 +668,10 @@ def downgrade() -> None:
         sa.text("DELETE FROM permissions WHERE key = ANY(:keys)"),
         {"keys": [key for key, _description in NEW_PERMISSIONS]},
     )
-    connection.execute(
-        sa.text(
-            "UPDATE roles SET key = 'owner', name = 'Owner' "
-            "WHERE key = 'super_admin' AND is_owner"
-        )
-    )
-
     op.create_check_constraint(
-        "owner_shape",
+        "super_admin_flag_shape",
         "roles",
-        "NOT is_owner OR (is_system AND is_protected AND is_active "
+        "NOT is_super_admin OR (is_system AND is_protected AND is_active "
         "AND management_tier = 1000)",
     )
     op.create_check_constraint(

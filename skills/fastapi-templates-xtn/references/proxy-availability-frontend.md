@@ -36,13 +36,35 @@ export interface ProxyListItem {
   // Existing public fields remain unchanged.
   availability_check: ProxyAvailabilityCheck | null;
 }
+
+export interface ApiResponse<T> {
+  code: number;
+  message: string;
+  data: T | null;
+  request_id: string;
+}
+
+export interface PageData<T> {
+  items: T[];
+  page: number;
+  page_size: number;
+  total: number;
+}
 ```
 
-When `availability_cache_available=true`, `null` renders as `未检测`. When it is
-false, render `检测结果暂不可用` instead. A success shows exit IP, country,
-region, city, latency, and server check time; use `--` for optional null location
-values. A cached failure shows its safe backend message. Never reinterpret
-`检测服务请求频率受限` as a proxy connection or authentication failure.
+Under the XTN response standard, the API client validates the numeric `code` and
+required `request_id`, then returns `data` to feature code. Preserve the request
+ID with a thrown application error so support can correlate it, but never branch
+on localized `message` text. A completed check is `200000` even when its
+`data.success` is false.
+
+A successful list response with `availability_check=null` renders as `未检测`.
+When the list request fails with cache-specific HTTP `503` / business code
+`503002`, render `检测结果暂不可用` for the list instead of treating rows as cache
+misses. A success shows exit IP, country, region, city, latency, and server check
+time; use `--` for optional null location values. A cached failure shows its safe
+backend message. Never reinterpret `检测服务请求频率受限` as a proxy connection or
+authentication failure.
 
 Mount, refresh, pagination, sort, search, filter, and ordinary query refetch call
 only the list API. Do not trigger active detection from a mount effect, row
@@ -83,7 +105,7 @@ function checkOnce(
       setTransportError(proxyId, toSafeUiMessage(error));
       if (
         origin === "row" &&
-        hasStableErrorCode(error, "cache_write_outcome_unknown")
+        hasBusinessCode(error, 503002)
       ) {
         try {
           await reloadVisibleProxyList();
@@ -107,8 +129,8 @@ function checkOnce(
 The in-flight map suppresses only simultaneous double clicks. It deletes its
 entry in `finally`, so a later explicit click always sends a fresh request. A
 browser-to-backend transport or application error is temporary UI state and must
-not replace the last Redis-backed snapshot or expose raw response content. The
-stable `cache_write_outcome_unknown` code is special: reload cache-only list data
+not replace the last Redis-backed snapshot or expose raw response content.
+Business code `503002` is special: reload cache-only list data
 without retrying detection, because Redis may already contain the observation.
 Batch processing relies on its one final reload instead of reloading per item.
 
@@ -135,7 +157,6 @@ async function collectTargetIds(
   const filters = structuredClone(normalizedFilters);
   const ids = new Set<string>();
   let page = 1;
-  let initialTotal: number | undefined;
   let expectedPages: number | undefined;
 
   for (;;) {
@@ -144,46 +165,16 @@ async function collectTargetIds(
       page,
       page_size: PAGE_SIZE,
     });
-    initialTotal ??= result.total;
+    if (result.page !== page || result.page_size !== PAGE_SIZE) {
+      throw new Error("invalid page response");
+    }
     for (const proxy of result.items) ids.add(proxy.id);
 
-    const effectivePageSize = result.page_size;
-    if (
-      !Number.isInteger(effectivePageSize) ||
-      effectivePageSize < 1 ||
-      effectivePageSize > PAGE_SIZE
-    ) {
-      throw new Error("invalid effective page size");
+    expectedPages ??= Math.ceil(result.total / PAGE_SIZE);
+    if (page >= expectedPages) break;
+    if (result.items.length === 0) {
+      throw new Error("page ended before the initial total");
     }
-
-    const calculatedPageCount = Math.ceil(
-      initialTotal / effectivePageSize,
-    );
-    if (
-      result.total_pages !== undefined &&
-      result.total_pages !== calculatedPageCount
-    ) {
-      throw new Error("inconsistent total page count");
-    }
-    const currentPageCount = result.total_pages ?? calculatedPageCount;
-    if (!Number.isInteger(currentPageCount) || currentPageCount < 0) {
-      throw new Error("invalid page count");
-    }
-    expectedPages ??= currentPageCount;
-    if (currentPageCount !== expectedPages) {
-      throw new Error("pagination changed during batch collection");
-    }
-
-    const shouldHaveNext = page < expectedPages;
-    const hasNext = result.has_next ?? shouldHaveNext;
-    if (
-      hasNext !== shouldHaveNext ||
-      (shouldHaveNext && result.items.length === 0) ||
-      (expectedPages === 0 && result.items.length > 0)
-    ) {
-      throw new Error("inconsistent pagination metadata");
-    }
-    if (!hasNext) break;
     page += 1;
   }
 
@@ -191,11 +182,11 @@ async function collectTargetIds(
 }
 ```
 
-Prefer the existing `next_cursor`, `has_next`, or `total_pages` contract. With a
-page-number API, use the response's effective `page_size`; the server may cap a
-requested 200 to 100. Require deterministic ordering and deduplicate IDs. If the
-list lacks snapshot pagination, define proxies created or deleted during target
-collection as belonging to the next run.
+The XTN baseline returns only `items`, `page`, `page_size`, and `total`. Calculate
+the page count from the first response and do not add `total_pages`, `has_next`,
+or cursor metadata. Require deterministic ordering and deduplicate IDs. Proxies
+created or deleted during offset-page collection belong to the next run; products
+that require a strict snapshot need a separately versioned pagination contract.
 
 ## Five-Worker Pool
 

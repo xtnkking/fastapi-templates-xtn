@@ -30,8 +30,9 @@ nondeterministic, and disclose test traffic.
 
 Cover these behaviors with unit, integration, and security tests as appropriate:
 
-- Application-level `proxies:check`, concealed-resource behavior, UUIDv4 proxy
-  IDs, and request bodies or query values unable to replace the fixed target.
+- Application-level `proxies:check`, concealed-resource behavior, canonical
+  non-sequential proxy IDs under the selected profile, and request bodies or
+  query values unable to replace the fixed target.
 - Exact `GET http://ip-api.com/json/?lang=zh-CN`, redirect refusal, selected-proxy
   routing, environment-proxy isolation, no direct fallback, and minimal outbound
   headers.
@@ -71,7 +72,7 @@ Cover these behaviors with unit, integration, and security tests as appropriate:
   explicit check performs real I/O and replaces the earlier success or failure.
 - Result and sequence keys have `TTL=-1`; proxy deletion commits a durable
   cleanup outbox row, whose idempotent handler deletes both keys in one command.
-  Redis failure is retried, and a deleted UUID is never reused.
+  Redis failure is retried, and a deleted proxy ID is never reused.
 - Every connection field change increments `connection_version`. A list ignores
   malformed or version-mismatched cache objects.
 - Check finalization briefly holds a proxy-row lock that conflicts with edit and
@@ -89,7 +90,7 @@ Cover these behaviors with unit, integration, and security tests as appropriate:
   arguments is rejected without modifying Redis.
 - For the same version, use barriers to start attempt 1 then attempt 2 and finish
   them in reverse order. Attempt 1 cannot overwrite attempt 2 and receives
-  `409 proxy_check_superseded` rather than returning its stale local observation.
+  business code `409004` rather than returning its stale local observation.
 - Start attempt 1, then claim attempt 2 without completing it; prove the attempt
   watermark prevents attempt 1 from writing as the latest result.
 - Edit the proxy during a request; its old-version completion cannot replace a
@@ -99,10 +100,10 @@ Cover these behaviors with unit, integration, and security tests as appropriate:
   read-back resolve a committed value. If a later attempt only advances the
   watermark, the older ambiguous caller is superseded rather than falsely
   successful. An unresolved read returns distinct
-  `503 cache_write_outcome_unknown` without claiming which value exists or
+  business code `503002` without claiming which value exists or
   repeating the outbound request.
-- Redis read failure sets the degraded-cache flag or uses the documented
-  cache-specific `503`, never `未检测`.
+- Redis read failure returns the documented cache-specific HTTP `503` / business
+  code `503002`, never a fifth envelope flag or `未检测`.
 - A list page builds keys only for authorized returned rows, uses one supported
   `MGET` path, maps values by proxy ID, and makes zero detector calls.
 - Exercise the declared standalone/Sentinel or cluster-aware grouped-`MGET`
@@ -117,12 +118,12 @@ Use controlled deferred promises rather than sleeps:
   `检测结果暂不可用`; a new failure replaces all older success-only fields.
 - Row state cleans up on success, domain `success=false`, and transport failure.
   A completed click can be run again and sends another request.
-- A row receiving `503 cache_write_outcome_unknown` performs one cache-only list
+- A row receiving business code `503002` performs one cache-only list
   reload and never repeats detection; a batch waits for its single final reload.
 - Selected IDs bypass all-page collection. With no selection, 450 rows fetch as
   200, 200, and 50 and every deduplicated ID is checked.
-- When the server caps requested page size 200 to effective size 100, all 450
-  IDs are still collected using response pagination metadata.
+- The list response contains only `items`, `page`, `page_size`, and `total`; the
+  client derives the page count and does not require extra pagination metadata.
 - Empty and product-maximum target sets do not leave the batch lock stuck. If
   cancellation exists, unstarted work is not counted as proxy failure.
 - Instrument active promises and prove the peak never exceeds five; releasing
@@ -134,7 +135,7 @@ Use controlled deferred promises rather than sleeps:
 - Duplicate batch starts are rejected synchronously. A running row blocks batch
   start, and a claimed batch blocks row requests before rendered state updates.
 - Filters and selection are frozen for the run, pagination order is stable, and
-  inconsistent or non-terminating pagination metadata fails safely before an
+  an inconsistent page number or early empty page fails safely before an
   unbounded loop. An older list response cannot overwrite a newer row result.
 - Completion produces one final list reload. Mount, refresh, pagination, sort,
   search, filter changes, and query-library retries produce zero check calls.

@@ -10,7 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    PrimaryKeyConstraint,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -18,16 +18,46 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
+from app.audit import (
+    AuditSource,
+    sanitize_audit_state,
+    validate_audit_action,
+    validate_audit_reason,
+    validate_audit_request_id,
+)
 from app.base import Base
 
 
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
+        UniqueConstraint("email", name="uq_users_email"),
+        UniqueConstraint("user_name", name="uq_users_user_name"),
+        CheckConstraint(
+            "email IS NOT NULL OR user_name IS NOT NULL",
+            name="identity_present",
+        ),
+        CheckConstraint(
+            "email IS NULL OR btrim(email) <> ''",
+            name="email_not_blank",
+        ),
+        CheckConstraint(
+            "user_name IS NULL OR btrim(user_name) <> ''",
+            name="user_name_not_blank",
+        ),
         CheckConstraint("token_version >= 0", name="token_version_nonnegative"),
         CheckConstraint("authz_version >= 0", name="authz_version_nonnegative"),
+        CheckConstraint(
+            "deleted_at IS NULL OR NOT is_active",
+            name="deleted_user_inactive",
+        ),
+        CheckConstraint(
+            "deleted_by_user_id IS NULL OR deleted_at IS NOT NULL",
+            name="deleted_user_actor_requires_timestamp",
+        ),
+        Index("ix_users_deleted_at", "deleted_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -36,7 +66,8 @@ class User(Base):
         default=uuid.uuid4,
         server_default=text("gen_random_uuid()"),
     )
-    email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    user_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
     )
@@ -52,13 +83,25 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deleted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            name="fk_users_deleted_by_user_id_users",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
 
 
-class AuthorizationState(Base):
-    __tablename__ = "authorization_state"
+class RbacState(Base):
+    __tablename__ = "rbac_state"
     __table_args__ = (
-        CheckConstraint("scope = 'global'", name="authorization_scope_global"),
-        CheckConstraint("epoch >= 0", name="authorization_epoch_nonnegative"),
+        CheckConstraint("scope = 'global'", name="scope_global"),
+        CheckConstraint("epoch >= 0", name="epoch_nonnegative"),
     )
 
     scope: Mapped[str] = mapped_column(String(16), primary_key=True)
@@ -69,6 +112,13 @@ class AuthorizationState(Base):
 
 class Permission(Base):
     __tablename__ = "permissions"
+    __table_args__ = (
+        CheckConstraint(
+            "deleted_by_user_id IS NULL OR deleted_at IS NOT NULL",
+            name="deleted_permission_actor_requires_timestamp",
+        ),
+        Index("ix_permissions_deleted_at", "deleted_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -78,6 +128,18 @@ class Permission(Base):
     )
     key: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deleted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            name="fk_permissions_deleted_by_user_id_users",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
 
 
 class Role(Base):
@@ -89,8 +151,8 @@ class Role(Base):
             name="management_tier_range",
         ),
         CheckConstraint(
-            "management_tier < 1000 OR is_owner",
-            name="owner_tier_reserved",
+            "management_tier < 1000 OR is_super_admin",
+            name="super_admin_tier_reserved",
         ),
         CheckConstraint(
             "is_system OR (management_tier >= 1 AND management_tier <= 999)",
@@ -114,32 +176,33 @@ class Role(Base):
             name="deleted_role_actor_requires_timestamp",
         ),
         CheckConstraint(
-            "NOT is_owner OR (is_system AND is_protected AND is_active "
+            "NOT is_super_admin OR (is_system AND is_protected AND is_active "
             "AND management_tier = 1000 AND key = 'super_admin' "
             "AND deleted_at IS NULL)",
-            name="owner_shape",
+            name="super_admin_flag_shape",
         ),
         CheckConstraint(
-            "key <> 'super_admin' OR (is_system AND is_protected AND is_owner "
+            "key <> 'super_admin' OR (is_system AND is_protected AND is_super_admin "
             "AND is_active AND management_tier = 1000 AND deleted_at IS NULL)",
             name="super_admin_role_shape",
         ),
         CheckConstraint(
-            "key <> 'admin' OR (is_system AND NOT is_protected AND NOT is_owner "
+            "key <> 'admin' OR (is_system AND NOT is_protected AND NOT is_super_admin "
             "AND is_active AND management_tier = 500 AND deleted_at IS NULL)",
             name="admin_role_shape",
         ),
         CheckConstraint(
-            "key <> 'user' OR (is_system AND NOT is_protected AND NOT is_owner "
+            "key <> 'user' OR (is_system AND NOT is_protected AND NOT is_super_admin "
             "AND is_active AND management_tier = 0 AND deleted_at IS NULL)",
             name="user_role_shape",
         ),
         Index("ix_roles_active", "is_active"),
+        Index("ix_roles_deleted_at", "deleted_at"),
         Index(
-            "uq_roles_single_owner",
-            "is_owner",
+            "uq_roles_single_super_admin",
+            "is_super_admin",
             unique=True,
-            postgresql_where=text("is_owner"),
+            postgresql_where=text("is_super_admin"),
         ),
     )
 
@@ -166,7 +229,7 @@ class Role(Base):
     is_system: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
-    is_owner: Mapped[bool] = mapped_column(
+    is_super_admin: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
     version: Mapped[int] = mapped_column(
@@ -192,10 +255,27 @@ class Role(Base):
 class RolePermission(Base):
     __tablename__ = "role_permissions"
     __table_args__ = (
-        PrimaryKeyConstraint("role_id", "permission_id"),
+        CheckConstraint(
+            "deleted_by_user_id IS NULL OR deleted_at IS NOT NULL",
+            name="deleted_role_permission_actor_requires_timestamp",
+        ),
+        Index(
+            "uq_role_permissions_live",
+            "role_id",
+            "permission_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         Index("ix_role_permissions_permission_role", "permission_id", "role_id"),
+        Index("ix_role_permissions_deleted_at", "deleted_at"),
     )
 
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
     role_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("roles.id", ondelete="RESTRICT"),
@@ -209,15 +289,52 @@ class RolePermission(Base):
     can_delegate: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    assigned_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deleted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            name="fk_role_permissions_deleted_by_user_id_users",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
 
 
 class UserRole(Base):
     __tablename__ = "user_roles"
     __table_args__ = (
-        PrimaryKeyConstraint("user_id", "role_id"),
+        CheckConstraint(
+            "deleted_by_user_id IS NULL OR deleted_at IS NOT NULL",
+            name="deleted_user_role_actor_requires_timestamp",
+        ),
+        Index(
+            "uq_user_roles_live",
+            "user_id",
+            "role_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         Index("ix_user_roles_role_user", "role_id", "user_id"),
+        Index("ix_user_roles_deleted_at", "deleted_at"),
     )
 
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="RESTRICT"),
@@ -236,14 +353,57 @@ class UserRole(Base):
     assigned_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deleted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            name="fk_user_roles_deleted_by_user_id_users",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
 
 
-class AuthorizationAuditEvent(Base):
-    __tablename__ = "authorization_audit_events"
+class RbacAuditEvent(Base):
+    __tablename__ = "rbac_audit_events"
     __table_args__ = (
         CheckConstraint("decision IN ('allowed', 'denied')", name="valid_decision"),
-        Index("ix_authz_audit_actor_created", "actor_user_id", "created_at"),
-        Index("ix_authz_audit_request_id", "request_id"),
+        CheckConstraint(
+            "source IN ('http', 'service', 'job', 'operator', 'migration')",
+            name="valid_source",
+        ),
+        CheckConstraint("schema_version = 1", name="schema_version_one"),
+        CheckConstraint(
+            "char_length(request_id) BETWEEN 1 AND 128 "
+            "AND request_id ~ '^[A-Za-z0-9][A-Za-z0-9:._-]*$'",
+            name="request_id_format",
+        ),
+        CheckConstraint(
+            "char_length(action) BETWEEN 3 AND 120 "
+            "AND action ~ '^[a-z][a-z0-9]*([._:-][a-z0-9]+)*$'",
+            name="action_format",
+        ),
+        CheckConstraint(
+            "char_length(reason_code) BETWEEN 2 AND 80 "
+            "AND reason_code ~ '^[a-z][a-z0-9_]*$'",
+            name="reason_code_format",
+        ),
+        CheckConstraint(
+            "before_state IS NULL OR jsonb_typeof(before_state) = 'object'",
+            name="before_state_object",
+        ),
+        CheckConstraint(
+            "after_state IS NULL OR jsonb_typeof(after_state) = 'object'",
+            name="after_state_object",
+        ),
+        Index("ix_rbac_audit_actor_created", "actor_user_id", "created_at"),
+        Index("ix_rbac_audit_request_id", "request_id"),
+        Index("ix_rbac_audit_created_id", "created_at", "id"),
+        Index("ix_rbac_audit_target_user_created", "target_user_id", "created_at"),
+        Index("ix_rbac_audit_target_role_created", "target_role_id", "created_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -262,9 +422,49 @@ class AuthorizationAuditEvent(Base):
     action: Mapped[str] = mapped_column(String(120), nullable=False)
     decision: Mapped[str] = mapped_column(String(16), nullable=False)
     reason_code: Mapped[str] = mapped_column(String(80), nullable=False)
-    before_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    after_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    source: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=AuditSource.SERVICE.value,
+        server_default=AuditSource.SERVICE.value,
+    )
+    schema_version: Mapped[int] = mapped_column(
+        SmallInteger,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+    before_state: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
+    after_state: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     request_id: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+    @validates("action")
+    def validate_action(self, _key: str, value: str) -> str:
+        return validate_audit_action(value)
+
+    @validates("reason_code")
+    def validate_reason_code(self, _key: str, value: str) -> str:
+        return validate_audit_reason(value)
+
+    @validates("request_id")
+    def validate_request_id(self, _key: str, value: str) -> str:
+        return validate_audit_request_id(value)
+
+    @validates("source")
+    def validate_source(self, _key: str, value: str | AuditSource) -> str:
+        return AuditSource(value).value
+
+    @validates("before_state", "after_state")
+    def validate_state(
+        self,
+        _key: str,
+        value: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        return sanitize_audit_state(value)

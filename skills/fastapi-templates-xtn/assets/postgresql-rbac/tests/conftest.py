@@ -19,6 +19,23 @@ if (
 
 # Tests never inherit the application's DATABASE_URL.
 os.environ["DATABASE_URL"] = test_database_url
-os.environ["JWT_SECRET"] = "test-secret-with-at-least-thirty-two-characters"
-os.environ["JWT_ISSUER"] = "https://identity.example.test"
-os.environ["JWT_AUDIENCE"] = "fastapi-rbac-example"
+os.environ["REDIS_URL"] = os.environ.get(
+    "TEST_REDIS_URL",
+    "redis://127.0.0.1:6379/15",
+)
+os.environ["RATE_LIMIT_REDIS_URL"] = os.environ.get(
+    "TEST_RATE_LIMIT_REDIS_URL",
+    "redis://127.0.0.1:6380/0",
+)
+os.environ["APP_ENVIRONMENT"] = "test"
+os.environ["JWT_SECRET"] = "D7vL3qN9xR2mK8pT5sW1cF6hJ4yB0uGz"
+os.environ["RATE_LIMIT_HMAC_KEY"] = "vM8qD2kR7pX4cN9sH5wF1jL6tG3yB0uZ"
+os.environ["PUBLIC_REGISTRATION_ENABLED"] = "true"
+os.environ["VERIFICATION_ENABLED"] = "false"
+os.environ.pop("VERIFICATION_CODE_HMAC_KEY", None)
+os.environ.pop("VERIFICATION_ENABLED_PURPOSES", None)
+os.environ.pop("VERIFICATION_ENABLED_CHANNELS", None)
+os.environ["RATE_LIMIT_ENABLED"] = "false"
+os.environ.pop("JWT_ISSUER", None)
+os.environ.pop("JWT_AUDIENCE", None)
+os.environ["JWT_ACCESS_TOKEN_TTL_SECONDS"] = "3600"

@@ -21,8 +21,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Test optional country CSV validator
+        run: python -B skills/fastapi-templates-xtn/scripts/test_validate_country_csv.py
       - name: Validate release package
-        run: python scripts/validate_release.py
+        run: python -B scripts/validate_release.py
 
   asset:
     runs-on: ubuntu-latest
@@ -32,6 +34,10 @@ jobs:
         working-directory: skills/fastapi-templates-xtn/assets/postgresql-rbac
     env:
       TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/rbac_example_test
+      TEST_DISPOSABLE_DATABASE: rbac_example_test
+      TEST_REDIS_URL: redis://127.0.0.1:6379/15
+      TEST_RATE_LIMIT_REDIS_URL: redis://127.0.0.1:6380/0
+      TEST_REDIS_ISOLATION_CONFIRMED: "yes"
     services:
       postgres:
         image: postgres:17-alpine
@@ -46,6 +52,24 @@ jobs:
           --health-interval 2s
           --health-timeout 3s
           --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+      redis-rate-limit:
+        image: redis:7-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -54,12 +78,14 @@ jobs:
           cache: pip
           cache-dependency-path: skills/fastapi-templates-xtn/assets/postgresql-rbac/pyproject.toml
       - name: Install asset and test dependencies
-        run: python -m pip install -e ".[test]"
+        run: python -B -m pip install -e ".[test]"
       - name: Lint
         run: ruff check .
       - name: Type check
         run: mypy app tests
+      - name: Verify the single migration head
+        run: test "$(alembic heads)" = "0004_password_auth (head)"
       - name: Unit tests
-        run: pytest -m "not postgresql"
+        run: python -B -m pytest -p no:cacheprovider -m "not postgresql"
       - name: PostgreSQL integration tests
-        run: pytest -m postgresql
+        run: python -B -m pytest -p no:cacheprovider -m postgresql

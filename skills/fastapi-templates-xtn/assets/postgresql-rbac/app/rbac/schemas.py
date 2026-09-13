@@ -1,8 +1,10 @@
 import uuid
 from datetime import datetime
-from typing import Annotated, Self
+from typing import Annotated, Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.rbac.domain import MAX_ROLES_PER_USER
 
 PermissionKeyInput = Annotated[
     str,
@@ -12,6 +14,27 @@ PermissionKeyInput = Annotated[
         pattern=r"^[a-z][a-z0-9_.-]*(?::[a-z][a-z0-9_.-]*)+$",
     ),
 ]
+
+
+def _role_update_json_schema(schema: dict[str, Any]) -> None:
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return
+    properties["name"] = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "title": "Name",
+    }
+    properties["description"] = {
+        "type": "string",
+        "maxLength": 1000,
+        "title": "Description",
+    }
+    schema["anyOf"] = [
+        {"required": ["name"]},
+        {"required": ["description"]},
+    ]
 
 
 class RoleCreateRequest(BaseModel):
@@ -24,25 +47,35 @@ class RoleCreateRequest(BaseModel):
 
 
 class RoleUpdateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra=_role_update_json_schema,
+    )
 
+    expected_version: int = Field(strict=True, ge=0)
     name: str | None = Field(default=None, min_length=1, max_length=160)
     description: str | None = Field(default=None, max_length=1000)
 
     @model_validator(mode="after")
     def require_at_least_one_field(self) -> Self:
-        if not self.model_fields_set:
+        mutable_fields = self.model_fields_set & {"name", "description"}
+        if not mutable_fields:
             raise ValueError("at least one role field is required")
-        if any(
-            getattr(self, field_name) is None for field_name in self.model_fields_set
-        ):
+        if any(getattr(self, field_name) is None for field_name in mutable_fields):
             raise ValueError("role fields cannot be null")
         return self
+
+
+class RoleVersionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(strict=True, ge=0)
 
 
 class PermissionIdsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    expected_version: int = Field(strict=True, ge=0)
     permission_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)
 
     @field_validator("permission_ids")
@@ -56,7 +89,10 @@ class PermissionIdsRequest(BaseModel):
 class RoleIdsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    role_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)
+    role_ids: list[uuid.UUID] = Field(
+        min_length=1,
+        max_length=MAX_ROLES_PER_USER,
+    )
 
     @field_validator("role_ids")
     @classmethod
@@ -103,7 +139,7 @@ class UserStatusUpdateRequest(BaseModel):
     is_active: bool
 
 
-class OwnershipTransferRequest(BaseModel):
+class SuperAdminTransferRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target_user_id: uuid.UUID
@@ -120,7 +156,6 @@ class RoleResponse(BaseModel):
     is_active: bool
     is_system: bool
     is_protected: bool
-    is_owner: bool
     permissions: tuple[str, ...]
     delegable_permissions: tuple[str, ...]
     version: int
@@ -141,16 +176,35 @@ class PermissionResponse(BaseModel):
 
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     id: uuid.UUID
     is_active: bool
-    management_tier: int
-    role_ids: list[uuid.UUID]
-    permissions: list[str]
-    delegable_permissions: list[str]
+    assigned_role_ids: tuple[uuid.UUID, ...] = Field(
+        description=(
+            "Live assignments visible to the caller, including visible disabled roles."
+        )
+    )
+    effective_role_ids: tuple[uuid.UUID, ...] = Field(
+        description=(
+            "Visible assigned roles that are active and contribute current authority."
+        )
+    )
+    effective_management_tier: int = Field(
+        description="Maximum tier from effective roles; zero when none are effective."
+    )
+    effective_permissions: tuple[str, ...] = Field(
+        description="Permission union from effective roles only."
+    )
+    effective_delegable_permissions: tuple[str, ...] = Field(
+        description="Delegable permission union from effective roles only."
+    )
     authz_version: int
 
 
 class UserRoleMutationResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     changed: bool
     user: UserResponse
 

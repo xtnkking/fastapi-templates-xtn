@@ -1,15 +1,23 @@
-# JWT Session Implementation Shapes
+# JWT Active-JTI Implementation Shapes
 
-Read this reference only when concrete token, PostgreSQL session, or Redis
-registry code is required. First apply the fixed claims, failure semantics, and
-cross-store protocol in [JWT session security](jwt-session-security.md). Adapt
-names and exception envelopes to the repository; preserve the invariants.
+Read this reference only when concrete Access Token or Redis registry code is
+required. First apply the consent-gated claims, failure semantics, and issuance order in
+[JWT access-token security](jwt-session-security.md). Adapt names and exception
+envelopes to the repository; preserve the invariants.
 
 ## Minimal Claims And Decoder
 
 Map `InvalidCredential` to generic `401` with `WWW-Authenticate: Bearer`. Resolve
 an asymmetric key from a validated, allowlisted `kid` before this decoder; never
-let the token header select the accepted algorithm.
+let the Token header select the accepted algorithm.
+
+The concrete block below matches the bundled asset's valid UUIDv4 user-ID
+profile. UUID is not mandatory. In a project that selected prefixed business
+IDs, change `AccessClaims.user_id` and `build_access_token.user_id` to the
+project's user-ID type, and replace only `_uuid4(payload["sub"])` with the exact
+prefix/alphabet/length parser from [identifier policy](identifier-policy.md).
+Keep `_uuid4(payload["jti"])`: JTI is a protocol identifier and remains UUIDv4.
+Never replace subject validation with an unconstrained `str`.
 
 ```python
 import uuid
@@ -19,11 +27,10 @@ from typing import Any
 
 import jwt
 
-ACCESS_TTL_SECONDS = 600
+DEFAULT_ACCESS_TTL_SECONDS = 3600
 CLOCK_LEEWAY_SECONDS = 30
-REQUIRED_ACCESS_CLAIMS = (
-    "iss", "aud", "sub", "jti", "iat", "exp", "token_type"
-)
+REQUIRED_ACCESS_CLAIMS = frozenset({"sub", "jti", "iat", "exp", "token_type"})
+OPTIONAL_ACCESS_SCOPE_CLAIMS = frozenset({"iss", "aud"})
 
 
 class InvalidCredential(Exception):
@@ -50,35 +57,46 @@ def _uuid4(value: object) -> uuid.UUID:
     return parsed
 
 
+def _expected_access_claims(settings: Settings) -> frozenset[str]:
+    if (settings.jwt_issuer is None) != (settings.jwt_audience is None):
+        raise RuntimeError("JWT issuer and audience must be configured together")
+    if settings.jwt_issuer is None:
+        return REQUIRED_ACCESS_CLAIMS
+    return REQUIRED_ACCESS_CLAIMS | OPTIONAL_ACCESS_SCOPE_CLAIMS
+
+
 def decode_access_token(token: str, settings: Settings) -> AccessClaims:
     try:
+        expected_claims = _expected_access_claims(settings)
+        decode_kwargs: dict[str, Any] = {}
+        if settings.jwt_issuer is not None and settings.jwt_audience is not None:
+            decode_kwargs = {
+                "issuer": settings.jwt_issuer,
+                "audience": settings.jwt_audience,
+            }
         payload: dict[str, Any] = jwt.decode(
             token,
             settings.jwt_verification_key,
             algorithms=[settings.jwt_algorithm],
-            issuer=settings.jwt_issuer,
-            audience=settings.jwt_audience,
             leeway=CLOCK_LEEWAY_SECONDS,
             options={
-                "require": list(REQUIRED_ACCESS_CLAIMS),
+                "require": sorted(expected_claims),
                 "strict_aud": True,
             },
+            **decode_kwargs,
         )
+        if set(payload) != expected_claims:
+            raise InvalidCredential
         if payload["token_type"] != "access":
             raise InvalidCredential
         iat, exp = payload["iat"], payload["exp"]
-        nbf = payload.get("nbf")
         if (
             isinstance(iat, bool)
             or isinstance(exp, bool)
             or not isinstance(iat, int)
             or not isinstance(exp, int)
-            or (
-                nbf is not None
-                and (isinstance(nbf, bool) or not isinstance(nbf, int))
-            )
             or exp <= iat
-            or exp - iat > ACCESS_TTL_SECONDS
+            or exp - iat > settings.jwt_access_token_ttl_seconds
         ):
             raise InvalidCredential
         return AccessClaims(
@@ -91,12 +109,18 @@ def decode_access_token(token: str, settings: Settings) -> AccessClaims:
         raise InvalidCredential from exc
 ```
 
-If `nbf` is present, PyJWT validates it with the configured leeway. Reject an
-`iat` unreasonably far in the future. The trusted issuer creates the JTI; never
-accept it from a login request.
+Define `jwt_access_token_ttl_seconds` as positive typed configuration with a default
+of `DEFAULT_ACCESS_TTL_SECONDS`. Explicitly tell the user to adjust it for the
+product's risk and expected login experience. Reject extra claims and an `iat`
+unreasonably far in the future. Define `jwt_issuer` and `jwt_audience` as optional
+strings that must be both absent or both nonblank. Do not set them for a new
+project until the user has explicitly consented after the policy's plain-language
+explanation. Preserve an already configured pair in an existing project unless a
+migration is requested. The trusted signer creates the JTI; never accept it from
+a login request.
 
 ```python
-def issue_access_token(
+def build_access_token(
     *, user_id: uuid.UUID, settings: Settings
 ) -> tuple[str, AccessClaims]:
     now = datetime.now(UTC).replace(microsecond=0)
@@ -104,17 +128,19 @@ def issue_access_token(
         user_id=user_id,
         jti=uuid.uuid4(),
         issued_at=int(now.timestamp()),
-        expires_at=int((now + timedelta(seconds=ACCESS_TTL_SECONDS)).timestamp()),
+        expires_at=int(
+            (now + timedelta(seconds=settings.jwt_access_token_ttl_seconds)).timestamp()
+        ),
     )
-    payload = {
-        "iss": settings.jwt_issuer,
-        "aud": settings.jwt_audience,
+    payload: dict[str, object] = {
         "sub": str(claims.user_id),
         "jti": str(claims.jti),
         "iat": claims.issued_at,
         "exp": claims.expires_at,
         "token_type": "access",
     }
+    if settings.jwt_issuer is not None and settings.jwt_audience is not None:
+        payload.update(iss=settings.jwt_issuer, aud=settings.jwt_audience)
     token = jwt.encode(
         payload,
         settings.jwt_signing_key,
@@ -124,77 +150,12 @@ def issue_access_token(
     return token, claims
 ```
 
-## PostgreSQL Session Model
-
-The access session ID equals `jti`. Keep the user's current token version in the
-row, not the JWT, so account-wide revocation stays server-authoritative.
-
-```python
-import uuid
-from datetime import datetime
-
-from sqlalchemy import (
-    BigInteger,
-    CheckConstraint,
-    DateTime,
-    ForeignKey,
-    Index,
-    String,
-    text,
-)
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
-
-
-class AuthenticationSession(Base):
-    __tablename__ = "authentication_sessions"
-    __table_args__ = (
-        CheckConstraint(
-            "status IN ('pending', 'active', 'revoked')",
-            name="authentication_sessions_valid_status",
-        ),
-        CheckConstraint(
-            "expires_at > issued_at",
-            name="authentication_sessions_valid_lifetime",
-        ),
-        CheckConstraint(
-            "user_token_version >= 0",
-            name="authentication_sessions_nonnegative_user_version",
-        ),
-        CheckConstraint(
-            "(status = 'revoked') = (revoked_at IS NOT NULL)",
-            name="authentication_sessions_revocation_shape",
-        ),
-        Index("ix_authentication_sessions_user_status", "user_id", "status"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-        server_default=text("gen_random_uuid()"),
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
-    )
-    status: Mapped[str] = mapped_column(String(16), nullable=False)
-    user_token_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-```
-
-The Alembic revision also creates the named foreign key, checks, and index. The
-issuer supplies the same UUIDv4 for row ID and JTI. At authentication, select the
-row by both `id` and `user_id`; require `active`, require database time before
-`expires_at`, load an active user, and compare the row's version with
-`users.token_version`.
-
 ## Redis Registry
 
-Use `decode_responses=True` for this exact-string example. `DuplicateJTI` is an
-internal issuance conflict; retry once with a fresh UUIDv4 or fail the issuance.
-`AuthenticationUnavailable` maps to `503`, while `InvalidCredential` maps to
+Use `decode_responses=True` for this string example. The record binds the Token
+claims to the server-side user version observed during login. The version does
+not enter JWT. `DuplicateJTI` is an internal issuance conflict;
+`AuthenticationUnavailable` maps to `503`, while `InvalidCredential` maps to a
 generic `401`.
 
 ```python
@@ -213,88 +174,309 @@ class DuplicateJTI(Exception):
     pass
 
 
-def _registry_key(*, environment: str, issuer: str, jti: uuid.UUID) -> str:
-    digest = hashlib.sha256(f"{issuer}\0{jti}".encode()).hexdigest()
+@dataclass(frozen=True, slots=True)
+class ActiveJTIRecord:
+    user_version: int
+
+
+def _registry_key(*, environment: str, service_name: str, jti: uuid.UUID) -> str:
+    digest = hashlib.sha256(f"{service_name}\0{jti}".encode()).hexdigest()
     return f"auth:access:v1:{environment}:{digest}"
 
 
-def _registry_value(claims: AccessClaims) -> str:
+def _registry_value(claims: AccessClaims, *, user_version: int) -> str:
     return json.dumps(
         {
             "sub": str(claims.user_id),
             "typ": "access",
+            "iat": claims.issued_at,
             "exp": claims.expires_at,
+            "token_version": user_version,
         },
         sort_keys=True,
         separators=(",", ":"),
     )
 
 
+def _parse_registry_value(value: str | None, claims: AccessClaims) -> ActiveJTIRecord:
+    if value is None:
+        raise InvalidCredential
+    try:
+        data = json.loads(value)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise InvalidCredential from exc
+    if not isinstance(data, dict) or set(data) != {
+        "sub", "typ", "iat", "exp", "token_version"
+    }:
+        raise InvalidCredential
+    user_version = data["token_version"]
+    issued_at = data["iat"]
+    expires_at = data["exp"]
+    if (
+        data["sub"] != str(claims.user_id)
+        or data["typ"] != "access"
+        or isinstance(issued_at, bool)
+        or not isinstance(issued_at, int)
+        or issued_at != claims.issued_at
+        or isinstance(expires_at, bool)
+        or not isinstance(expires_at, int)
+        or expires_at != claims.expires_at
+        or isinstance(user_version, bool)
+        or not isinstance(user_version, int)
+        or user_version < 0
+    ):
+        raise InvalidCredential
+    if value != _registry_value(claims, user_version=user_version):
+        raise InvalidCredential
+    return ActiveJTIRecord(user_version=user_version)
+
+
+ACTIVATE_JTI = """
+redis.replicate_commands()
+local redis_time = redis.call('TIME')
+local expires_at = tonumber(ARGV[2])
+if not expires_at or expires_at ~= math.floor(expires_at) then
+    return -1
+end
+local ttl_seconds = expires_at - tonumber(redis_time[1])
+if ttl_seconds <= 0 then
+    return -1
+end
+if not redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', ttl_seconds) then
+    return 0
+end
+if redis.call('PEXPIREAT', KEYS[1], expires_at * 1000) ~= 1 then
+    redis.call('DEL', KEYS[1])
+    return -1
+end
+return 1
+"""
+
+
 async def activate_jti(
     redis: Redis,
     *,
     environment: str,
-    issuer: str,
+    service_name: str,
     claims: AccessClaims,
+    user_version: int,
 ) -> None:
     try:
-        created = await redis.set(
-            _registry_key(environment=environment, issuer=issuer, jti=claims.jti),
-            _registry_value(claims),
-            nx=True,
-            exat=claims.expires_at,
+        created = await redis.eval(
+            ACTIVATE_JTI,
+            1,
+            _registry_key(
+                environment=environment,
+                service_name=service_name,
+                jti=claims.jti,
+            ),
+            _registry_value(claims, user_version=user_version),
+            claims.expires_at,
         )
     except RedisError as exc:
         raise AuthenticationUnavailable from exc
-    if created is not True:
+    if type(created) is int and created == 1:
+        return
+    if type(created) is int and created == 0:
         raise DuplicateJTI
+    raise AuthenticationUnavailable
 
 
 async def require_active_jti(
     redis: Redis,
     *,
     environment: str,
-    issuer: str,
+    service_name: str,
     claims: AccessClaims,
-) -> None:
+) -> ActiveJTIRecord:
     try:
         value = await redis.get(
-            _registry_key(environment=environment, issuer=issuer, jti=claims.jti)
+            _registry_key(
+                environment=environment,
+                service_name=service_name,
+                jti=claims.jti,
+            )
         )
     except RedisError as exc:
         raise AuthenticationUnavailable from exc
-    if value != _registry_value(claims):
+    return _parse_registry_value(value, claims)
+```
+
+The login path must register before returning the Token:
+
+The activation script requires Redis 5.0 or newer. Its single-key operation
+uses Redis server time, `SET NX EX` to avoid an unbounded key even if an
+unexpected expiry command fails, and `PEXPIREAT` to give the record precisely
+the JWT's absolute expiry rather than extending it by a partial second. Its
+result is `1` for creation, `0` for a duplicate key, and `-1` for a past deadline
+or failed expiry. Treat any other result as unavailable, never as success.
+
+```python
+async def issue_registered_access_token(
+    redis: Redis,
+    *,
+    user: User,
+    settings: Settings,
+) -> str:
+    for attempt in range(2):
+        token, claims = build_access_token(user_id=user.id, settings=settings)
+        try:
+            await activate_jti(
+                redis,
+                environment=settings.environment,
+                service_name=settings.service_name,
+                claims=claims,
+                user_version=user.token_version,
+            )
+        except DuplicateJTI:
+            if attempt == 0:
+                continue
+            raise
+        return token
+    raise AssertionError("unreachable")
+```
+
+Authenticate credentials and load the active user immediately before calling
+this function. A Redis error aborts issuance through
+`AuthenticationUnavailable`; no Token is returned.
+
+After decoding and `require_active_jti`, load the existing PostgreSQL user and
+current RBAC authority. Require the user to be active and require
+`user.token_version == record.user_version`. This reuses the normal identity and
+authorization query; do not create or query an individual Token table.
+
+## Confirmed Logout
+
+Use an atomic compare-and-delete so the route only reports success for the exact
+record that authentication validated:
+
+```python
+COMPARE_AND_DELETE = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+
+async def revoke_jti(
+    redis: Redis,
+    *,
+    environment: str,
+    service_name: str,
+    claims: AccessClaims,
+    record: ActiveJTIRecord,
+) -> None:
+    key = _registry_key(
+        environment=environment,
+        service_name=service_name,
+        jti=claims.jti,
+    )
+    expected = _registry_value(claims, user_version=record.user_version)
+    try:
+        deleted = await redis.eval(COMPARE_AND_DELETE, 1, key, expected)
+    except RedisError as exc:
+        raise AuthenticationUnavailable from exc
+    if deleted != 1:
         raise InvalidCredential
 ```
+
+Return logout success only after `revoke_jti` returns. A Redis error, including a
+timeout with an unknown delete outcome, maps to `503`; do not claim success. The
+client may retry logout idempotently. A missing or changed key maps to the same
+generic `401` as another inactive Token.
+
+The current-Token logout route deliberately stops after this Redis operation and
+does not load PostgreSQL user or RBAC state. Deleting the exact presented record
+can only reduce authority, and this lets disabled or account-wide-revoked users
+discard a still-present JTI without adding a database query. No other protected
+route may use this exception.
+
+Confirmed deletion prevents later gate checks; it cannot cancel a request that
+already passed the Redis check. Redis failover may restore an older snapshot and
+revive a recently deleted key. Choose Redis durability and consistency settings
+to match the product risk, and do not claim PostgreSQL-grade linearizable
+revocation from this lighter design.
+
+Account-wide revocation increments `users.token_version` in PostgreSQL. Existing
+Redis entries expire naturally but fail the version comparison on every later
+request. There is no correctness dependency on scanning keys or deleting Token
+rows.
+
+Use the same lock order as other identity and authorization writers. The
+included asset exposes `POST /api/v1/auth/logout-all` and implements the core
+command as follows:
+
+```python
+class AccessTokenRevocationService:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def revoke_all_for_current_user(
+        self,
+        *,
+        context: AuthorizationContext,
+    ) -> None:
+        user_id = context.principal.user_id
+        async with self._session_factory() as session:
+            async with session.begin():
+                await lock_rbac_state(session)
+                user = (await lock_users(session, {user_id})).get(user_id)
+                if (
+                    user is None
+                    or not user.is_active
+                    or user.token_version != context.principal.token_version
+                ):
+                    raise InvalidCredential
+                user.token_version += 1
+```
+
+The route uses the full authorization-context dependency before calling this
+service. It never accepts a target user ID: an ordinary user may revoke only the
+current account's Tokens. Keep Redis I/O outside the PostgreSQL transaction.
+
+## Redis Lifecycle
 
 Create the Redis client in FastAPI lifespan with `decode_responses=True`, a
 500-millisecond connect timeout, a 500-millisecond socket timeout, and timeout
 retry disabled as the starting service default; keep both timeouts inside the
 request deadline and tune only from measured deployment latency. Close it in
-lifespan cleanup and inject it into the authentication dependency. Do not create
-one client per request or add a local positive cache. Reject bearer values over
-4096 bytes before JWT parsing unless a documented upstream protocol requires a
-smaller limit.
+lifespan cleanup and inject it into authentication. Do not create one client per
+request or add a local positive cache. Reject bearer values over 4096 bytes before
+JWT parsing unless a documented upstream protocol requires a smaller limit.
 
-## Asset Integration Checklist
+## Asset Status And Product Checklist
 
-The included asset's current adapter is not an active-JTI implementation. A
-complete adaptation changes these boundaries together:
+The current `Unreleased` asset implements the core adapter described here using
+its established UUIDv4 entity-ID profile:
+the default exact five-claim profile, the optional consented `iss`/`aud` pair,
+the configurable 3600-second default, Redis lifespan ownership,
+atomic Redis 5.0+ `SET NX EX` / `PEXPIREAT` registration before return,
+Redis-first request validation,
+PostgreSQL user-version comparison, and logout. It adds no individual PostgreSQL
+Token table or migration. It also validates the HS256 secret at startup, bounds
+input and output Tokens to 4096 bytes, and provides separate current-Token and
+account-wide logout endpoints. The immutable `v0.3.0` tag predates this
+implementation and must not be described as containing it.
 
-1. Add Redis settings/dependency and a migration plus SQLAlchemy model for
-   `authentication_sessions`; keep every identifier UUIDv4.
-2. Change `Principal` to carry `user_id` and UUID `jti`; remove the token-provided
-   version.
-3. Update `security.py` to the minimal claim contract and fixed algorithm/key
-   resolver.
-4. In `get_current_principal`, decode first, require the exact Redis record, then
-   load the matching active PostgreSQL session and current active user. Do not
-   execute RBAC queries on either failure.
-5. Integrate the pending-to-active issuance protocol at the trusted issuer or
-   token-exchange boundary. Never activate a Redis miss from a bearer request.
-6. Revoke PostgreSQL session state and write the outbox/audit atomically; process
-   Redis deletion after commit. Recheck session state under the canonical locks
-   for privileged writes.
-7. Add the full verification matrix from
-   [JWT session security](jwt-session-security.md) before claiming revocation is
-   complete.
+Before adapting or shipping the current asset:
+
+1. Connect `issue_access_token` to the product's trusted credential-verification
+   path. Never activate a Redis miss from a bearer request.
+2. Explicitly tell the user that the one-hour default must be adjusted when the
+   product's risk and login experience require a different lifetime.
+3. Leave `iss` and `aud` absent by default. Before adding the pair, explain its
+   cross-service Token-scoping benefit and coordination cost in plain language,
+   then wait for the user's explicit consent. No reply is not consent. Preserve
+   an existing configured pair unless the user requests a migration.
+4. Configure Redis TLS, ACLs, capacity, persistence, replication, failover, and
+   namespace generation for the deployment's revocation requirements.
+5. Preserve JWT, Redis, existing PostgreSQL user/RBAC order and exact
+   `sub`/type/`iat`/`exp`/user-version binding when adapting code.
+6. Run the full verification matrix from
+   [JWT access-token security](jwt-session-security.md), including confirmed
+   logout, account-wide logout, weak-secret and Token-size rejection, in-flight
+   request, failover, and signing-key compromise cases.
+
+Do not call the `Unreleased` worktree production-ready until its final Redis and
+PostgreSQL checks pass for the target deployment.

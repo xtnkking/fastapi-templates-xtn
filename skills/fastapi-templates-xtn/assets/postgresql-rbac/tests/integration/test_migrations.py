@@ -17,25 +17,16 @@ from app.rbac.domain import (
     SystemRoleKey,
 )
 from app.rbac.models import (
-    AuthorizationState,
     Permission,
+    RbacState,
     Role,
     RolePermission,
     User,
     UserRole,
 )
+from tests.integration.conftest import World
 
 pytestmark = pytest.mark.postgresql
-
-NEW_PERMISSIONS_FOR_TEST = (
-    "permissions:read",
-    "roles:update",
-    "roles:status:update",
-    "roles:delete",
-    "roles:permissions:bind",
-    "roles:permissions:unbind",
-    "super_admin:transfer",
-)
 
 
 def alembic_config() -> Config:
@@ -46,8 +37,8 @@ def alembic_config() -> Config:
 
 
 async def recreate_database_at_revision(config: Config, revision: str) -> None:
-    # Downgrading 0002 preserves its super_admin as a legacy owner. Rebuild the
-    # schema so upgrade tests start from data that could genuinely exist at 0001.
+    # Rebuild the schema so every upgrade test starts at the exact requested
+    # revision without data left by a later migration.
     await engine.dispose()
     await asyncio.to_thread(command.downgrade, config, "base")
     await asyncio.to_thread(command.upgrade, config, revision)
@@ -60,7 +51,7 @@ async def test_clean_migration_seeds_catalog_state_and_system_roles() -> None:
     try:
         await asyncio.to_thread(command.upgrade, config, "head")
         async with SessionFactory() as session:
-            state = await session.get(AuthorizationState, "global")
+            state = await session.get(RbacState, "global")
             permission_keys = set((await session.scalars(select(Permission.key))).all())
             roles = {
                 role.key: role
@@ -72,9 +63,20 @@ async def test_clean_migration_seeds_catalog_state_and_system_roles() -> None:
                     )
                 ).all()
             }
+            revision = await session.scalar(
+                sa.text("SELECT version_num FROM alembic_version")
+            )
+            role_limit_trigger_count = await session.scalar(
+                sa.text(
+                    "SELECT count(*) FROM pg_trigger "
+                    "WHERE tgname = 'ct_user_roles_max_ten_live'"
+                )
+            )
 
         assert state is not None
-        assert state.epoch == 1
+        assert state.epoch == 2
+        assert revision == "0004_password_auth"
+        assert role_limit_trigger_count == 1
         assert permission_keys == {item.value for item in PERMISSION_CATALOG}
         assert set(roles) == {item.value for item in SystemRoleKey}
         for key, spec in SYSTEM_ROLE_SPECS.items():
@@ -82,36 +84,59 @@ async def test_clean_migration_seeds_catalog_state_and_system_roles() -> None:
             assert role.management_tier == spec.management_tier
             assert role.is_system
             assert role.is_protected == spec.is_protected
-            assert role.is_owner == spec.is_owner
+            assert role.is_super_admin == spec.is_super_admin
     finally:
         await engine.dispose()
         await asyncio.to_thread(command.upgrade, config, "head")
 
 
-async def test_upgrade_renames_owner_and_backfills_mandatory_user_role() -> None:
+async def test_nonempty_database_downgrades_to_base(world: World) -> None:
+    assert world.users["super_admin"].id
+    config = alembic_config()
+    await engine.dispose()
+    try:
+        await asyncio.to_thread(command.downgrade, config, "base")
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(
+                    sa.text("SELECT to_regclass('public.user_roles')")
+                )
+                is None
+            )
+            assert (
+                await connection.scalar(sa.text("SELECT to_regclass('public.users')"))
+                is None
+            )
+    finally:
+        await engine.dispose()
+        await asyncio.to_thread(command.upgrade, config, "head")
+
+
+async def test_upgrade_preserves_custom_owner_key_and_backfills_base_role() -> None:
     config = alembic_config()
     await recreate_database_at_revision(config, "0001_single_project_rbac")
-    legacy_owner_id = uuid.uuid4()
-    owner_user_id = uuid.uuid4()
+    custom_super_admin_role_id = uuid.uuid4()
+    custom_owner_holder_id = uuid.uuid4()
     ordinary_user_id = uuid.uuid4()
     try:
         async with engine.begin() as connection:
             await connection.execute(
                 sa.text(
                     "INSERT INTO users (id, email) VALUES "
-                    "(:owner_id, 'legacy-owner@example.test'), "
-                    "(:user_id, 'legacy-user@example.test')"
+                    "(:custom_owner_holder_id, 'custom-owner@example.test'), "
+                    "(:ordinary_user_id, 'ordinary-user@example.test')"
                 ),
-                {"owner_id": owner_user_id, "user_id": ordinary_user_id},
+                {
+                    "custom_owner_holder_id": custom_owner_holder_id,
+                    "ordinary_user_id": ordinary_user_id,
+                },
             )
             await connection.execute(
                 sa.text(
-                    "INSERT INTO roles "
-                    "(id, key, name, management_tier, is_active, is_protected, "
-                    "is_system, is_owner) VALUES "
-                    "(:id, 'owner', 'Owner', 1000, true, true, true, true)"
+                    "INSERT INTO roles (id, key, name, management_tier) "
+                    "VALUES (:id, 'owner', 'Custom owner label', 10)"
                 ),
-                {"id": legacy_owner_id},
+                {"id": custom_super_admin_role_id},
             )
             await connection.execute(
                 sa.text(
@@ -119,7 +144,10 @@ async def test_upgrade_renames_owner_and_backfills_mandatory_user_role() -> None
                     "(user_id, role_id, assigned_by_user_id) "
                     "VALUES (:user_id, :role_id, NULL)"
                 ),
-                {"user_id": owner_user_id, "role_id": legacy_owner_id},
+                {
+                    "user_id": custom_owner_holder_id,
+                    "role_id": custom_super_admin_role_id,
+                },
             )
 
         await engine.dispose()
@@ -129,15 +157,22 @@ async def test_upgrade_renames_owner_and_backfills_mandatory_user_role() -> None
             super_admin_role = await session.scalar(
                 select(Role).where(Role.key == SystemRoleKey.SUPER_ADMIN.value)
             )
+            custom_super_admin_role = await session.scalar(
+                select(Role).where(Role.key == "owner")
+            )
             user_role = await session.scalar(
                 select(Role).where(Role.key == SystemRoleKey.USER.value)
             )
-            assert super_admin_role is not None and user_role is not None
+            assert super_admin_role is not None
+            assert custom_super_admin_role is not None
+            assert user_role is not None
             assignments = (
                 await session.execute(
                     select(UserRole.user_id, Role.key)
                     .join(Role, Role.id == UserRole.role_id)
-                    .where(UserRole.user_id.in_({owner_user_id, ordinary_user_id}))
+                    .where(
+                        UserRole.user_id.in_({custom_owner_holder_id, ordinary_user_id})
+                    )
                 )
             ).all()
             users = {
@@ -145,114 +180,30 @@ async def test_upgrade_renames_owner_and_backfills_mandatory_user_role() -> None
                 for user in (
                     await session.scalars(
                         select(User).where(
-                            User.id.in_({owner_user_id, ordinary_user_id})
+                            User.id.in_({custom_owner_holder_id, ordinary_user_id})
                         )
                     )
                 ).all()
             }
-            state = await session.get(AuthorizationState, "global")
+            state = await session.get(RbacState, "global")
 
-        assert super_admin_role.id == legacy_owner_id
+        assert super_admin_role.id == uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "fastapi-rbac-system-role:super_admin",
+        )
+        assert custom_super_admin_role.id == custom_super_admin_role_id
+        assert not custom_super_admin_role.is_system
+        assert not custom_super_admin_role.is_super_admin
         assert set(assignments) == {
-            (owner_user_id, SystemRoleKey.SUPER_ADMIN.value),
-            (owner_user_id, SystemRoleKey.USER.value),
+            (custom_owner_holder_id, "owner"),
+            (custom_owner_holder_id, SystemRoleKey.USER.value),
             (ordinary_user_id, SystemRoleKey.USER.value),
         }
-        assert users[owner_user_id].authz_version == 1
+        assert users[custom_owner_holder_id].authz_version == 1
         assert users[ordinary_user_id].authz_version == 1
-        assert state is not None and state.epoch == 1
+        assert state is not None and state.epoch == 2
     finally:
         await engine.dispose()
-        await asyncio.to_thread(command.upgrade, config, "head")
-
-
-@pytest.mark.parametrize("legacy_key", ["owner", "super_admin"])
-async def test_upgrade_rejects_multiple_legacy_owner_holders_and_rolls_back(
-    legacy_key: str,
-) -> None:
-    config = alembic_config()
-    await recreate_database_at_revision(config, "0001_single_project_rbac")
-    legacy_owner_id = uuid.uuid4()
-    holder_ids = (uuid.uuid4(), uuid.uuid4())
-    try:
-        async with engine.begin() as connection:
-            await connection.execute(
-                sa.text(
-                    "INSERT INTO users (id, email) VALUES "
-                    "(:first_id, 'first-legacy-owner@example.test'), "
-                    "(:second_id, 'second-legacy-owner@example.test')"
-                ),
-                {"first_id": holder_ids[0], "second_id": holder_ids[1]},
-            )
-            await connection.execute(
-                sa.text(
-                    "INSERT INTO roles "
-                    "(id, key, name, management_tier, is_active, is_protected, "
-                    "is_system, is_owner) VALUES "
-                    "(:id, :key, 'Owner', 1000, true, true, true, true)"
-                ),
-                {"id": legacy_owner_id, "key": legacy_key},
-            )
-            await connection.execute(
-                sa.text(
-                    "INSERT INTO user_roles "
-                    "(user_id, role_id, assigned_by_user_id) VALUES "
-                    "(:first_id, :role_id, NULL), "
-                    "(:second_id, :role_id, NULL)"
-                ),
-                {
-                    "first_id": holder_ids[0],
-                    "second_id": holder_ids[1],
-                    "role_id": legacy_owner_id,
-                },
-            )
-
-        await engine.dispose()
-        with pytest.raises(
-            RuntimeError,
-            match="legacy Owner role has multiple holders",
-        ):
-            await asyncio.to_thread(command.upgrade, config, "head")
-
-        async with engine.connect() as connection:
-            revision = await connection.scalar(
-                sa.text("SELECT version_num FROM alembic_version")
-            )
-            role_key = await connection.scalar(
-                sa.text("SELECT key FROM roles WHERE id = :role_id"),
-                {"role_id": legacy_owner_id},
-            )
-            persisted_holders = set(
-                (
-                    await connection.scalars(
-                        sa.text(
-                            "SELECT user_id FROM user_roles WHERE role_id = :role_id"
-                        ),
-                        {"role_id": legacy_owner_id},
-                    )
-                ).all()
-            )
-            v2_column_count = await connection.scalar(
-                sa.text(
-                    "SELECT count(*) FROM information_schema.columns "
-                    "WHERE table_schema = 'public' AND table_name = 'roles' "
-                    "AND column_name IN "
-                    "('description', 'deleted_at', 'deleted_by_user_id')"
-                )
-            )
-            new_permission_count = await connection.scalar(
-                sa.text("SELECT count(*) FROM permissions WHERE key = ANY(:keys)"),
-                {"keys": list(NEW_PERMISSIONS_FOR_TEST)},
-            )
-
-        assert revision == "0001_single_project_rbac"
-        assert role_key == legacy_key
-        assert persisted_holders == set(holder_ids)
-        assert v2_column_count == 0
-        assert new_permission_count == 0
-    finally:
-        await engine.dispose()
-        await asyncio.to_thread(command.downgrade, config, "base")
         await asyncio.to_thread(command.upgrade, config, "head")
 
 
@@ -277,7 +228,8 @@ async def test_migration_seeds_exact_super_admin_grants() -> None:
     )
 
 
-async def test_upgrade_refuses_reserved_admin_key_collision() -> None:
+@pytest.mark.parametrize("system_key", tuple(item.value for item in SystemRoleKey))
+async def test_upgrade_refuses_system_role_key_collision(system_key: str) -> None:
     config = alembic_config()
     await recreate_database_at_revision(config, "0001_single_project_rbac")
     try:
@@ -287,9 +239,9 @@ async def test_upgrade_refuses_reserved_admin_key_collision() -> None:
                 sa.text(
                     "INSERT INTO roles "
                     "(id, key, name, management_tier) "
-                    "VALUES (:id, 'admin', 'Legacy custom admin', 100)"
+                    "VALUES (:id, :key, 'Custom collision', 100)"
                 ),
-                {"id": collision_id},
+                {"id": collision_id, "key": system_key},
             )
 
         await engine.dispose()

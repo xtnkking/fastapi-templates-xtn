@@ -32,6 +32,11 @@ router and response envelope, service ownership, async HTTP client, Redis
 wrapper and topology, list filters and pagination, frontend API/table/query
 state, and relevant tests. Preserve intentional boundaries and naming.
 
+When the product uses the XTN baseline, read
+[API response standard](api-response-standard.md). The direct check result and
+the cached list snapshot live inside `data`; their `success` field describes the
+proxy observation and is not a duplicate of HTTP request success.
+
 The defaults below resolve missing product choices. Adapt route prefixes,
 dependency aliases, error envelopes, serialization helpers, and frontend state
 APIs when the repository has equivalents. Do not replace established HTTP or
@@ -42,10 +47,11 @@ Redis abstractions merely to copy an example.
 Unless the user supplies a conflicting requirement:
 
 - Add `POST /api/v1/proxies/{proxy_id}/availability-check` with no body, adapted
-  only to the repository's route naming. The browser sends only a proxy UUID.
+  only to the repository's route naming. The browser sends only the canonical
+  proxy ID selected under [identifier policy](identifier-policy.md).
 - In an RBAC product, require the stable `proxies:check` capability. Query by
   `proxy_id`, apply any independent row policy, and return the same generic `404`
-  for missing and deliberately concealed UUIDs.
+  for missing and deliberately concealed IDs (`404001` under the XTN envelope).
 - Keep `protocol`, `host`, `port`, username, and encrypted password or secret
   reference backend-only. Decrypt only after authorization and outbound-policy
   checks. Neither API returns credentials or a complete proxy URL.
@@ -57,22 +63,24 @@ Unless the user supplies a conflicting requirement:
 - Apply one ten-second wall-clock deadline to connect, response streaming, JSON
   parsing, and validation. Measure successful `latency_ms` with a monotonic clock
   from immediately before the request until validation finishes.
-- A completed diagnostic returns HTTP `200` even when `success=false`. Cache all
+- A completed diagnostic returns HTTP `200` with business code `200000` and the
+  discriminated result in `data`, even when `data.success=false`. Cache all
   completed transport and provider outcomes, including connection, DNS,
   authentication, timeout, `429`, invalid JSON, `status=fail`, unsupported
   protocol, and invalid stored connection data.
 - Authentication, authorization, missing resources, an outbound destination
   rejected by security policy, application rate limiting, a configuration race,
   and Redis infrastructure failure are request errors, not proxy observations.
-  They keep normal HTTP semantics and are not written as `success=false` cache
-  results. This is the sole preflight/infrastructure exception to caching failed
-  diagnostics.
+  They keep the standard HTTP and numeric business-code semantics and are not
+  written as `success=false` cache results. This is the sole
+  preflight/infrastructure exception to caching failed diagnostics.
 - Store the latest completed result at `proxy:latency:{proxy_id}` as one complete
   JSON replacement with no TTL. A later explicit check always performs a new
   request and replaces the prior result when its configuration is still current.
 - List, refresh, pagination, search, filter, and sort operations only hydrate
   cached results; they never trigger detection. A healthy cache miss is
-  `未检测`; an unavailable cache is `检测结果暂不可用`.
+  `未检测`; an unavailable cache fails the list request with registered HTTP
+  `503` / business code `503002`, and the UI shows `检测结果暂不可用`.
 - With selected rows, batch-check exactly the deduplicated selection. Without a
   selection, freeze the active filters and collect every matching ID across
   pages of at most 200. Run at most five checks concurrently; one failure never
@@ -88,7 +96,9 @@ production use; do not retry a `429` automatically.
 
 Use a discriminated result and replace it as a whole. A failure must not retain
 the IP or latency from an older success. The server supplies `updated_at` in both
-the direct response and cached list snapshot.
+the direct response and cached list snapshot. Wrap the direct result in
+`ApiResponse[ProxyCheckResponse]`; list items carry the same result under their
+cached availability field.
 
 ```python
 from datetime import datetime
@@ -139,8 +149,8 @@ Success requires HTTP `200`, valid JSON object data, `status="success"`, and a
 non-empty syntactically valid IP in `query`. Preserve missing optional location
 values as explicit `null`; the frontend renders them as `--`.
 
-Use stable localized codes when the product has them. Otherwise use these exact
-Chinese messages:
+Use stable localized messages when the product has them. Otherwise use these
+exact Chinese messages:
 
 | Condition | Message |
 | --- | --- |
@@ -168,8 +178,11 @@ audit documents.
 
 ## Cross-Boundary Invariants
 
-- Proxy IDs are globally unique random UUIDv4 values. `connection_version` and
-  attempt counters may be integers because they are concurrency state, not IDs.
+- Proxy IDs are globally unique non-sequential values under the project's
+  selected identifier profile. Prefer a registered proxy prefix for a new
+  project; an established UUIDv4 profile remains compliant. `connection_version`
+  and attempt counters may be integers because they are concurrency state, not
+  IDs.
 - Increment `connection_version` whenever protocol, host, port, username, or
   password changes. Cache metadata and list hydration must reject stale versions.
 - PostgreSQL and Redis are not one ACID boundary. Do not hold a database

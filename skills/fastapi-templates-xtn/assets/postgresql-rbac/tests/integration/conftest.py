@@ -1,15 +1,15 @@
-import uuid
-from collections.abc import AsyncIterator, Callable
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
-import jwt
 import pytest
 import pytest_asyncio
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select, text
+from redis.asyncio import Redis
+from sqlalchemy import delete, select, text
 
 from alembic import command
 from app.database import SessionFactory, engine
@@ -19,7 +19,13 @@ from app.rbac.domain import (
     SystemRoleKey,
 )
 from app.rbac.models import Permission, Role, RolePermission, User, UserRole
+from app.rbac.security import issue_access_token
 from app.settings import get_settings
+from tests.integration.safety import (
+    require_actual_database,
+    verify_empty_redis_targets,
+    verify_fresh_postgresql_target,
+)
 
 pytestmark = pytest.mark.postgresql
 
@@ -32,7 +38,17 @@ class World:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def migrated_database() -> None:
+def verified_redis_targets() -> None:
+    settings = get_settings()
+    verify_empty_redis_targets(
+        settings.redis_url,
+        settings.effective_rate_limit_redis_url,
+    )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def migrated_database(verified_redis_targets: None) -> None:
+    asyncio.run(verify_fresh_postgresql_target(get_settings().database_url))
     root = Path(__file__).resolve().parents[2]
     config = Config(str(root / "alembic.ini"))
     config.set_main_option("script_location", str(root / "alembic"))
@@ -41,16 +57,55 @@ def migrated_database() -> None:
 
 @pytest_asyncio.fixture(autouse=True)
 async def clean_database(migrated_database: None) -> AsyncIterator[None]:
+    settings = get_settings()
+    redis = Redis.from_url(settings.redis_url, decode_responses=True)
     try:
         async with engine.begin() as connection:
             database_name = await connection.scalar(text("SELECT current_database()"))
-            if not isinstance(database_name, str) or not database_name.endswith(
-                "_test"
-            ):
-                raise RuntimeError(
-                    "refusing to truncate a non-test PostgreSQL database"
+            require_actual_database(database_name)
+            # Only the database owner used by this disposable test profile may
+            # bypass the production append-only control during fixture cleanup.
+            await connection.execute(
+                text(
+                    "ALTER TABLE business_audit_events DISABLE TRIGGER "
+                    "trg_business_audit_no_truncate"
                 )
-            await connection.execute(text("DELETE FROM authorization_audit_events"))
+            )
+            await connection.execute(text("TRUNCATE TABLE business_audit_events"))
+            await connection.execute(
+                text(
+                    "ALTER TABLE business_audit_events ENABLE TRIGGER "
+                    "trg_business_audit_no_truncate"
+                )
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE account_security_audit_events DISABLE TRIGGER "
+                    "trg_account_security_audit_no_truncate"
+                )
+            )
+            await connection.execute(
+                text("TRUNCATE TABLE account_security_audit_events")
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE account_security_audit_events ENABLE TRIGGER "
+                    "trg_account_security_audit_no_truncate"
+                )
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE rbac_audit_events DISABLE TRIGGER "
+                    "trg_rbac_audit_events_no_truncate"
+                )
+            )
+            await connection.execute(text("TRUNCATE TABLE rbac_audit_events"))
+            await connection.execute(
+                text(
+                    "ALTER TABLE rbac_audit_events ENABLE TRIGGER "
+                    "trg_rbac_audit_events_no_truncate"
+                )
+            )
             # Test isolation intentionally resets the pre-bootstrap state without
             # exercising the deferred production invariant.
             await connection.execute(text("TRUNCATE TABLE user_roles"))
@@ -62,12 +117,27 @@ async def clean_database(migrated_database: None) -> AsyncIterator[None]:
                 )
             )
             await connection.execute(text("DELETE FROM roles WHERE NOT is_system"))
+            await connection.execute(
+                delete(Permission).where(
+                    Permission.key.not_in(tuple(item.value for item in PermissionKey))
+                )
+            )
+            await connection.execute(text("TRUNCATE TABLE user_password_credentials"))
             await connection.execute(text("DELETE FROM users"))
             await connection.execute(
-                text("UPDATE authorization_state SET epoch = 0 WHERE scope = 'global'")
+                text("UPDATE rbac_state SET epoch = 0 WHERE scope = 'global'")
             )
+        keys = [
+            key
+            async for key in redis.scan_iter(
+                match=f"auth:access:v1:{settings.app_environment}:*"
+            )
+        ]
+        if keys:
+            await redis.delete(*keys)
         yield
     finally:
+        await redis.aclose()
         await engine.dispose()
 
 
@@ -83,25 +153,15 @@ async def client() -> AsyncIterator[AsyncClient]:
 
 
 @pytest.fixture
-def access_token() -> Callable[[User], str]:
+def access_token() -> Callable[[User], Awaitable[str]]:
     settings = get_settings()
 
-    def make_token(user: User) -> str:
-        now = datetime.now(UTC)
-        return jwt.encode(
-            {
-                "sub": str(user.id),
-                "ver": user.token_version,
-                "jti": str(uuid.uuid4()),
-                "token_type": "access",
-                "iat": now,
-                "nbf": now,
-                "exp": now + timedelta(minutes=5),
-                "iss": settings.jwt_issuer,
-                "aud": settings.jwt_audience,
-            },
-            settings.jwt_secret.get_secret_value(),
-            algorithm="HS256",
+    async def make_token(user: User) -> str:
+        return await issue_access_token(
+            cast(Redis, app.state.redis),
+            user_id=user.id,
+            user_token_version=user.token_version,
+            settings=settings,
         )
 
     return make_token
@@ -127,7 +187,7 @@ async def world() -> World:
             users = {
                 name: User(email=f"{name}@example.test")
                 for name in (
-                    "owner",
+                    "super_admin",
                     "manager",
                     "peer",
                     "junior",
@@ -168,12 +228,11 @@ async def world() -> World:
                     management_tier=30,
                 ),
             }
-            roles["owner"] = roles["super_admin"]
             roles["manager"] = roles["admin"]
             session.add_all(
                 role
                 for key, role in roles.items()
-                if key not in {"super_admin", "admin", "user", "owner", "manager"}
+                if key not in {"super_admin", "admin", "user", "manager"}
             )
             await session.flush()
 
@@ -210,7 +269,7 @@ async def world() -> World:
             )
 
             assignments = tuple((user_name, "user") for user_name in users) + (
-                ("owner", "super_admin"),
+                ("super_admin", "super_admin"),
                 ("manager", "admin"),
                 ("peer", "admin"),
                 ("junior", "junior_admin"),

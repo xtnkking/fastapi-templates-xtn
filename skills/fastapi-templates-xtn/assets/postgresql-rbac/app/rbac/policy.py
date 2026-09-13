@@ -29,6 +29,11 @@ def _target_is_within_delegation(
     actor: AuthoritySnapshot,
     target: AuthoritySnapshot,
 ) -> bool:
+    if actor.is_super_admin:
+        return (
+            target.permissions <= SUPER_ADMIN_PERMISSION_KEYS
+            and target.delegable_permissions <= SUPER_ADMIN_PERMISSION_KEYS
+        )
     return (
         target.permissions <= SUPER_ADMIN_PERMISSION_KEYS
         and target.delegable_permissions <= SUPER_ADMIN_PERMISSION_KEYS
@@ -41,6 +46,11 @@ def _role_is_within_delegation(
     actor: AuthoritySnapshot,
     role: RoleGrant,
 ) -> bool:
+    if actor.is_super_admin:
+        return (
+            role.permissions <= SUPER_ADMIN_PERMISSION_KEYS
+            and role.delegable_permissions <= SUPER_ADMIN_PERMISSION_KEYS
+        )
     return (
         role.permissions <= SUPER_ADMIN_PERMISSION_KEYS
         and role.delegable_permissions <= SUPER_ADMIN_PERMISSION_KEYS
@@ -58,6 +68,34 @@ def _basic_actor_check(
     if not actor.user_is_active:
         return deny("actor_inactive")
     return None
+
+
+def is_administrative_user_visible(
+    *,
+    actor: AuthoritySnapshot,
+    target: AuthoritySnapshot,
+) -> bool:
+    if actor.is_super_admin:
+        return True
+    return (
+        actor.user_id != target.user_id
+        and not target.is_protected
+        and target.management_tier < actor.management_tier
+    )
+
+
+def is_administrative_role_visible(
+    *,
+    actor: AuthoritySnapshot,
+    role: RoleGrant,
+) -> bool:
+    if actor.is_super_admin:
+        return True
+    return (
+        not role.is_protected
+        and not role.is_super_admin
+        and role.management_tier < actor.management_tier
+    )
 
 
 def _affected_subjects_are_manageable(
@@ -103,7 +141,7 @@ def decide_role_change(
             return deny("super_admin_requires_transfer")
         if operation == "unbind" and role.key == SystemRoleKey.USER.value:
             return deny("default_user_role_required")
-        if role.key == SystemRoleKey.ADMIN.value and not actor.is_owner:
+        if role.key == SystemRoleKey.ADMIN.value and not actor.is_super_admin:
             return deny("super_admin_required")
         if not _role_is_within_delegation(actor, role):
             return deny("delegation_ceiling_exceeded")
@@ -210,7 +248,7 @@ def decide_role_delegation_change(
     basic = _basic_actor_check(actor, PermissionKey.ROLES_DELEGATION_UPDATE)
     if basic is not None:
         return basic
-    if not actor.is_owner:
+    if not actor.is_super_admin:
         return deny("super_admin_required")
     if changed_role_before.is_system:
         return deny("system_role_immutable")
@@ -251,6 +289,26 @@ def decide_user_status_change(
     return allow()
 
 
+def decide_user_password_reset(
+    *,
+    actor: AuthoritySnapshot,
+    target_before: AuthoritySnapshot,
+) -> PolicyDecision:
+    """Allow credential reset only for a strictly lower, visible identity."""
+    basic = _basic_actor_check(actor, PermissionKey.USERS_PASSWORD_RESET)
+    if basic is not None:
+        return basic
+    if actor.user_id == target_before.user_id:
+        return deny("self_management_forbidden")
+    if target_before.is_protected:
+        return deny("protected_subject")
+    if actor.management_tier <= target_before.management_tier:
+        return deny("target_not_strictly_lower")
+    if not _target_is_within_delegation(actor, target_before):
+        return deny("delegation_ceiling_exceeded")
+    return allow()
+
+
 def decide_super_admin_transfer(
     *,
     actor: AuthoritySnapshot,
@@ -259,7 +317,7 @@ def decide_super_admin_transfer(
     basic = _basic_actor_check(actor, PermissionKey.SUPER_ADMIN_TRANSFER)
     if basic is not None:
         return basic
-    if not actor.is_owner:
+    if not actor.is_super_admin:
         return deny("actor_is_not_super_admin")
     if not target_before.user_is_active:
         return deny("target_inactive")

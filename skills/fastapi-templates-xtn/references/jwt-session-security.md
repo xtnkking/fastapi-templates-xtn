@@ -1,40 +1,55 @@
-# JWT Session Security
+# JWT Access-Token Security
 
 Read this reference when designing or reviewing JWT claims, signing, login,
-logout, access/refresh separation, Redis JTI validation, or token revocation. It
-is the canonical token-session policy; do not duplicate it in RBAC code. Read
-[JWT session implementation](jwt-session-implementation.md) only when concrete
-Python, SQLAlchemy, or Redis code is required.
+logout, Redis JTI validation, or token revocation. It is the canonical token
+policy; do not duplicate it in RBAC code. Read
+[JWT implementation shapes](jwt-session-implementation.md) only when concrete
+Python or Redis code is required.
 
-## Fixed Access-Token Contract
+## Consent-Gated Access-Token Contract
 
 A JWT is a signed bearer credential, not encrypted profile storage. Keep its
 payload deliberately small:
 
 | Claim | Baseline rule |
 | --- | --- |
-| `iss` | Exact configured issuer; required |
-| `aud` | Exact API audience; required |
-| `sub` | Canonical lowercase UUIDv4 string of immutable `users.id`; required and the only user identity claim |
-| `jti` | New random UUIDv4 for every access token; required and never reused |
+| `sub` | Canonical string of immutable `users.id` under the selected identifier policy; required and the only user identity claim |
+| `jti` | New random UUIDv4 for every Access Token; required and never reused |
 | `iat` | Integer NumericDate issuance time; required |
-| `exp` | Integer NumericDate expiry; required and no more than 10 minutes after `iat` by default |
+| `exp` | Integer NumericDate expiry; required and 3600 seconds after `iat` by default |
 | `token_type` | Literal `access`; required |
-| `nbf` | Omit by default; if an issuer needs it, validate it as an integer NumericDate |
+| `iss` | Optional only together with `aud`, after explicit user agreement; exact configured issuer when enabled |
+| `aud` | Optional only together with `iss`, after explicit user agreement; exact API audience when enabled |
 
-`sub` is the only required user data. The remaining required fields are security
-protocol metadata. Do not add application profile or authorization state merely
-to avoid a PostgreSQL lookup.
+The default exact claim set is `sub`, `jti`, `iat`, `exp`, and `token_type`.
+Before adding `iss` and `aud`, explain in plain language that they help stop a
+Token intended for one trusted service from being accepted by another, but add
+configuration and coordination between the signer and verifier. Ask whether the
+user wants that extra scoping and require explicit consent. No reply is not consent.
+An unrelated approval is not consent. Enable or omit the two claims as a pair;
+never configure only one. If an existing project already has both
+configured, preserve it by default unless the user requests removal or migration.
+
+The one-hour lifetime is a starting default, not a universal security answer.
+Expose it as typed configuration and explicitly tell the user to adjust it for
+the product's risk, reauthentication cost, and expected user experience. A
+high-risk administration surface may need a much shorter lifetime. Never extend
+the lifetime silently merely to reduce login frequency.
+
+`sub` is the only required user data. The other four baseline claims are security
+protocol metadata. The approved `iss`/`aud` pair is optional protocol scoping,
+not user data. Do not add profile or authorization state merely to avoid a
+PostgreSQL lookup.
 
 Never place username, email, phone, display name, role names, permission keys,
 management tier, ownership, protection flags, account status,
-authorization versions, or profile data in an access token. Keep
-`users.token_version` and session state in PostgreSQL instead of copying `ver`
-into the JWT. Look up display data after authentication when a response needs it.
+`users.token_version`, authorization versions, or profile data in an Access
+Token. Read display data after authentication when a response needs it.
 
-Use the stable user UUID as `sub`; never use an email, username, role-assignment
-ID, or auto-incremented integer. Only when choosing/changing the ID strategy or
-migrating a legacy subject, also read
+Use the stable user ID as `sub`; for example, an exact validated `U...` prefixed
+ID or the bundled asset's canonical UUIDv4. Never use an email, username,
+role-assignment ID, or auto-incremented integer. When choosing or changing the ID
+strategy, or migrating a legacy subject, also read
 [identifier policy](identifier-policy.md).
 
 ## Signing And Validation
@@ -47,53 +62,63 @@ migrating a legacy subject, also read
 - The included asset's HS256 shape is acceptable only when one tightly controlled
   trust boundary both signs and verifies. Use at least 256 random secret bits and
   rotate deliberately; a validator that knows an HMAC secret can mint tokens.
-- Before Redis or database access, verify signature, exact `iss` and `aud`, every
-  required claim, optional `nbf`, maximum lifetime, `token_type`, and canonical
-  UUIDv4 `sub` and `jti`. Use at most 30 seconds clock skew by default.
-- Limit bearer-token size at the HTTP boundary. Never log a token, signing key,
-  refresh credential, password, or Redis session value.
+  Validate configuration before application startup: reject missing or blank
+  secrets, public/example placeholders, leading or trailing whitespace, control
+  characters, invalid UTF-8 text, fewer than 32 or more than 4096 UTF-8 bytes,
+  very low character diversity, and a shorter pattern repeated exactly two or
+  more times to appear long, regardless of that pattern's width. Generate a
+  unique secret with a cryptographically secure random generator; never silently
+  substitute a development default.
+- Before Redis or database access, verify the signature, the exact configured
+  claim profile, configured maximum lifetime, `token_type`, a canonical `sub`
+  under the selected user-ID policy, and a canonical UUIDv4 `jti`. In the default
+  profile, reject `iss` or `aud` as unexpected. In the explicitly approved
+  profile, require both and verify the exact configured issuer and audience. Use
+  at most 30 seconds clock skew by default.
+- Limit bearer-token size to 4096 bytes at both issuance and the HTTP boundary.
+  Reject an oversized encoded Token before writing its JTI to Redis, and reject
+  oversized bearer input before JWT parsing. Never log a token, signing key,
+  password, or Redis active-JTI value.
 
-Map every malformed, expired, or wrong-key/type credential to one generic
-`401` response with `WWW-Authenticate: Bearer`; keep diagnostic detail in a safe
+Map every malformed, expired, or wrong-key/type credential to one generic `401`
+response with `WWW-Authenticate: Bearer`; keep diagnostic detail in a safe
 internal metric or log. Do not let parsing differences expose account state.
 
-## PostgreSQL Session Authority
+## Redis Active-JTI Gate
 
-Use a durable `authentication_sessions` row whose UUIDv4 primary key is the
-access token JTI. It binds `user_id`, status, issuance/expiry times,
-revocation time, and the user token version observed at issuance. This supports
-single-token logout, account-wide revocation, auditing, and transaction-local
-rechecks without adding mutable token claims.
+Redis is the only per-token online active-JTI gate in this baseline. Do not add a
+PostgreSQL table for individual Token records, and do not add another database
+query per request solely to validate a Token record. PostgreSQL remains
+authoritative for the existing user row and current RBAC state, which the request
+already loads after the Redis check.
 
-At authentication, require the row to be active and unexpired, require the
-current user to be active, compare its stored user version with the current
-`users.token_version`, and match row `user_id` to `sub`. Querying only by JTI is
-insufficient. Follow the concrete model in
-[JWT session implementation](jwt-session-implementation.md).
-
-## Redis Active-JTI Allowlist
-
-Use Redis as a required active-session gate, not as a denylist and not as an RBAC
-permission cache. A signed access token is accepted only while its JTI has the
-exact expected record. Missing, expired, evicted, malformed, or mismatched keys
-deny safely, although unexpected eviction reduces availability.
-
-JTI validation enables targeted revocation; it does not make an access token
-one-time or stop replay while the session remains active. Protect bearer tokens
-with TLS, narrow storage/exposure, short lifetime, and the product's abuse and
-device/session monitoring policy.
+A signed Access Token is accepted only while its JTI has the exact expected Redis
+record. Missing, expired, evicted, malformed, or mismatched keys deny safely,
+although unexpected eviction reduces availability. JTI validation enables
+targeted revocation; it does not make an Access Token one-time or stop replay
+while its JTI remains active. Protect bearer tokens with TLS, narrow
+storage/exposure, the configured lifetime, and product-appropriate abuse and
+device monitoring.
 
 - Generate each JTI as UUIDv4 inside the trusted issuer. Never accept or reuse a
   client-supplied JTI.
-- Namespace a key by environment and a SHA-256 digest of `issuer + NUL + jti`.
-  Store no raw JWT. The value binds canonical `sub`, literal access type, and
-  `exp`.
-- Activate with `SET ... NX EXAT <exp>`. Duplicate JTI is an issuance conflict;
-  make one bounded retry with a fresh UUID or fail issuance. The Redis expiry
-  must never outlive JWT expiry and reads must never extend it.
-- Only a trusted issuance or token-exchange path activates a JTI. Never recreate
-  a missing allowlist entry from a presented JWT; doing so reactivates revoked
-  credentials.
+- Namespace a key by environment and a SHA-256 digest of a stable internal
+  service name plus `NUL` plus `jti`. Do not derive the Redis namespace from the
+  optional public `iss` claim: enabling, disabling, or migrating that claim must
+  be an explicit Token-contract change rather than a hidden registry-key change.
+  Store no raw JWT. The value binds canonical `sub`, literal `access` type, `iat`,
+  `exp`, and the server-side `users.token_version` read during login.
+- Validate an exact schema and exact `sub`, type, `iat`, and `exp` match. After loading
+  the current PostgreSQL user, compare the Redis-bound user version with
+  `users.token_version`. The version remains server-side and never enters JWT.
+- Activate with one Redis 5.0+ Lua operation: read server `TIME`, reject an
+  already expired deadline, create with `SET ... NX EX <remaining_seconds>`,
+  then set the exact JWT deadline with `PEXPIREAT <exp * 1000>` before returning
+  success. A duplicate JTI is an issuance conflict; make one bounded retry with
+  a fresh UUIDv4 or fail issuance. Redis expiry must never outlive JWT expiry,
+  and reads must never extend it. Unknown script results fail closed.
+- Only the trusted login or token-issuance path activates a JTI. Never recreate a
+  missing entry from a presented JWT; doing so reactivates a revoked credential.
 - Use bounded connection/socket timeouts, TLS and ACLs outside a trusted local
   network, a dedicated namespace, sufficient capacity, and preferably
   `noeviction`. Read through a path whose consistency meets the revocation
@@ -102,7 +127,7 @@ device/session monitoring policy.
   an undocumented revocation window.
 
 The key/value and async Redis code are in
-[JWT session implementation](jwt-session-implementation.md).
+[JWT implementation shapes](jwt-session-implementation.md).
 
 ## Authentication Order And Failures
 
@@ -111,90 +136,153 @@ handle an untrusted bearer token:
 
 ```text
 parse bounded bearer input
--> verify signature, issuer, audience, type, times, sub, and jti
--> require exact Redis active-JTI record
--> load matching active PostgreSQL session and active user
--> load current RBAC authority
+-> verify signature, the configured five- or seven-claim profile, type, times, sub, and jti
+-> when the approved profile is enabled, verify exact issuer and audience
+-> require the exact Redis active-JTI record
+-> load the existing active PostgreSQL user and current RBAC authority
+-> compare the Redis-bound user version with users.token_version
 -> execute the protected operation
 ```
 
-- Missing, invalid, expired, inactive-JTI, mismatched, revoked, or unknown
-  credentials return generic `401` plus `WWW-Authenticate: Bearer`.
+Current-Token logout is the narrow exception: validate the JWT and exact Redis
+record, then compare-and-delete that record without querying PostgreSQL. This
+operation can only reduce the presented credential's authority, so an already
+disabled user or stale user version may still log out. It must not call a
+business handler or be reused as an authentication shortcut for any other route.
+
+- Missing, invalid, expired, inactive-JTI, malformed, mismatched, revoked, or
+  unknown credentials return generic `401` plus `WWW-Authenticate: Bearer`.
 - Redis, PostgreSQL, or verification-key-provider timeout/unavailability returns
   `503`; the protected handler does not execute. Never convert infrastructure
   failure into allow or misreport it as a bad password.
 - A valid identity lacking a required permission receives `403`. Missing or
   deliberately concealed business resources follow the RBAC `404` policy.
 
-Redis validation never replaces current PostgreSQL user, session, or RBAC checks.
-A valid JTI proves only that this credential remains registered.
+The Redis check never replaces the current PostgreSQL user-status, user-version,
+or RBAC checks. An active JTI proves only that this particular Token remains
+registered. This baseline intentionally performs no separate PostgreSQL Token
+record lookup.
 
-## Issuance, Logout, And Atomicity
+## Issuance, Logout, And Revocation
 
-PostgreSQL and Redis cannot form one ACID transaction. Use a fail-closed
-activation state machine:
+Use this fail-closed issuance order:
 
-1. Authenticate credentials and load the current active user from PostgreSQL.
-2. Generate one UUIDv4 JTI and the minimal claims. Insert a `pending` PostgreSQL
-   session with the current user token version, then commit.
-3. Create the exact Redis allowlist record with `SET NX EXAT`.
-4. Mark the PostgreSQL session `active`, then commit.
-5. Return the JWT only after both stores succeeded. Clean expired pending rows and
-   stale Redis keys; neither state authorizes alone.
+1. Authenticate credentials and load the current active user plus
+   `users.token_version` from PostgreSQL.
+2. Generate a fresh UUIDv4 JTI and the minimal claims, then sign the Access Token.
+3. Create the exact Redis record with the atomic Redis 5.0+ activation script,
+   binding `sub`, type, `iat`, `exp`, and the user version observed in step 1.
+4. Return the Token only after Redis confirms creation. On a duplicate JTI, retry
+   once with a newly generated JTI; on Redis failure, return `503` and no Token.
 
-If the identity provider is external, integrate through a trusted token-exchange
-or session-activation boundary. Never lazily activate on first API use, and do
-not claim JTI enforcement until issuer integration exists.
+If the response is lost after Redis activation, the unused entry is harmless and
+expires at `exp`. Never lazily activate a JTI on first API use. If an external
+identity provider owns login, enforce the same Redis registration before this API
+returns or accepts the resulting application Token.
 
-For one-session logout, atomically mark its PostgreSQL row revoked and write the
-audit/outbox row, commit, then delete Redis. For all-session logout or identity
-disablement, increment `users.token_version` and revoke all active session rows in
-the same transaction. An outbox retries Redis deletion. Because each protected
-request also checks PostgreSQL, a stale Redis key cannot authorize after commit.
+For logout, atomically compare the stored value and delete the JTI key. Return
+success only after Redis confirms deletion of the exact active record. A missing
+or mismatched record is `401`; a Redis error or ambiguous deletion outcome is
+`503`. Never claim logout succeeded after a failed `DEL` or compare-and-delete.
+The client may retry when the outcome is unknown. Confirmed deletion prevents
+later gate checks, but cannot cancel a request that already passed the gate.
 
-For an authorization control-plane or immediate-revocation business write, first
-lock the global authorization guard, then lock and reload the user plus
-authentication session inside the authoritative PostgreSQL transaction before
-the final decision. The entry Redis check is not that proof. Follow
-[atomic authorization consistency](atomic-consistency.md); Redis deletion and
-other external effects occur after commit through the outbox.
+Redis failover may restore an older snapshot and revive a recently deleted key.
+Choose persistence, replication, and failover guarantees for the product's risk,
+and document the residual window. This lighter Redis-only gate must not be
+described as PostgreSQL-grade linearizable revocation.
 
-## Refresh Tokens
+For account-wide logout, password compromise, or identity disablement, increment
+`users.token_version` in the authoritative PostgreSQL transaction. Existing
+Redis records may remain until their `exp`, but every later request compares their
+bound version with the current user row and rejects them. User status transitions
+that must revoke existing Tokens also increment this version. No Token-record
+cleanup outbox is required for correctness.
 
-Never accept a refresh token on an access path. Prefer an opaque random refresh
-credential whose keyed digest, family ID, expiry, and consumed/revoked state are
-stored server-side. Rotate it once per use in one PostgreSQL transaction. Reuse of
-a consumed token revokes the entire family and is audited. Cookies carrying
-refresh material use `Secure`, `HttpOnly`, appropriate `SameSite`, narrow
-path/domain scope, and CSRF protection where required.
+Self password change, administrator password reset, temporary reset completion,
+and offline operator reset are account-wide revocation events. Each increments
+`users.token_version` in the same transaction as the credential rotation and
+account-security audit, issues no replacement Token, performs no Redis scan, and
+never stores password state in the JWT. See
+[Local password authentication](local-password-authentication.md).
+
+Expose account-wide logout as a separate authenticated command, such as
+`POST /api/v1/auth/logout-all`. It must pass the normal JWT, Redis, active-user,
+and PostgreSQL authority checks, then lock `rbac_state` before the current user,
+recheck the Redis-bound `token_version`, and increment it in one transaction.
+Do not scan Redis keys and do not claim that their physical deletion is required.
+If the transaction fails, return failure and leave the version unchanged.
+
+PostgreSQL and Redis do not share an ACID transaction. This design remains
+fail-closed because issuance returns no Token until Redis succeeds, and request
+validation always compares the Redis record with the current user row. Do not
+call Redis while holding authorization locks. Privileged writes still follow
+[atomic authorization consistency](atomic-consistency.md) for current user and
+RBAC state.
+
+After expiry, the user authenticates again to receive a new Access Token. Do not
+invent another credential flow merely to hide reauthentication from the user.
+
+## Signing-Key Compromise Boundary
+
+The active-JTI gate materially limits, but does not erase, signing-key risk:
+
+- An attacker who has only the signing key can mint a correctly signed JWT, but
+  its new JTI is absent from Redis and is rejected.
+- An attacker who steals a complete currently active bearer Token can replay it
+  until its JTI is deleted, its bound user version changes, or it expires.
+- An attacker who can also write the trusted Redis namespace may register a
+  forged JTI; Redis credentials and network access therefore need strong
+  isolation.
+- On signing-key compromise, rotate the signing key and change the configured
+  active-JTI namespace generation so all old entries become unreachable. Require
+  users to authenticate again. Do not claim JTI makes key compromise harmless.
 
 ## Required Verification
 
-- Accept a valid minimal token. Reject each missing required claim, prohibited
-  business claim at issuance, wrong algorithm/key/issuer/audience/type,
-  non-canonical or non-v4 `sub`/`jti`, invalid time type, overlong lifetime,
-  future `iat`, expiry, and invalid optional `nbf`.
-- Prove every issuance has a distinct JTI, duplicate `SET NX` fails, Redis TTL
-  never exceeds `exp`, and no Redis value or log contains raw credentials.
-- Redis miss/expiry/malformed/mismatch is `401`; Redis timeout/error is `503`, and
-  the protected handler is not called.
-- A revoked or missing PostgreSQL session denies with a stale Redis key. Test one
-  session logout, all-session logout, identity disablement, version change,
+- Accept a valid default five-claim Token and reject `iss`, `aud`, or any other
+  extra claim in that profile. With the consented pair enabled, accept the exact
+  seven-claim Token and reject a missing half, wrong issuer/audience, or a Token
+  from the other profile. In both profiles reject each missing baseline claim,
+  prohibited business claim at issuance, wrong algorithm/key/type,
+  non-canonical, wrong-prefix, wrong-length, or otherwise invalid `sub`,
+  non-canonical or non-v4 `jti`, invalid time type, overlong lifetime, future
+  `iat`, expiry, and every unexpected extra claim.
+- Assert the configured default is 3600 seconds, alternate business-approved
+  values work, and project documentation tells users to review the value.
+- Prove every issuance has a distinct JTI, duplicate `SET NX` fails, no Token is
+  returned before successful Redis registration, Redis expiry equals `exp`, and
+  no Redis value or log contains raw credentials.
+- Redis miss, expiry, malformed data, or `sub`/type/`iat`/`exp` mismatch is `401`;
+  Redis timeout/error is `503`, and the protected handler is not called.
+- Compare the Redis-bound user version with current `users.token_version`. Test
+  one-Token logout, account-wide logout, identity disablement, version change,
   expiry, and user suspension.
-- Exercise activation crash points: database pending only, Redis plus pending,
-  active row before response, and cleanup. Only the fully active pair authorizes.
-- Test refresh rotation, concurrent refresh, old-token reuse, family revocation,
-  and access/refresh type confusion.
-- Use deterministic barriers for both commit orders of session revocation racing
-  a high-risk write. The lock owner decides first; the waiter reloads and cannot
-  use an earlier JWT or ORM snapshot.
+- Test compare-and-delete success, mismatch, missing key, Redis failure, and an
+  ambiguous outcome. Only a confirmed exact deletion returns logout success;
+  also test one request already past the gate and a failover restoration case.
+- Reject weak/example startup secrets and oversized input and output Tokens.
+  Prove that an oversized encoded Token creates no Redis record. Test
+  account-wide logout with two independently issued Tokens: both must fail after
+  the committed user-version increment.
+- Exercise signing-key-only forgery, stolen-active-Token replay, namespace
+  generation rollover, and the documented incident response.
+- Use deterministic barriers for both commit orders of a user-version revocation
+  racing a high-risk write. The lock owner decides first; the waiter reloads and
+  cannot use an earlier JWT, Redis record, or ORM snapshot.
 
 ## Included Asset Status
 
-The current PostgreSQL asset requires `sub`, `ver`, and `jti`, and validates
-`sub` and `jti` as canonical UUIDv4 strings. It has no Redis dependency or
-`authentication_sessions` table, so it does not validate active JTI state and
-must not be described as active-JTI revocation. Before production use, apply
-[JWT session implementation](jwt-session-implementation.md): add both session
-stores, remove `ver` from JWT in favor of server-side state, and retain the
-transaction-local recheck for privileged writes.
+The current `Unreleased` asset implements the core Redis active-JTI adapter:
+minimal claims without `ver`, configurable one-hour default, registration before
+return, Redis-first validation, current PostgreSQL user/RBAC reload, user-version
+comparison, confirmed current-Token logout, and account-wide logout through
+`users.token_version`. Startup rejects obvious weak/example HS256 secrets, and
+input/output Tokens are bounded to 4096 bytes. It adds no individual PostgreSQL
+Token table. The product must still connect issuance to its trusted
+credential-verification path and select deployment-appropriate Redis durability.
+
+The immutable `v0.3.0` tag predates this adapter and retains its older
+`sub`/`ver`/`jti` behavior without Redis enforcement. Do not attribute the
+`Unreleased` behavior to that tag or call the working tree production-ready until
+the final Redis and PostgreSQL checks pass.

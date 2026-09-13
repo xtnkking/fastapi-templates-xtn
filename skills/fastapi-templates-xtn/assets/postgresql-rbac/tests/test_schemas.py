@@ -4,13 +4,14 @@ import pytest
 from pydantic import ValidationError
 
 from app.rbac.schemas import (
-    OwnershipTransferRequest,
     PermissionIdsRequest,
     RoleCreateRequest,
     RoleIdsRequest,
     RoleMutationResponse,
     RoleResponse,
     RoleUpdateRequest,
+    RoleVersionRequest,
+    SuperAdminTransferRequest,
 )
 
 
@@ -41,7 +42,15 @@ def test_role_create_separates_creation_from_permission_grants() -> None:
         )
 
 
-@pytest.mark.parametrize("payload", [{}, {"name": None}, {"description": None}])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"expected_version": 0},
+        {"expected_version": 0, "name": None},
+        {"expected_version": 0, "description": None},
+    ],
+)
 def test_role_update_requires_a_non_null_mutable_field(
     payload: dict[str, object],
 ) -> None:
@@ -51,42 +60,83 @@ def test_role_update_requires_a_non_null_mutable_field(
 
 def test_role_update_rejects_authority_fields() -> None:
     with pytest.raises(ValidationError):
-        RoleUpdateRequest.model_validate({"name": "Renamed", "management_tier": 999})
+        RoleUpdateRequest.model_validate(
+            {
+                "expected_version": 0,
+                "name": "Renamed",
+                "management_tier": 999,
+            }
+        )
 
 
-@pytest.mark.parametrize(
-    ("model", "field"),
-    [
-        (PermissionIdsRequest, "permission_ids"),
-        (RoleIdsRequest, "role_ids"),
-    ],
-)
-def test_identifier_batches_require_one_to_one_hundred_unique_ids(
-    model: type[PermissionIdsRequest | RoleIdsRequest],
-    field: str,
-) -> None:
+def test_role_version_inputs_require_a_nonnegative_integer() -> None:
+    assert RoleVersionRequest(expected_version=0).expected_version == 0
+    assert RoleUpdateRequest(expected_version=3, name="Renamed").expected_version == 3
+
+    with pytest.raises(ValidationError):
+        RoleVersionRequest(expected_version=-1)
+
+
+@pytest.mark.parametrize("value", ["1", 1.0, True])
+def test_role_version_inputs_reject_coercion(value: object) -> None:
+    role_id = uuid.uuid4()
+    payloads = (
+        (RoleVersionRequest, {"expected_version": value}),
+        (RoleUpdateRequest, {"expected_version": value, "name": "Renamed"}),
+        (
+            PermissionIdsRequest,
+            {"expected_version": value, "permission_ids": [role_id]},
+        ),
+    )
+
+    for model, payload in payloads:
+        with pytest.raises(ValidationError):
+            model.model_validate(payload)
+
+
+def test_permission_batches_require_one_to_one_hundred_unique_ids() -> None:
     first = uuid.uuid4()
 
     with pytest.raises(ValidationError):
-        model.model_validate({field: []})
+        PermissionIdsRequest(expected_version=0, permission_ids=[])
     with pytest.raises(ValidationError):
-        model.model_validate({field: [first, first]})
+        PermissionIdsRequest(expected_version=0, permission_ids=[first, first])
     with pytest.raises(ValidationError):
-        model.model_validate({field: [uuid.uuid4() for _ in range(101)]})
+        PermissionIdsRequest(
+            expected_version=0,
+            permission_ids=[uuid.uuid4() for _ in range(101)],
+        )
 
-    request = model.model_validate({field: [uuid.uuid4() for _ in range(100)]})
-    assert len(getattr(request, field)) == 100
+    request = PermissionIdsRequest(
+        expected_version=0,
+        permission_ids=[uuid.uuid4() for _ in range(100)],
+    )
+    assert len(request.permission_ids) == 100
 
 
-def test_ownership_transfer_accepts_only_the_target_user_id() -> None:
+def test_role_batches_require_one_to_ten_unique_ids() -> None:
+    first = uuid.uuid4()
+
+    with pytest.raises(ValidationError):
+        RoleIdsRequest(role_ids=[])
+    with pytest.raises(ValidationError):
+        RoleIdsRequest(role_ids=[first, first])
+    with pytest.raises(ValidationError):
+        RoleIdsRequest(role_ids=[uuid.uuid4() for _ in range(11)])
+
+    request = RoleIdsRequest(role_ids=[uuid.uuid4() for _ in range(10)])
+    assert len(request.role_ids) == 10
+
+
+def test_super_admin_transfer_accepts_only_the_target_user_id() -> None:
     target_user_id = uuid.uuid4()
 
-    request = OwnershipTransferRequest(target_user_id=target_user_id)
+    request = SuperAdminTransferRequest(target_user_id=target_user_id)
 
     assert request.target_user_id == target_user_id
     with pytest.raises(ValidationError):
-        OwnershipTransferRequest.model_validate(
-            {"target_user_id": target_user_id, "is_owner": True}
+        SuperAdminTransferRequest.model_validate(
+            {"target_user_id": target_user_id, "is_super_admin": True}
         )
 
 
@@ -100,7 +150,6 @@ def test_role_mutation_snapshot_is_immutable() -> None:
         is_active=True,
         is_system=False,
         is_protected=False,
-        is_owner=False,
         permissions=("projects:read",),
         delegable_permissions=(),
         version=3,
