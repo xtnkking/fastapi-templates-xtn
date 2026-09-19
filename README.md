@@ -9,7 +9,7 @@ structured logging, and separate durable audits.
 
 ## Status
 
-`v0.5.0` is the latest published tag. Install the tagged release for a
+`v0.5.1` is the latest published tag. Install the tagged release for a
 reproducible baseline; later `main` changes may not be released yet.
 
 ## Upstream And Attribution
@@ -22,7 +22,7 @@ Copyright (c) 2024 Seth Hobson under MIT. XTN's additions are independently
 maintained and are not affiliated with or endorsed by upstream. Preserve
 [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-## Baseline In v0.5.0
+## Baseline In v0.5.1
 
 - Greenfield services use only `user_name` and password, not email login or
   self-service forgot-password. Usernames trim edge whitespace, require 3..32
@@ -114,7 +114,7 @@ Install the immutable latest published release:
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.5.0/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.5.1/skills/fastapi-templates-xtn
 ```
 
 The installer does not overwrite an installed Skill. Back up local changes
@@ -125,21 +125,44 @@ before replacing it. A repository-scoped installation can copy
 
 Use `$fastapi-templates-xtn` for a FastAPI PostgreSQL RBAC project; it is not
 automatically selected for unrelated FastAPI or optional proxy/country work.
-The asset requires Python 3.12+, PostgreSQL, and Redis. The supplied Compose
-file and dedicated disposable-test checks support integration verification.
+Start with the [Chinese architecture overview](skills/fastapi-templates-xtn/references/architecture-overview.zh-CN.md)
+for the module boundaries, request flow, tables, and API inventory. Detailed
+English references remain the executable specification loaded by the Skill on
+demand.
+
+The official verification environment is Python 3.12, PostgreSQL 17, and
+Redis 7. A generated project may support other versions only after that project
+tests them; this repository does not claim those combinations are verified.
+`GET /health/live` reports only that the process is alive. `GET /health/ready`
+requires PostgreSQL to report exactly Alembic head `0004_password_auth` and a
+readable `rbac_state(scope='global')` row. It also requires both the active-JTI
+and rate-limit Redis targets to pass `PING` plus a Lua write/read/delete probe
+using a random, non-secret key with a five-second TTL. Checks use bounded
+timeouts; the response exposes only the overall ready/unavailable result with
+`Cache-Control: no-store`, never component details, keys, URLs, or exceptions.
+Readiness, not liveness, should control deployment traffic.
+The supplied Compose file and dedicated disposable-test checks support
+integration verification.
 See the [asset setup and quota guide](skills/fastapi-templates-xtn/assets/postgresql-rbac/README.md)
 before adapting or running the copied service.
 
 From this repository root:
 
 ```powershell
+python -B -m pip install --upgrade "pip>=26.2"
 python -B -m pip install "skills/fastapi-templates-xtn/assets/postgresql-rbac[test]"
+ruff format --check --no-cache skills/fastapi-templates-xtn/assets/postgresql-rbac
 ruff check --no-cache skills/fastapi-templates-xtn/assets/postgresql-rbac
 mypy --no-incremental --cache-dir "$env:TEMP\fastapi-templates-xtn-mypy-cache" --config-file skills/fastapi-templates-xtn/assets/postgresql-rbac/pyproject.toml skills/fastapi-templates-xtn/assets/postgresql-rbac/app skills/fastapi-templates-xtn/assets/postgresql-rbac/tests
 python -B -m pytest -p no:cacheprovider -m "not postgresql" skills/fastapi-templates-xtn/assets/postgresql-rbac/tests
+pip-audit --local --skip-editable --progress-spinner off
 python -B skills/fastapi-templates-xtn/scripts/test_validate_country_csv.py
 python -B scripts/validate_release.py
 ```
+
+The `v0.5.1` test baseline requires `pytest>=9.0.3,<10` together with
+`pytest-asyncio>=1.4,<2`; do not lower those ranges or the `pip>=26.2` audit
+baseline without rerunning the dependency audit.
 
 Run PostgreSQL/Redis migration, concurrency, authentication, CAPTCHA, and
 quota tests against **fresh disposable targets only**. Never aim the test suite

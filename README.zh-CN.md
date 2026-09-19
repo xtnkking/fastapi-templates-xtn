@@ -8,7 +8,7 @@
 
 ## 当前状态
 
-`v0.5.0` 是最近一次正式发布的标签。需要可复现安装时使用该标签；后续
+`v0.5.1` 是最近一次正式发布的标签。需要可复现安装时使用该标签；后续
 `main` 的改动可能尚未发布。
 
 ## 上游来源与署名
@@ -20,7 +20,7 @@
 与上游项目不存在从属或背书关系；再分发时须保留 [NOTICE](NOTICE) 和
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-## v0.5.0 的基础规范
+## v0.5.1 的基础规范
 
 - 新项目只用 `user_name` 和密码，不默认提供邮箱登录或“忘记密码”自助接口。用户名
   去首尾空白，限制为 3～32 位 ASCII 英文字母、数字、下划线；12 个完整敏感名称禁止
@@ -93,7 +93,7 @@
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.5.0/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.5.1/skills/fastapi-templates-xtn
 ```
 
 安装器不会覆盖已经安装的 Skill；替换前先备份本地修改。仓库级安装也可将
@@ -102,19 +102,37 @@ https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.5.0/skills/fastapi-tem
 ## 使用和验证
 
 FastAPI PostgreSQL 权限项目可以显式使用 `$fastapi-templates-xtn`；不相关的
-FastAPI 请求不会自动选中它。随附代码需要 Python 3.12+、PostgreSQL 和 Redis。
-仓库内的 Compose 与独立测试数据库检查用于集成验证。复制使用前请先看
+FastAPI 请求不会自动选中它。维护者和下载使用者可以先看
+[中文架构总览](skills/fastapi-templates-xtn/references/architecture-overview.zh-CN.md)，
+了解模块边界、请求流程、数据表和接口；Skill 执行时仍按任务需要读取各份英文详细规范。
+
+官方验证环境固定为 Python 3.12、PostgreSQL 17、Redis 7。具体项目可以自行验证
+其他版本，但本仓库不会把未测试的组合写成已经验证。`GET /health/live` 只表示程序
+进程还活着；`GET /health/ready` 要求 PostgreSQL 只有一个 Alembic head 且为
+`0004_password_auth`，并能读取 `rbac_state(scope='global')`。活跃 JTI Redis 和
+限流 Redis 都必须通过 `PING` 以及 Lua 写入、读取、删除探测；探测使用随机的非敏感
+Key，并设置五秒兜底 TTL。所有检查都有短超时，对外只返回整体就绪或不可用，带
+`Cache-Control: no-store`，不暴露组件状态、Key、连接地址或内部异常。应由 readiness
+而不是 liveness 决定部署是否接收流量。仓库内的
+Compose 与独立测试数据库检查用于集成验证。复制使用前请先看
 [资产配置与限流说明](skills/fastapi-templates-xtn/assets/postgresql-rbac/README.md)。
 在仓库根目录运行：
 
 ```powershell
+python -B -m pip install --upgrade "pip>=26.2"
 python -B -m pip install "skills/fastapi-templates-xtn/assets/postgresql-rbac[test]"
+ruff format --check --no-cache skills/fastapi-templates-xtn/assets/postgresql-rbac
 ruff check --no-cache skills/fastapi-templates-xtn/assets/postgresql-rbac
 mypy --no-incremental --cache-dir "$env:TEMP\fastapi-templates-xtn-mypy-cache" --config-file skills/fastapi-templates-xtn/assets/postgresql-rbac/pyproject.toml skills/fastapi-templates-xtn/assets/postgresql-rbac/app skills/fastapi-templates-xtn/assets/postgresql-rbac/tests
 python -B -m pytest -p no:cacheprovider -m "not postgresql" skills/fastapi-templates-xtn/assets/postgresql-rbac/tests
+pip-audit --local --skip-editable --progress-spinner off
 python -B skills/fastapi-templates-xtn/scripts/test_validate_country_csv.py
 python -B scripts/validate_release.py
 ```
+
+`v0.5.1` 的测试基线要求 `pytest>=9.0.3,<10` 与兼容的
+`pytest-asyncio>=1.4,<2`；如果要降低这些范围或 `pip>=26.2` 的审计基线，必须
+重新运行依赖漏洞扫描，不能直接改回旧版本。
 
 只可对**全新且确认可丢弃**的 PostgreSQL/Redis 测试目标运行迁移及并发测试，
 绝不能用装着实际业务数据的库。生成的项目要在目标部署环境完成检查，才能称为

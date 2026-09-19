@@ -14,8 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = REPO_ROOT / "skills" / "fastapi-templates-xtn"
 ASSET_ROOT = SKILL_ROOT / "assets" / "postgresql-rbac"
 EXPECTED_NAME = "fastapi-templates-xtn"
-RELEASE_VERSION = "0.5.0"
-RELEASE_DATE = "2026-09-13"
+RELEASE_VERSION = "0.5.1"
+RELEASE_DATE = "2026-09-19"
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 RELEASE_INSTALL_URL = (
     f"https://github.com/xtnkking/fastapi-templates-xtn/tree/{RELEASE_TAG}/"
@@ -39,6 +39,7 @@ REQUIRED_REPO_FILES = (
     "SECURITY.zh-CN.md",
     "RELEASE_CHECKLIST.md",
     "RELEASE_CHECKLIST.zh-CN.md",
+    "docs/history/v0.4.0/DESIGN_REVIEW.zh-CN.md",
     ".github/CODEOWNERS",
     ".github/PULL_REQUEST_TEMPLATE.md",
     ".github/ISSUE_TEMPLATE/config.yml",
@@ -56,6 +57,7 @@ REQUIRED_SKILL_FILES = (
     "references/business-audit-module.md",
     "references/business-audit-operations.md",
     "references/business-audit-postgresql.md",
+    "references/architecture-overview.zh-CN.md",
     "references/country-catalog.md",
     "references/country-catalog-postgresql.md",
     "references/identity-soft-delete.md",
@@ -114,6 +116,7 @@ REQUIRED_ASSET_FILES = (
     "tests/test_authentication_api.py",
     "tests/test_authentication_service.py",
     "tests/test_integration_safety.py",
+    "tests/test_health.py",
     "tests/test_business_audit.py",
     "tests/test_captcha.py",
     "tests/test_captcha_redis_live.py",
@@ -144,6 +147,7 @@ REQUIRED_ASSET_FILES = (
     "tests/integration/test_postgresql_locking.py",
     "tests/integration/test_rbac_api.py",
     "tests/integration/test_rate_limit_redis.py",
+    "tests/integration/test_readiness.py",
     "tests/integration/test_read_visibility.py",
     "tests/integration/test_user_role_limit.py",
 )
@@ -214,6 +218,22 @@ SECRET_MATERIAL_RE = re.compile(
 
 def fail(errors: list[str], message: str) -> None:
     errors.append(message)
+
+
+def require_semantics(
+    errors: list[str],
+    *,
+    path: Path,
+    checks: tuple[tuple[str, tuple[str, ...]], ...],
+) -> None:
+    """Require concepts while allowing maintainers to improve prose wording."""
+    content = re.sub(r"\s+", " ", path.read_text(encoding="utf-8"))
+    for label, patterns in checks:
+        if not any(re.search(pattern, content, re.IGNORECASE) for pattern in patterns):
+            fail(
+                errors,
+                f"{path.relative_to(REPO_ROOT)} is missing required concept: {label}",
+            )
 
 
 def validate_required_files(errors: list[str]) -> None:
@@ -308,13 +328,34 @@ def validate_identity_and_row_lifecycle(errors: list[str]) -> None:
         return
 
     text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
-    required_markers = {
-        "entrypoint": (
-            "For a new service use `user_name` and password, not email login or recovery.",
-            "reserve deleted names",
-            "classify its row lifecycle explicitly",
-            "There is no unclassified table",
+    require_semantics(
+        errors,
+        path=paths["entrypoint"],
+        checks=(
+            (
+                "new projects use username/password rather than email recovery",
+                (r"new services? use username/password only",),
+            ),
+            (
+                "soft-deleted usernames remain permanently reserved",
+                (r"soft-deleted username remains reserved forever",),
+            ),
+            (
+                "every row has a declared mutable, append-only, or permanent lifecycle",
+                (
+                    r"mutable row.*soft delet",
+                    r"audit rows are append-only.*fixed .* rows are not runtime-deletable",
+                ),
+            ),
+            (
+                "physical deletion is limited to controlled maintenance or disposable tests",
+                (
+                    r"physical purge is only controlled maintenance, disposable tests, or a reviewed migration",
+                ),
+            ),
         ),
+    )
+    required_markers = {
         "reference": (
             "## Choose The Identity And Login Contract Before Greenfield Work",
             "Required `user_name` only in the new-project baseline",
@@ -509,6 +550,20 @@ def validate_release_metadata(errors: list[str]) -> None:
                 f"{changelog_name} is missing release heading: {release_heading}",
             )
 
+    checklist_headings = {
+        "RELEASE_CHECKLIST.md": f"## Release {RELEASE_TAG}",
+        "RELEASE_CHECKLIST.zh-CN.md": f"## 发布 {RELEASE_TAG}",
+    }
+    for checklist_name, release_heading in checklist_headings.items():
+        checklist_path = REPO_ROOT / checklist_name
+        if checklist_path.is_file() and release_heading not in (
+            checklist_path.read_text(encoding="utf-8")
+        ):
+            fail(
+                errors,
+                f"{checklist_name} is missing release heading: {release_heading}",
+            )
+
     if pyproject_path.is_file():
         pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
         asset_version = pyproject.get("project", {}).get("version")
@@ -536,17 +591,38 @@ def validate_access_token_baseline(errors: list[str]) -> None:
         return
     text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
 
-    required_markers = {
-        "skill": (
-            "Access Token lifetime defaults",
-            "to 3600 seconds",
-            "explicitly tell the user to",
-            "require explicit consent",
-            "No reply is not",
-            "preserve it by default",
-            "Do not add a PostgreSQL Token",
-            "table or a per-request Token-record query",
+    require_semantics(
+        errors,
+        path=paths["skill"],
+        checks=(
+            (
+                "Access Token defaults to one hour / 3600 seconds and must be reviewed",
+                (
+                    r"Access Tokens? default to one hour.*adjust",
+                    r"3600 seconds.*adjust",
+                ),
+            ),
+            (
+                "iss and aud remain absent when the owner gives no answer",
+                (r"iss.*aud.*No answer means keep both absent",),
+            ),
+            (
+                "iss and aud require explicit consent",
+                (r"iss.*aud.*explicit consent",),
+            ),
+            (
+                "an existing configured iss/aud pair is preserved by default",
+                (r"existing .* pair.*preserv",),
+            ),
+            (
+                "PostgreSQL has no Token/session table or per-request Token lookup",
+                (
+                    r"no Token/session table in PostgreSQL.*no per-request Token-row query",
+                ),
+            ),
         ),
+    )
+    required_markers = {
         "policy": (
             "3600 seconds after `iat` by default",
             "Redis 5.0+ Lua operation",
@@ -633,24 +709,18 @@ def validate_access_token_baseline(errors: list[str]) -> None:
         fail(errors, "asset JWT code must not contain a ver claim")
 
     forbidden_patterns = (
-        re.compile(r"refresh[\s_-]+token", re.IGNORECASE),
-        re.compile(r"刷新令牌"),
+        re.compile(r"refresh[_\s-]+token", re.IGNORECASE),
         re.compile(r"authentication[_\s-]+sessions?", re.IGNORECASE),
-        re.compile(r"postgresql\s+(?:token|authentication)\s+sessions?", re.IGNORECASE),
-        re.compile(r"PostgreSQL\s+认证会话", re.IGNORECASE),
+        re.compile(
+            r"postgresql[_\s]+(?:token|authentication)[_\s]+sessions?", re.IGNORECASE
+        ),
     )
-    prose_paths = tuple(SKILL_ROOT.rglob("*.md")) + tuple(
-        REPO_ROOT / name
-        for name in (
-            "README.md",
-            "README.zh-CN.md",
-            "CHANGELOG.md",
-            "CHANGELOG.zh-CN.md",
-            "RELEASE_CHECKLIST.md",
-            "RELEASE_CHECKLIST.zh-CN.md",
-        )
+    executable_paths = tuple(
+        path
+        for path in ASSET_ROOT.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".py", ".sql"}
     )
-    for path in prose_paths:
+    for path in executable_paths:
         content = path.read_text(encoding="utf-8")
         for pattern in forbidden_patterns:
             if pattern.search(content):
@@ -804,17 +874,55 @@ def validate_local_password_authentication(errors: list[str]) -> None:
     for marker in question_markers:
         if marker not in text["reference"]:
             fail(errors, f"local-password product-question batch is missing {marker!r}")
+    require_semantics(
+        errors,
+        path=paths["skill"],
+        checks=(
+            (
+                "all unresolved password-product choices are asked once in one batch",
+                (r"present all unresolved product choices in one batch",),
+            ),
+            (
+                "the user may accept the displayed batch together",
+                (r"`全部接受` / `Accept all`",),
+            ),
+            (
+                "premature generic approval does not answer unasked choices",
+                (
+                    r"generic instruction to continue does not answer an unasked product choice",
+                ),
+            ),
+            (
+                "the owner supplies a positive session maximum without an invented default",
+                (r"positive integer; there is no recommended number",),
+            ),
+            (
+                "username case sensitivity has no invented generic default",
+                (
+                    r"username comparison is case-sensitive.*Require an explicit choice; neither behavior is a generic recommendation",
+                ),
+            ),
+            (
+                "the one-hour Token notice is not another blocking product question",
+                (
+                    r"Access Token lifetime starts at 3600 seconds.*do not turn that notice into another blocking product question",
+                ),
+            ),
+        ),
+    )
+    normalized_reference = re.sub(r"\s+", " ", text["reference"])
     for marker in (
-        "once, in one batch",
-        "`全部接受` / `Accept all`",
-        "an unasked product question",
+        "Do not invent",
+        "neither behavior is a generic recommendation",
+        "required notice, not another blocking choice",
     ):
-        if marker not in text["skill"]:
-            fail(errors, f"local-password decision gate is missing {marker!r}")
+        if marker not in normalized_reference:
+            fail(
+                errors,
+                f"local-password decision boundary is missing {marker!r}",
+            )
     if "interactive operator command" not in text["reference"]:
         fail(errors, "local-password reference must retain offline operator recovery")
-    if "A general instruction to proceed" not in text["skill"]:
-        fail(errors, "SKILL.md must reject premature acceptance of unasked choices")
 
     api_tree = trees["API"]
     routes: set[tuple[str, str, str, str]] = set()
@@ -1683,6 +1791,15 @@ def validate_single_project_scope(errors: list[str]) -> None:
             match = pattern.search(content)
             if match is None:
                 continue
+            line_start = content.rfind("\n", 0, match.start()) + 1
+            line_end = content.find("\n", match.end())
+            if line_end < 0:
+                line_end = len(content)
+            matched_line = content[line_start:line_end].casefold()
+            if re.search(r"\b(?:do not|does not|without|no)\b", matched_line) or any(
+                marker in matched_line for marker in ("不", "无", "禁止")
+            ):
+                continue
             line = content.count("\n", 0, match.start()) + 1
             relative = path.relative_to(REPO_ROOT)
             fail(
@@ -1731,8 +1848,23 @@ def validate_user_role_limit(errors: list[str]) -> None:
         return
 
     text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
+    require_semantics(
+        errors,
+        path=paths["entrypoint"],
+        checks=(
+            (
+                "each user has at most ten live role assignments",
+                (r"Each user has at most 10 live role assignments",),
+            ),
+            (
+                "mandatory user, disabled roles, and super_admin count; tombstones do not",
+                (
+                    r"including `user`, disabled roles, and `super_admin`; tombstones do not count",
+                ),
+            ),
+        ),
+    )
     required_markers = {
-        "entrypoint": ("at most 10 live `user_roles` assignments",),
         "RBAC reference": (
             "each user may have at most 10",
             "disabled role still occupies one of the 10 slots",
@@ -1807,12 +1939,6 @@ def validate_user_role_limit(errors: list[str]) -> None:
                     f"{relative} is missing user-role-limit marker: {marker!r}",
                 )
 
-    normalized_entrypoint = re.sub(r"\s+", " ", text["entrypoint"]).casefold()
-    if "disabled roles still count" not in normalized_entrypoint:
-        fail(errors, "SKILL.md must state that disabled role bindings still count")
-    if "tombstones do not count" not in normalized_entrypoint:
-        fail(errors, "SKILL.md must state that role-binding tombstones do not count")
-
     role_request_start = text["schemas"].find("class RoleIdsRequest(BaseModel):")
     role_request_end = text["schemas"].find("\nclass ", role_request_start + 1)
     role_request = text["schemas"][
@@ -1869,14 +1995,33 @@ def validate_administrative_read_visibility(errors: list[str]) -> None:
         return
 
     text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
-    required_markers = {
-        "entrypoint": (
-            "Apply the same strict hierarchy to administrative user and role list",
-            "The current `super_admin` may view",
-            "Every other administrator sees only authority",
-            "`/api/v1/me/access`",
-            "Apply capability before administrative-write visibility.",
+    require_semantics(
+        errors,
+        path=paths["entrypoint"],
+        checks=(
+            (
+                "administrative list/count/search/detail/nested/bulk/export share strict hierarchy",
+                (
+                    r"Hide self, peer, higher, protected, and incomparable targets from administrative list, count, search, detail, nested, bulk, and export",
+                ),
+            ),
+            (
+                "super_admin is the only administrator allowed complete visibility",
+                (
+                    r"Except for the sole super administrator, an actor may manage only strictly lower",
+                ),
+            ),
+            (
+                "the actor reads its own authority only through /api/v1/me/access",
+                (r"actor sees itself only at `/api/v1/me/access`",),
+            ),
+            (
+                "capability is checked before target visibility",
+                (r"Check the exact capability before target visibility",),
+            ),
         ),
+    )
+    required_markers = {
         "hierarchy reference": (
             "## Administrative Read Visibility",
             "### Administrative Write Visibility",
@@ -2374,13 +2519,25 @@ def validate_observability_and_audit(errors: list[str]) -> None:
     if any(not path.is_file() for path in paths.values()):
         return
 
-    required_markers = {
-        "entrypoint": (
-            "references/operational-logging.md",
-            "references/audit-module.md",
-            "exactly one completion at",
-            "append-only record",
+    require_semantics(
+        errors,
+        path=paths["entrypoint"],
+        checks=(
+            (
+                "entrypoint routes logging and RBAC audit work to their references",
+                (r"references/operational-logging\.md.*references/audit-module\.md",),
+            ),
+            (
+                "operational request logging has one canonical completion event",
+                (r"Emit one-line structured operational logs",),
+            ),
+            (
+                "RBAC and business audits are server-owned append-only evidence",
+                (r"Audits are server-owned and append-only",),
+            ),
         ),
+    )
+    required_markers = {
         "logging reference": (
             "## Non-Negotiable Boundary",
             "## Request Completion Contract",
@@ -2511,17 +2668,31 @@ def validate_business_audit(errors: list[str]) -> None:
     if missing:
         return
 
-    required_markers = {
-        "entrypoint": (
-            "references/business-audit-module.md",
-            "references/business-audit-postgresql.md",
-            "references/business-audit-operations.md",
-            "explicit action catalog",
-            "same PostgreSQL transaction",
-            "`succeeded`",
-            "`failed`",
-            "`denied`",
+    require_semantics(
+        errors,
+        path=paths["entrypoint"],
+        checks=(
+            (
+                "all three business-audit references are routed by task",
+                (
+                    r"references/business-audit-module\.md.*references/business-audit-postgresql\.md.*references/business-audit-operations\.md",
+                ),
+            ),
+            (
+                "business audit requires an explicit action catalog and allowlisted state",
+                (r"explicit action catalog and safe per-action state allowlist",),
+            ),
+            (
+                "successful protected business mutation and audit share a PostgreSQL transaction",
+                (r"Successful protected changes commit with their audit",),
+            ),
+            (
+                "business audit outcomes are succeeded, failed, and denied",
+                (r"`succeeded`.*`failed`.*`denied`",),
+            ),
         ),
+    )
+    required_markers = {
         "policy reference": (
             "`rbac_audit_events`",
             "business_audit_events",
@@ -2632,7 +2803,6 @@ def validate_business_audit(errors: list[str]) -> None:
 
     removed_delivery_markers = (
         "## Optional Delivery Outbox",
-        "business_audit_delivery_outbox",
         "build_business_outbox_rows(",
         "lease_token",
         "lease_expires_at",
@@ -2652,6 +2822,14 @@ def validate_business_audit(errors: list[str]) -> None:
                     f"{relative} reintroduces the removed business-audit "
                     f"delivery subsystem: {marker!r}",
                 )
+
+    for name in ("implementation", "migration", "alembic environment"):
+        if "business_audit_delivery_outbox" in text[name]:
+            relative = paths[name].relative_to(REPO_ROOT)
+            fail(
+                errors,
+                f"{relative} implements the removed business-audit delivery table",
+            )
 
     if (
         "Never put business activity into `rbac_audit_events`"
@@ -2686,13 +2864,23 @@ def validate_country_catalog(errors: list[str]) -> None:
         return
 
     text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
-    required_markers = {
-        "entrypoint": (
-            "references/country-catalog.md",
-            "references/country-catalog-postgresql.md",
-            "The country catalog is also optional",
-            "Never create or seed `countries` in the default PostgreSQL",
+    require_semantics(
+        errors,
+        path=paths["entrypoint"],
+        checks=(
+            (
+                "country policy and PostgreSQL implementation are routed only on explicit request",
+                (
+                    r"Explicitly requested country/region directory.*references/country-catalog\.md.*references/country-catalog-postgresql\.md",
+                ),
+            ),
+            (
+                "the default PostgreSQL asset does not create or seed country data",
+                (r"default country data", r"country .* optional additions"),
+            ),
         ),
+    )
+    required_markers = {
         "contract": (
             "This module is optional",
             "country_code,calling_code,name_zh,name_en,flag_url",
@@ -2827,6 +3015,191 @@ def validate_country_catalog(errors: list[str]) -> None:
         fail(errors, "CI contains a bare pytest invocation")
 
 
+def validate_ci_and_current_documentation(errors: list[str]) -> None:
+    ci_path = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+    pyproject_path = ASSET_ROOT / "pyproject.toml"
+    limiter_path = ASSET_ROOT / "app" / "rate_limit_dependencies.py"
+    limiter_tests_path = ASSET_ROOT / "tests" / "test_rate_limit_dependencies.py"
+    openai_path = SKILL_ROOT / "agents" / "openai.yaml"
+    if any(
+        not path.is_file()
+        for path in (
+            ci_path,
+            pyproject_path,
+            limiter_path,
+            limiter_tests_path,
+            openai_path,
+        )
+    ):
+        return
+
+    ci = ci_path.read_text(encoding="utf-8")
+    action_pins = {
+        "actions/checkout": "11d5960a326750d5838078e36cf38b85af677262",
+        "actions/setup-python": "a26af69be951a213d495a4c3e4e4022e16d87065",
+    }
+    for action, commit in action_pins.items():
+        references = re.findall(rf"uses:\s*{re.escape(action)}@([^\s#]+)", ci)
+        if not references or any(reference != commit for reference in references):
+            fail(errors, f"CI must pin every {action} use to full commit {commit}")
+
+    for command in (
+        'python -B -m pip install --upgrade "pip>=26.2"',
+        "ruff format --check --no-cache .",
+        "ruff check --no-cache .",
+        "mypy app tests",
+        "pip-audit --local --skip-editable --progress-spinner off",
+    ):
+        if command not in ci:
+            fail(errors, f"CI is missing required quality command: {command}")
+
+    pyproject = pyproject_path.read_text(encoding="utf-8")
+    if '"pip-audit>=2.7,<3"' not in pyproject:
+        fail(errors, "asset test dependencies must include bounded pip-audit")
+    if '"pytest>=9.0.3,<10"' not in pyproject:
+        fail(
+            errors, "asset test dependencies must require the fixed pytest release line"
+        )
+    if '"pytest-asyncio>=1.4,<2"' not in pyproject:
+        fail(
+            errors,
+            "asset test dependencies must use a pytest-asyncio line compatible with pytest 9",
+        )
+
+    limiter = limiter_path.read_text(encoding="utf-8")
+    limiter_tests = limiter_tests_path.read_text(encoding="utf-8")
+    for marker in (
+        "AUTHENTICATED_RATE_LIMIT_RULES",
+        "AUTHENTICATED_RATE_LIMIT_EXEMPT_OPERATIONS",
+    ):
+        if marker not in limiter:
+            fail(errors, f"authenticated route policy mapping is missing {marker!r}")
+    if not re.search(
+        r'"revoke_user_sessions"\s*:\s*\(\s*"POST"\s*,\s*"authorization_write"',
+        limiter,
+    ):
+        fail(errors, "revoke_user_sessions must use the authorization-write quota")
+    if "test_every_registered_operation_has_an_explicit_admission_class" not in (
+        limiter_tests
+    ):
+        fail(errors, "route policy tests must enumerate every registered operation")
+
+    openai = openai_path.read_text(encoding="utf-8")
+    for marker in (
+        "all five required graphical CAPTCHA flows",
+        "do not implement anonymous password recovery",
+        "email/SMS verification or MFA only when explicitly requested",
+    ):
+        if marker not in openai:
+            fail(errors, f"agents/openai.yaml is missing current behavior: {marker!r}")
+    for stale in ("optional verification", "authentication and recovery"):
+        if stale in openai.casefold():
+            fail(errors, f"agents/openai.yaml retains stale wording: {stale!r}")
+
+    active_references = (
+        SKILL_ROOT / "references" / "jwt-session-security.md",
+        SKILL_ROOT / "references" / "jwt-session-implementation.md",
+        SKILL_ROOT / "references" / "postgresql-rbac-implementation.md",
+    )
+    stale_patterns = (
+        re.compile(r"\bUnreleased\b", re.IGNORECASE),
+        re.compile(
+            r"(?:login|token issuance).{0,80}(?:not wired|not implemented)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?:尚未|仍未).{0,30}(?:接入|实现).{0,30}(?:登录|Token)",
+            re.IGNORECASE,
+        ),
+    )
+    for path in active_references:
+        content = path.read_text(encoding="utf-8")
+        for pattern in stale_patterns:
+            if pattern.search(content):
+                fail(
+                    errors,
+                    f"{path.relative_to(REPO_ROOT)} retains stale release-state wording",
+                )
+
+    readme_requirements = {
+        "README.md": (
+            "references/architecture-overview.zh-CN.md",
+            "Python 3.12",
+            "PostgreSQL 17",
+            "Redis 7",
+            "/health/live",
+            "/health/ready",
+            "ruff format --check --no-cache",
+            "pip-audit --local --skip-editable --progress-spinner off",
+        ),
+        "README.zh-CN.md": (
+            "references/architecture-overview.zh-CN.md",
+            "Python 3.12",
+            "PostgreSQL 17",
+            "Redis 7",
+            "/health/live",
+            "/health/ready",
+            "ruff format --check --no-cache",
+            "pip-audit --local --skip-editable --progress-spinner off",
+        ),
+    }
+    for readme_name, markers in readme_requirements.items():
+        readme_path = REPO_ROOT / readme_name
+        if not readme_path.is_file():
+            continue
+        readme = readme_path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in readme:
+                fail(
+                    errors, f"{readme_name} is missing current documentation: {marker}"
+                )
+
+    security_requirements = {
+        "SECURITY.md": (
+            "pip-audit",
+            "--ignore-vuln",
+            "vulnerability identifier",
+            "impact",
+            "reason",
+            "responsible owner",
+            "review date",
+        ),
+        "SECURITY.zh-CN.md": (
+            "pip-audit",
+            "--ignore-vuln",
+            "漏洞编号",
+            "影响",
+            "原因",
+            "负责人",
+            "复查日期",
+        ),
+    }
+    for security_name, markers in security_requirements.items():
+        security_path = REPO_ROOT / security_name
+        if not security_path.is_file():
+            continue
+        security = security_path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in security:
+                fail(
+                    errors,
+                    f"{security_name} is missing audit-exception field: {marker}",
+                )
+
+    old_design_path = REPO_ROOT / "DESIGN_REVIEW.zh-CN.md"
+    archived_design_path = (
+        REPO_ROOT / "docs" / "history" / "v0.4.0" / "DESIGN_REVIEW.zh-CN.md"
+    )
+    if old_design_path.exists():
+        fail(errors, "the v0.4.0 design review must not remain at the repository root")
+    if archived_design_path.is_file():
+        archived_design = archived_design_path.read_text(encoding="utf-8")
+        if not re.search(
+            r"^# .*v0\.4\.0.*不代表当前实现", archived_design, re.MULTILINE
+        ):
+            fail(errors, "the archived v0.4.0 design review lacks a historical warning")
+
+
 def validate_tree_hygiene(errors: list[str]) -> None:
     for path in REPO_ROOT.rglob("*"):
         if ".git" in path.parts:
@@ -2942,6 +3315,7 @@ def main() -> int:
     validate_observability_and_audit(errors)
     validate_business_audit(errors)
     validate_country_catalog(errors)
+    validate_ci_and_current_documentation(errors)
     validate_tree_hygiene(errors)
 
     if errors:

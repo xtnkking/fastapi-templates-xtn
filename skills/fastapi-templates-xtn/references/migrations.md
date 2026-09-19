@@ -20,16 +20,14 @@ The included PostgreSQL asset uses this linear migration chain:
 3. [`0003_business_audit.py`](../assets/postgresql-rbac/alembic/versions/0003_business_audit.py)
    adds the separate append-only `business_audit_events` table and guards.
 4. [`0004_password_auth.py`](../assets/postgresql-rbac/alembic/versions/0004_password_auth.py)
-   adds nullable local-password fields to `users`, account-security audit
+   adds nullable local-password fields to `users`, the persisted
+   `public_registration_enabled` switch on `rbac_state`, account-security audit
    evidence, and the `users:password:reset` permission/grants.
 
-The current unreleased baseline intentionally updates these four revisions
-because the maintainer confirmed that no adopter database requires compatibility.
-This permission applies only to the bundled reference asset; it never authorizes
-rewriting an existing user's migration or identity contract. Treat the next
-published baseline as fresh-install only. Once that baseline is published or
-adopted, freeze all four revisions and put every later database change in a new
-revision.
+These four revisions shipped with `v0.5.0` and are immutable migration history.
+`v0.5.1` changes no database shape and needs no new Alembic revision. Every
+later schema or seed change must use a new forward revision; never edit, replace,
+or reorder `0001` through `0004` after publication.
 
 A deployed application must preserve and explicitly map its existing users,
 roles, grants, assignments, versions, and audit history. After any revision
@@ -126,9 +124,12 @@ indexes, bounded JSON constraints, and database triggers rejecting runtime
 checks enforce Argon2id hash shape, coherent password state, and no hash on a
 soft-deleted user. It also creates the append-only
 `account_security_audit_events` table and seeds `users:password:reset` for the
-built-in administrator roles. It does not create a password-episode table or
-credential-version counter. Existing users receive no generated or default
-password and remain unable to use password login until controlled enrollment.
+built-in administrator roles. The same revision adds non-null
+`rbac_state.public_registration_enabled` with a server default of `true`; this
+is the authoritative registration switch, not environment-only configuration.
+It does not create a password-episode table or credential-version counter.
+Existing users receive no generated or default password and remain unable to
+use password login until controlled enrollment.
 
 ## System Role Specifications
 
@@ -224,10 +225,11 @@ second holder is refused without partial writes.
   insert, reassignment, unbind, and reactivation cannot bypass the limit. Drop
   the trigger before its function during downgrade. This enforcement is part of
   the fresh `0001_single_project_rbac` schema, not a later compatibility migration.
-- Create `rbac_state` with exactly one `scope='global'` row. Enforce the
-  fixed value with a primary key and check constraint, seed it in the migration,
-  never create it lazily at runtime, and use grants/triggers to reject production
-  `DELETE` and `TRUNCATE`.
+- Create `rbac_state` with exactly one `scope='global'` row. At the current head
+  its three non-null columns are `scope`, `epoch`, and
+  `public_registration_enabled`. Enforce the fixed scope with a primary key and
+  check constraint, seed it in the migration, never create it lazily at runtime,
+  and use grants/triggers to reject production `DELETE` and `TRUNCATE`.
 - Keep `is_system` independent from `is_protected`; require roles with
   `is_protected=true` or `is_super_admin=true` to be system-defined without making the
   reverse implication.
@@ -313,6 +315,9 @@ application-level authorization ordering proof.
 - Verify `users` carries the three local-password fields with the documented
   nullability/default and preserves `token_version`; check that a deleted user
   cannot retain a hash and that no password-episode table is created.
+- Verify `rbac_state.public_registration_enabled` is non-null, defaults to
+  `true`, survives restart, and changes only through the protected
+  super-admin registration-status command.
 - Exercise the linear `0001` through `0004` chain with an ordinary
   custom role whose key is `owner`, users with no roles, users with multiple
   roles, and existing custom grants. Verify `owner` remains ordinary custom data

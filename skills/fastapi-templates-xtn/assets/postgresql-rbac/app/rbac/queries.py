@@ -43,6 +43,7 @@ class _RoleAccumulator:
 
 @dataclass(frozen=True, slots=True)
 class UserAccessView:
+    user_name: str
     assigned_role_ids: tuple[uuid.UUID, ...]
     authority: AuthoritySnapshot
 
@@ -178,6 +179,7 @@ async def load_user_access_views(
 
     return {
         user_id: UserAccessView(
+            user_name=user.user_name,
             assigned_role_ids=tuple(sorted(assigned_role_ids[user_id], key=str)),
             authority=AuthoritySnapshot.build(
                 user_id=user.id,
@@ -289,8 +291,11 @@ async def list_visible_users_page(
     actor: AuthoritySnapshot,
     page: int,
     page_size: int,
+    user_name: str | None = None,
 ) -> tuple[tuple[User, ...], int]:
     visible_users = _select_visible_users(actor=actor)
+    if user_name is not None:
+        visible_users = visible_users.where(User.user_name == user_name)
     total = int(
         await session.scalar(select(func.count()).select_from(visible_users.subquery()))
         or 0

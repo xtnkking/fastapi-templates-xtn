@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 
 import app.authentication_api as authentication_api
 from app.abuse_defense import AbuseDefenseService
+from app.abuse_flow import IdentityAbuseFlow
 from app.api_contract import BusinessCode
 from app.authentication_service import (
     AuthenticatedPasswordUser,
@@ -384,6 +385,65 @@ async def test_registration_normalizes_username_and_returns_only_user_id() -> No
     assert service.register.await_args.kwargs["password"] == VALID_PASSWORD
 
 
+async def test_registration_http_flow_admits_before_captcha_and_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    user_id = uuid.uuid4()
+    service = AsyncMock()
+
+    async def admit_registration(
+        _defense: AbuseDefenseService, **_kwargs: object
+    ) -> None:
+        events.append("rate_limit")
+
+    async def consume_captcha(*_args: object, **_kwargs: object) -> None:
+        events.append("captcha")
+
+    async def register(**kwargs: object) -> uuid.UUID:
+        abuse_flow = kwargs["abuse_flow"]
+        assert isinstance(abuse_flow, IdentityAbuseFlow)
+
+        async def write_user() -> uuid.UUID:
+            events.append("registration")
+            return user_id
+
+        return await abuse_flow.register(
+            client_ip=str(kwargs["client_ip"]),
+            normalized_identifier=str(kwargs["user_name"]),
+            registration_action=write_user,
+        )
+
+    service.register.side_effect = register
+    monkeypatch.setattr(
+        AbuseDefenseService,
+        "check_registration_attempt",
+        admit_registration,
+    )
+    monkeypatch.setattr(authentication_api, "_consume_captcha", consume_captcha)
+    monkeypatch.setattr(
+        authentication_api, "get_rate_limit_redis", lambda _request: object()
+    )
+    app.dependency_overrides[get_settings] = lambda: get_settings().model_copy(
+        update={"rate_limit_enabled": True}
+    )
+    app.dependency_overrides[get_local_authentication_service] = lambda: service
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                "/api/v1/auth/register",
+                json={"user_name": "Alice", "password": VALID_PASSWORD, **CAPTCHA},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 201, response.text
+    assert events == ["rate_limit", "captcha", "registration"]
+
+
 async def test_login_issues_access_token_only_after_password_authentication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -421,6 +481,96 @@ async def test_login_issues_access_token_only_after_password_authentication(
     assert response.headers["Cache-Control"] == "no-store"
     issue_token.assert_awaited_once()
     assert service.authenticate.await_count == 1
+
+
+async def test_login_http_flow_admits_before_captcha_credentials_and_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    identity = AuthenticatedPasswordUser(
+        user_id=uuid.uuid4(),
+        token_version=8,
+        must_change_password=False,
+    )
+    service = AsyncMock()
+
+    async def admit_login(_defense: AbuseDefenseService, **_kwargs: object) -> None:
+        events.append("rate_limit")
+
+    async def consume_captcha(*_args: object, **_kwargs: object) -> None:
+        events.append("captcha")
+
+    async def authenticate(**kwargs: object) -> AuthenticatedPasswordUser:
+        abuse_flow = kwargs["abuse_flow"]
+        assert isinstance(abuse_flow, IdentityAbuseFlow)
+
+        async def verify_credentials() -> AuthenticatedPasswordUser:
+            events.append("credentials")
+            return identity
+
+        return await abuse_flow.authenticate(
+            client_ip=str(kwargs["client_ip"]),
+            normalized_identifier=str(kwargs["user_name"]),
+            verify_real_or_dummy_credentials=verify_credentials,
+        )
+
+    async def issue_token(*_args: object, **_kwargs: object) -> str:
+        events.append("token")
+        return "signed-access-token"
+
+    service.authenticate.side_effect = authenticate
+    monkeypatch.setattr(AbuseDefenseService, "check_login_attempt", admit_login)
+    monkeypatch.setattr(authentication_api, "_consume_captcha", consume_captcha)
+    monkeypatch.setattr(authentication_api, "issue_access_token", issue_token)
+    monkeypatch.setattr(authentication_api, "get_redis", lambda _request: object())
+    monkeypatch.setattr(
+        authentication_api, "get_rate_limit_redis", lambda _request: object()
+    )
+    app.dependency_overrides[get_settings] = lambda: get_settings().model_copy(
+        update={"rate_limit_enabled": True}
+    )
+    app.dependency_overrides[get_local_authentication_service] = lambda: service
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                "/api/v1/auth/login",
+                json={"user_name": "Alice", "password": VALID_PASSWORD, **CAPTCHA},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    assert events == ["rate_limit", "captcha", "credentials", "token"]
+
+
+async def test_active_sessions_http_response_is_not_cacheable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context()
+    list_sessions = AsyncMock(return_value=(1.0, 2.0))
+
+    async def current_context() -> AuthorizationContext:
+        return context
+
+    monkeypatch.setattr(authentication_api, "list_active_sessions", list_sessions)
+    monkeypatch.setattr(authentication_api, "get_redis", lambda _request: object())
+    app.dependency_overrides[get_authorization_context] = current_context
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.get("/api/v1/me/sessions")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.json()["data"]["active_count"] == 2
+    list_sessions.assert_awaited_once()
 
 
 async def test_temporary_password_login_returns_403002_without_a_token(

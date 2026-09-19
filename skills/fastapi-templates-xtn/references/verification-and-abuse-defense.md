@@ -4,6 +4,11 @@ Read [Rate limiting](rate-limiting.md) first for the single Redis fixed-window
 policy and default numbers. This reference describes the required graphical
 CAPTCHA baseline. It does not create email, SMS, MFA, or account-recovery flows.
 
+All five graphical CAPTCHA scenes below are mandatory for the new-project
+baseline. Only email/SMS verification and MFA are optional extensions. There is
+no anonymous forgot-password flow in this Skill; temporary-password completion
+starts only after an authorized administrator reset.
+
 ## Five Fixed Scenes
 
 | Scene | Caller | Protected action |
@@ -76,8 +81,12 @@ and clear the previous answer and ID after every submit, successful or not.
 
 `IdentityAbuseFlow` retains a small explicit boundary: fixed-window admission
 before product callbacks; a denial/unavailable Redis does not invoke the
-callback. Validate/consume the scene-bound CAPTCHA before any credential
-verification or registration write. Invalid credentials return one generic
+callback. The exact order is trusted-IP resolution and the named login/register
+fixed-window check, then scene-bound CAPTCHA validation/consumption, then
+credential verification or the registration transaction, then Token issuance
+for a successful login. Invalid CAPTCHA attempts therefore spend the business
+quota, while a rate-limit rejection does not consume the submitted CAPTCHA.
+Invalid credentials return one generic
 `401001`, including unknown, disabled, deleted, missing-hash, and wrong-password
 cases. Perform one real-or-dummy Argon2 verification, with no per-username
 failure counter, login lock, or `IP+username` quota. Only after the callback

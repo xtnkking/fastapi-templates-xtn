@@ -13,8 +13,10 @@ from sqlalchemy.exc import OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 
+import app.rbac.api as rbac_api_module
 from app.abuse_flow import InvalidLoginCredentialsError
 from app.api_contract import ApiResponse, BusinessCode, PageData
+from app.database import get_session
 from app.main import (
     app,
     handle_database_unavailable,
@@ -113,6 +115,102 @@ def test_public_contract_contains_required_routes_and_only_get_or_post() -> None
 
     assert REQUIRED_ROUTES <= actual
     assert {method for method, _path in actual} <= {"GET", "POST"}
+
+
+async def test_user_name_query_normalizes_before_exact_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actor_id = uuid.uuid4()
+    authority = AuthoritySnapshot.build(
+        user_id=actor_id,
+        user_is_active=True,
+        user_is_protected=False,
+        authz_version=0,
+        roles=(
+            RoleGrant(
+                role_id=uuid.uuid4(),
+                key="user-reader",
+                management_tier=1,
+                permissions=frozenset({PermissionKey.USERS_READ.value}),
+                is_system=False,
+                is_protected=False,
+                is_super_admin=False,
+            ),
+        ),
+    )
+    context = AuthorizationContext(
+        principal=Principal(
+            user_id=actor_id,
+            token_version=0,
+            token_id=uuid.uuid4(),
+            issued_at=0,
+            expires_at=1,
+        ),
+        authorization_epoch=0,
+        authority=authority,
+        request_id="user-name-query-test",
+    )
+    received_user_names: list[str | None] = []
+
+    async def current_context() -> AuthorizationContext:
+        return context
+
+    async def current_session() -> object:
+        return object()
+
+    async def list_users_page(
+        *_args: Any,
+        **kwargs: Any,
+    ) -> tuple[tuple[Any, ...], int]:
+        received_user_names.append(kwargs["user_name"])
+        return (), 0
+
+    async def load_access_views(*_args: Any, **_kwargs: Any) -> dict[Any, Any]:
+        return {}
+
+    monkeypatch.setattr(
+        rbac_api_module,
+        "list_visible_users_page",
+        list_users_page,
+    )
+    monkeypatch.setattr(
+        rbac_api_module,
+        "load_user_access_views",
+        load_access_views,
+    )
+    app.dependency_overrides[get_authorization_context] = current_context
+    app.dependency_overrides[get_session] = current_session
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            normalized = await client.get(
+                "/api/v1/users",
+                params={"user_name": "  Alice_1  "},
+            )
+            invalid = await client.get(
+                "/api/v1/users",
+                params={"user_name": "  Alice-1  "},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert_standard_response(
+        normalized,
+        status_code=200,
+        business_code=BusinessCode.OK,
+    )
+    assert normalized.json()["data"] == {
+        "items": [],
+        "page": 1,
+        "page_size": 20,
+        "total": 0,
+    }
+    assert received_user_names == ["Alice_1"]
+    assert_standard_response(
+        invalid,
+        status_code=422,
+        business_code=BusinessCode.VALIDATION_FAILED,
+    )
 
 
 async def test_admin_session_revocation_uses_authoritative_context() -> None:
@@ -748,6 +846,7 @@ async def test_user_write_routes_use_service_transaction_snapshots(
     )
     active_user = UserResponse(
         id=target_user_id,
+        user_name="managed_user",
         is_active=True,
         assigned_role_ids=(role_id,),
         effective_role_ids=(role_id,),

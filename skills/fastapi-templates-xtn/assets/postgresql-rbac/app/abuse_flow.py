@@ -21,8 +21,18 @@ class InvalidLoginCredentialsError(RuntimeError):
 class IdentityAbuseFlow:
     """Admit requests before running credential or registration callbacks."""
 
-    def __init__(self, abuse_defense: AbuseDefenseService) -> None:
+    def __init__(
+        self,
+        abuse_defense: AbuseDefenseService,
+        *,
+        post_admission_check: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self._abuse_defense = abuse_defense
+        self._post_admission_check = post_admission_check
+
+    async def _check_admitted_request(self) -> None:
+        if self._post_admission_check is not None:
+            await self._post_admission_check()
 
     async def authenticate(
         self,
@@ -37,6 +47,7 @@ class IdentityAbuseFlow:
             client_ip=client_ip,
             normalized_identifier=normalized_identifier,
         )
+        await self._check_admitted_request()
         result = await verify_real_or_dummy_credentials()
         if result is None:
             raise InvalidLoginCredentialsError()
@@ -53,6 +64,7 @@ class IdentityAbuseFlow:
         await self._abuse_defense.check_temporary_password_completion(
             client_ip=client_ip
         )
+        await self._check_admitted_request()
         result = await verify_real_or_dummy_credentials()
         if result is None:
             raise InvalidLoginCredentialsError()
@@ -71,6 +83,7 @@ class IdentityAbuseFlow:
             client_ip=client_ip,
             normalized_identifier=normalized_identifier,
         )
+        await self._check_admitted_request()
         return await registration_action()
 
 
@@ -78,5 +91,9 @@ def build_identity_abuse_flow(
     redis: Redis,
     *,
     settings: Settings,
+    post_admission_check: Callable[[], Awaitable[None]] | None = None,
 ) -> IdentityAbuseFlow:
-    return IdentityAbuseFlow(AbuseDefenseService(redis, settings))
+    return IdentityAbuseFlow(
+        AbuseDefenseService(redis, settings),
+        post_admission_check=post_admission_check,
+    )

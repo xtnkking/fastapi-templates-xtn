@@ -3,6 +3,7 @@ from collections.abc import Iterable
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Request, status
+from pydantic import BeforeValidator
 from sqlalchemy import func, select
 
 from app.api_contract import (
@@ -23,6 +24,7 @@ from app.rbac.dependencies import (
 from app.rbac.domain import AuthorizationContext, PermissionKey
 from app.rbac.errors import not_found
 from app.rbac.models import Permission, Role, User
+from app.rbac.provisioning import normalize_identity
 from app.rbac.queries import (
     UserAccessView,
     list_visible_roles_page,
@@ -65,6 +67,14 @@ USER_TAG = "User access"
 AUTHENTICATION_TAG = "Authentication"
 
 
+def _normalize_user_name_query(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("user_name must be a string")
+    return normalize_identity(value, field="user_name")
+
+
 def _role_response(
     role: Role,
     permissions: Iterable[str],
@@ -88,6 +98,7 @@ def _user_response(access: UserAccessView) -> UserResponse:
     authority = access.authority
     return UserResponse(
         id=authority.user_id,
+        user_name=access.user_name,
         is_active=authority.user_is_active,
         assigned_role_ids=access.assigned_role_ids,
         effective_role_ids=tuple(role.role_id for role in authority.roles),
@@ -589,12 +600,18 @@ async def list_users(
     session: SessionDependency,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=200)] = 20,
+    user_name: Annotated[
+        str | None,
+        BeforeValidator(_normalize_user_name_query),
+        Query(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_]+$"),
+    ] = None,
 ) -> ApiResponse[PageData[UserResponse]]:
     users, total = await list_visible_users_page(
         session,
         actor=context.authority,
         page=page,
         page_size=page_size,
+        user_name=user_name,
     )
     access_by_user_id = await load_user_access_views(
         session,

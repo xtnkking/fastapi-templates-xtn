@@ -10,6 +10,10 @@ workflows, optimistic preconditions, and rollback-before-denial audit, while
 `test_postgresql_locking.py` covers global-guard ordering, identity-map refresh,
 committed actor revocation, and concurrent assignments.
 
+The official verification profile for this Skill is Python 3.12,
+PostgreSQL 17, and Redis 7. A concrete project may test and support other
+versions, but do not describe an untested version as verified by this Skill.
+
 For Access Token tests use
 [JWT access-token security](jwt-session-security.md). For schema and API identifier
 tests use [identifier policy](identifier-policy.md). Do not load either reference
@@ -178,7 +182,7 @@ result. When an earlier layer already admitted a request, allow its ordinary
 or imply `Retry-After`. Verify the stable log events and secret-marker exclusions
 under [Operational logging](operational-logging.md).
 
-When optional verification was selected, follow
+When a product explicitly adds an optional email/SMS/MFA extension, follow
 [Verification and abuse defense](verification-and-abuse-defense.md) for the
 challenge-specific matrix. Do not mark that surface verified when only the
 mocked unit suite ran; report unavailable real Redis explicitly.

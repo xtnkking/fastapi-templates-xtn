@@ -4,6 +4,8 @@ Read this reference only when the product explicitly needs a country or region
 table, a country selector, international calling-code display or filtering,
 address-country storage, or a maintained country directory. The ordinary RBAC,
 user, proxy, locale, currency, and time-zone baselines do not require this table.
+Treat it only as an opt-in extension inside a project already using this Skill;
+do not select or load this Skill solely for a generic country table task.
 
 Search terms: `country table`, `countries`, `country selector`, `country_code`,
 `calling_code`, `name_zh`, `name_en`, `flag_url`, `ISO 3166`, `国家表`, `国家区号`.

@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     rate_limit_temporary_complete_ip_per_five_minutes: int = Field(default=20, ge=1)
     redis_connect_timeout_seconds: float = Field(default=0.5, gt=0)
     redis_socket_timeout_seconds: float = Field(default=0.5, gt=0)
+    readiness_timeout_seconds: float = Field(default=1.0, gt=0, le=10)
     sql_echo: bool = False
 
     @field_validator("database_url")

@@ -162,6 +162,7 @@ def _user_response(access: UserAccessView) -> UserResponse:
     authority = access.authority
     return UserResponse(
         id=authority.user_id,
+        user_name=access.user_name,
         is_active=authority.user_is_active,
         assigned_role_ids=access.assigned_role_ids,
         effective_role_ids=tuple(role.role_id for role in authority.roles),

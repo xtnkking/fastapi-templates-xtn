@@ -2,11 +2,14 @@
 
 Adapt this runnable baseline to one project. It needs Python 3.12+, PostgreSQL,
 and Redis. The files in this folder are not deployment credentials or proof that
-an adapted project has passed integration tests.
+an adapted project has passed integration tests. The repository's official CI
+combination is Python 3.12, PostgreSQL 17, and Redis 7; test any other versions
+in the generated project's own environment before claiming support.
 
 ## Configure And Run
 
-From this folder, install with `python -m pip install -e ".[test]"`. Copy
+From this folder, first run `python -B -m pip install --upgrade "pip>=26.2"`,
+then install with `python -B -m pip install -e ".[test]"`. Copy
 `.env.example` to an untracked `.env` and replace every example credential and
 endpoint. Set `DATABASE_URL` for PostgreSQL/asyncpg, `REDIS_URL` for active JWT
 JTI and CAPTCHA state, and preferably a distinct `RATE_LIMIT_REDIS_URL` for
@@ -25,6 +28,18 @@ but assigns only the `user` role. After the intended first administrator has
 registered, have an authorized operator run `sql/bootstrap_super_admin.sql`
 against that immutable user ID from a trusted database session. There is no
 HTTP super-admin bootstrap or transfer route.
+
+`GET /health/live` confirms only that the application process can answer.
+`GET /health/ready` concurrently checks PostgreSQL, active-JTI Redis, and the
+rate-limit Redis with the configured bounded timeout. PostgreSQL must have the
+single expected Alembic head and the readable global `rbac_state` row, so the
+runtime database role needs `SELECT` access to `alembic_version` as well as the
+application tables. Each Redis must allow `PING` and a one-key Lua write/read/delete
+probe; the probe uses a random non-secret key, deletes it atomically on success,
+and gives an interrupted key a five-second TTL. The response exposes only the
+overall ready/unavailable result, never per-component states, connection strings,
+keys, or exception details. Use readiness, not liveness, to decide whether a
+deployment should receive traffic.
 
 ## Edit Rate Limits
 
@@ -57,11 +72,16 @@ used for deployment.
 Run these offline checks from the asset folder:
 
 ```powershell
-ruff format --check app tests
+ruff format --check --no-cache app tests
 ruff check --no-cache app tests
 mypy --no-incremental --cache-dir "$env:TEMP\fastapi-templates-xtn-mypy-cache" app tests
 python -B -m pytest -p no:cacheprovider -m "not postgresql" tests
+pip-audit --local --skip-editable --progress-spinner off
 ```
+
+The test extra requires `pytest>=9.0.3,<10` together with
+`pytest-asyncio>=1.4,<2`. Do not lower those ranges or the `pip>=26.2` audit
+baseline without rerunning `pip-audit` in the target environment.
 
 Real Redis-only tests run when a separately confirmed, initially empty
 `TEST_CAPTCHA_REDIS_URL` is provided; otherwise they skip. Its logical Redis

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fastapi-postgresql-rbac-example"
-version = "0.5.0"
+version = "0.5.1"
 description = "Opinionated single-project RBAC reference for FastAPI and PostgreSQL"
 requires-python = ">=3.12"
 dependencies = [
@@ -24,8 +24,9 @@ dependencies = [
 test = [
   "httpx>=0.28,<1",
   "mypy>=1.14,<3",
-  "pytest>=8.3,<9",
-  "pytest-asyncio>=0.25,<1",
+  "pip-audit>=2.7,<3",
+  "pytest>=9.0.3,<10",
+  "pytest-asyncio>=1.4,<2",
   "ruff>=0.9,<1",
 ]
 

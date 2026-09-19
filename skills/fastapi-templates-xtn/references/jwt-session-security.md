@@ -35,6 +35,8 @@ Expose it as typed configuration and explicitly tell the user to adjust it for
 the product's risk, reauthentication cost, and expected user experience. A
 high-risk administration surface may need a much shorter lifetime. Never extend
 the lifetime silently merely to reduce login frequency.
+This required notice is not another blocking question in the initial product
+decision batch. Use 3600 seconds unless the owner asks for a different value.
 
 `sub` is the only required user data. The other four baseline claims are security
 protocol metadata. The approved `iss`/`aud` pair is optional protocol scoping,
@@ -282,16 +284,18 @@ The active-JTI gate materially limits, but does not erase, signing-key risk:
 
 ## Included Asset Status
 
-The working-tree asset implements the core Redis active-JTI adapter:
+The bundled asset implements the complete local-password login and Redis
+active-JTI path:
 minimal claims without `ver`, configurable one-hour default, registration before
-return, Redis-first validation, current PostgreSQL user/RBAC reload, user-version
-comparison, confirmed current-Token logout, and account-wide logout through
-`users.token_version`. Startup rejects obvious weak/example HS256 secrets, and
-input/output Tokens are bounded to 4096 bytes. It adds no individual PostgreSQL
-Token table. The product must still connect issuance to its trusted
-credential-verification path and select deployment-appropriate Redis durability.
+return after successful username/password verification, Redis-first validation,
+current PostgreSQL user/RBAC reload, user-version comparison, confirmed
+current-Token logout, and administrator-only lower-target account-wide
+revocation through `users.token_version`. Startup rejects weak/example HS256
+secrets, and input/output Tokens are bounded to 4096 bytes. It adds no
+individual PostgreSQL Token or session table.
 
-The immutable `v0.3.0` tag predates this adapter and retains its older
-`sub`/`ver`/`jti` behavior without Redis enforcement. Do not attribute the
-`Unreleased` behavior to that tag or call the working tree production-ready until
-the final Redis and PostgreSQL checks pass.
+Adopters must still supply deployment secrets, choose the simultaneous-login
+maximum, configure Redis durability and isolation, and run the required
+PostgreSQL/Redis checks for their target deployment. Do not describe an
+unverified deployment as production-ready merely because the bundled tests or
+reference implementation exist.

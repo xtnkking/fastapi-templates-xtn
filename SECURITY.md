@@ -29,6 +29,31 @@ XTN will acknowledge receipt, assess the report, and coordinate remediation and
 disclosure as availability permits. No response or resolution deadline is
 guaranteed. Please allow a reasonable remediation period before disclosure.
 
+## Dependency audit exceptions
+
+CI runs `pip-audit` and a known dependency vulnerability normally blocks a
+release. A temporary exception is allowed only when no usable fix exists and
+the maintainer has reviewed the actual exposure. It must be explicit in the
+repository and in the exact CI `--ignore-vuln` configuration; a local-only or
+silent ignore is not acceptable.
+
+The `v0.5.1` baseline resolves the currently identified toolchain findings by
+requiring `pytest>=9.0.3,<10` with `pytest-asyncio>=1.4,<2`, and upgrading
+release CI to `pip>=26.2` before installation and audit. Lowering any of these
+baselines requires a fresh audit.
+
+Each exception must record all of the following:
+
+- vulnerability identifier and affected dependency/version;
+- impact on this Skill and on generated services;
+- reason the project cannot upgrade, replace, or remove the dependency yet;
+- responsible owner; and
+- a concrete review date.
+
+The owner must remove the exception as soon as a usable fix exists. An
+exception whose review date has passed must be reviewed again or removed before
+release. There are currently no dependency-audit exceptions.
+
 ## Scope
 
 Reports may cover the Skill instructions, the bundled FastAPI/PostgreSQL RBAC

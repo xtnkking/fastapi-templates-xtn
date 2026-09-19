@@ -3,16 +3,21 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi.routing import APIRoute
 from starlette.requests import Request
 
 import app.rate_limit_dependencies as dependency_module
 from app.api_contract import BusinessCode
+from app.authentication_api import authentication_routers
 from app.rate_limit import RateLimitResult, RateLimitUnavailable
 from app.rate_limit_dependencies import (
+    AUTHENTICATED_RATE_LIMIT_EXEMPT_OPERATIONS,
+    AUTHENTICATED_RATE_LIMIT_RULES,
     RateLimitExceeded,
     actor_policy_for,
     enforce_principal_rate_limit,
 )
+from app.rbac.api import router as access_router
 from app.rbac.domain import Principal
 from app.rbac.errors import RbacError
 from app.settings import Settings, get_settings
@@ -60,9 +65,9 @@ def request_for(
         ("POST", "reset_user_password", 60),
         ("POST", "create_user", 60),
         ("POST", "update_registration_policy", 60),
-        ("POST", "force_logout_user", 60),
+        ("POST", "revoke_user_sessions", 60),
         ("POST", "logout_current_access_token", 120),
-        ("POST", "create_invoice", 120),
+        ("POST", "change_my_password", 120),
     ],
 )
 def test_each_operation_gets_its_own_key_and_class_quota(
@@ -77,6 +82,66 @@ def test_each_operation_gets_its_own_key_and_class_quota(
     assert policy.name == operation_id
     assert policy.limit == limit
     assert policy.window_seconds == 60
+
+
+def test_registered_session_revocation_route_uses_authorization_write_quota() -> None:
+    route = next(
+        route
+        for route in access_router.routes
+        if getattr(route, "path", None) == "/api/v1/users/{user_id}/sessions/revoke"
+        and "POST" in (getattr(route, "methods", None) or set())
+    )
+    application = SimpleNamespace(state=SimpleNamespace())
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "headers": [],
+            "app": application,
+            "route": route,
+        }
+    )
+
+    policy = actor_policy_for(request, enabled_settings())
+
+    assert policy.name == "revoke_user_sessions"
+    assert policy.limit == 60
+    assert policy.window_seconds == 60
+
+
+def test_every_registered_operation_has_an_explicit_admission_class() -> None:
+    anonymous_operation_ids = {
+        "create_public_captcha",
+        "read_registration_status",
+        "register_local_account",
+        "login_with_local_password",
+        "complete_temporary_password_reset",
+    }
+    registered: dict[str, tuple[str, str]] = {}
+    for current_router in (*authentication_routers(), access_router):
+        for route in current_router.routes:
+            if not isinstance(route, APIRoute) or route.operation_id is None:
+                continue
+            methods = route.methods or set()
+            assert len(methods) == 1
+            method = next(iter(methods))
+            assert route.operation_id not in registered
+            registered[route.operation_id] = (method, route.path)
+
+    classified = set(AUTHENTICATED_RATE_LIMIT_RULES)
+    exempt = set(AUTHENTICATED_RATE_LIMIT_EXEMPT_OPERATIONS)
+    assert classified.isdisjoint(exempt)
+    assert set(registered) == anonymous_operation_ids | classified | exempt
+    for operation_id, (
+        expected_method,
+        _quota_name,
+    ) in AUTHENTICATED_RATE_LIMIT_RULES.items():
+        assert registered[operation_id][0] == expected_method
+    for (
+        operation_id,
+        expected_method,
+    ) in AUTHENTICATED_RATE_LIMIT_EXEMPT_OPERATIONS.items():
+        assert registered[operation_id][0] == expected_method
 
 
 @pytest.mark.asyncio
@@ -141,6 +206,13 @@ async def test_missing_operation_id_fails_closed() -> None:
     with pytest.raises(RbacError) as caught:
         await enforce_principal_rate_limit(request, principal(), enabled_settings())
     assert caught.value.status_code == 503
+
+
+def test_unknown_or_renamed_operation_does_not_fall_back_to_ordinary_write() -> None:
+    request = request_for(method="POST", operation_id="renamed_operation")
+
+    with pytest.raises(RateLimitUnavailable):
+        actor_policy_for(request, enabled_settings())
 
 
 @pytest.mark.asyncio

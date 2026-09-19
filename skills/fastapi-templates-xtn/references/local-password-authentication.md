@@ -13,14 +13,18 @@ For a new project, default to `user_name` plus password, public registration
 enabled, no self-service forgot-password endpoint, and no email/phone field or
 delivery provider. Before implementation, ask in one batch:
 
-1. Is username comparison case-sensitive? Leading/trailing spaces always trim,
-   and deleted usernames remain permanently reserved.
+1. Is username comparison case-sensitive? Require the owner to choose; neither
+   behavior is a generic recommendation and `全部接受` / `Accept all` cannot
+   choose it. Leading/trailing spaces always trim, and deleted usernames remain
+   permanently reserved.
 2. Besides length 8..60 characters, must the password contain uppercase,
    lowercase, digits, or symbols? Each composition condition defaults to no.
 3. What is the maximum simultaneously active login count for one user? The
-   number is the project's choice; when full, a successful new login atomically
-   evicts the oldest. These are Redis login records and timestamps, not a
-   physical-device inventory.
+   number is the project's choice and must be a positive integer. Do not invent
+   or recommend a generic number, and do not let `全部接受` / `Accept all` supply
+   a missing number. When full, a successful new login atomically evicts the
+   oldest. These are Redis login records and timestamps, not a physical-device
+   inventory.
 4. If existing users have no password, how will an administrator verify and
    enroll them? The default is a controlled temporary-password reset, not a
    shared initial password.
@@ -28,6 +32,9 @@ delivery provider. Before implementation, ask in one batch:
 Show quota defaults together and allow the user to accept them or name changes.
 Do not ask repeatedly about already decided product facts. `iss`/`aud` require
 their own explicit consent as described in [JWT security](jwt-session-security.md).
+Tell the owner separately that Access Tokens default to 3600 seconds and point
+to the setting; this is a required notice, not another blocking choice unless
+the owner asks to change it.
 
 ## Username And Password Policy
 

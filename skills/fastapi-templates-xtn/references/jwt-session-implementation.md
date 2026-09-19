@@ -424,24 +424,26 @@ lifespan cleanup and inject it into authentication. Do not create one client per
 request or add a local positive cache. Reject bearer values over 4096 bytes before
 JWT parsing unless a documented upstream protocol requires a smaller limit.
 
-## Asset Status And Product Checklist
+## Bundled Asset And Product Checklist
 
-The current `Unreleased` asset implements the core adapter described here using
-its established UUIDv4 entity-ID profile:
+The bundled asset implements the adapter described here using its established
+UUIDv4 entity-ID profile and wires it into the local username/password login
+path:
 the default exact five-claim profile, the optional consented `iss`/`aud` pair,
 the configurable 3600-second default, Redis lifespan ownership,
 atomic Redis 5.0+ `SET NX EX` / `PEXPIREAT` registration before return,
 Redis-first request validation,
 PostgreSQL user-version comparison, and logout. It adds no individual PostgreSQL
 Token table or migration. It also validates the HS256 secret at startup, bounds
-  input and output Tokens to 4096 bytes, and provides current-Token logout plus
-  authorized lower-target administrative session revocation. The immutable `v0.3.0` tag predates this
-implementation and must not be described as containing it.
+input and output Tokens to 4096 bytes, and provides current-Token logout plus
+authorized lower-target administrative session revocation.
 
-Before adapting or shipping the current asset:
+Before adapting or shipping the asset:
 
-1. Connect `issue_access_token` to the product's trusted credential-verification
-   path. Never activate a Redis miss from a bearer request.
+1. Preserve the existing order of trusted credential verification followed by
+   `issue_access_token`. If another identity provider replaces local passwords,
+   connect it at that same boundary. Never activate a Redis miss from a bearer
+   request.
 2. Explicitly tell the user that the one-hour default must be adjusted when the
    product's risk and login experience require a different lifetime.
 3. Leave `iss` and `aud` absent by default. Before adding the pair, explain its
@@ -457,5 +459,5 @@ Before adapting or shipping the current asset:
    current logout, administrator revocation, weak-secret and Token-size rejection, in-flight
    request, failover, and signing-key compromise cases.
 
-Do not call the `Unreleased` worktree production-ready until its final Redis and
-PostgreSQL checks pass for the target deployment.
+Do not call a deployment production-ready until its required Redis and
+PostgreSQL checks pass in the target environment.

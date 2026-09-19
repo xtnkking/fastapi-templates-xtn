@@ -1,5 +1,8 @@
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Literal
 
 from fastapi import Request
 
@@ -14,34 +17,51 @@ from app.settings import Settings
 
 logger = logging.getLogger(__name__)
 
-_MANAGEMENT_READ_OPERATIONS = frozenset(
+type ActorQuotaName = Literal[
+    "authenticated_read",
+    "management_read",
+    "ordinary_write",
+    "authorization_write",
+]
+
+AUTHENTICATED_RATE_LIMIT_RULES: Mapping[
+    str, tuple[Literal["GET", "POST"], ActorQuotaName]
+] = MappingProxyType(
     {
-        "list_permissions",
-        "get_permission",
-        "list_roles",
-        "get_role",
-        "list_users",
-        "get_user",
+        "logout_current_access_token": ("POST", "ordinary_write"),
+        "get_my_access": ("GET", "authenticated_read"),
+        "my_active_sessions": ("GET", "authenticated_read"),
+        "list_permissions": ("GET", "management_read"),
+        "get_permission": ("GET", "management_read"),
+        "list_roles": ("GET", "management_read"),
+        "get_role": ("GET", "management_read"),
+        "list_users": ("GET", "management_read"),
+        "get_user": ("GET", "management_read"),
+        "change_my_password": ("POST", "ordinary_write"),
+        "create_role": ("POST", "authorization_write"),
+        "update_role": ("POST", "authorization_write"),
+        "disable_role": ("POST", "authorization_write"),
+        "enable_role": ("POST", "authorization_write"),
+        "delete_role": ("POST", "authorization_write"),
+        "bind_role_permissions": ("POST", "authorization_write"),
+        "unbind_role_permissions": ("POST", "authorization_write"),
+        "bind_user_roles": ("POST", "authorization_write"),
+        "unbind_user_roles": ("POST", "authorization_write"),
+        "disable_user": ("POST", "authorization_write"),
+        "enable_user": ("POST", "authorization_write"),
+        "reset_user_password": ("POST", "authorization_write"),
+        "create_user": ("POST", "authorization_write"),
+        "revoke_user_sessions": ("POST", "authorization_write"),
+        "update_registration_policy": ("POST", "authorization_write"),
     }
 )
-_AUTHORIZATION_WRITE_OPERATIONS = frozenset(
-    {
-        "create_role",
-        "update_role",
-        "disable_role",
-        "enable_role",
-        "delete_role",
-        "bind_role_permissions",
-        "unbind_role_permissions",
-        "bind_user_roles",
-        "unbind_user_roles",
-        "disable_user",
-        "enable_user",
-        "reset_user_password",
-        "create_user",
-        "force_logout_user",
-        "update_registration_policy",
-    }
+AUTHENTICATED_RATE_LIMIT_EXEMPT_OPERATIONS: Mapping[str, Literal["POST"]] = (
+    MappingProxyType(
+        {
+            # This route applies a separate quota for each authenticated CAPTCHA scene.
+            "create_authenticated_captcha": "POST",
+        }
+    )
 )
 
 
@@ -60,17 +80,19 @@ def _operation_id(request: Request) -> str:
 def actor_policy_for(request: Request, settings: Settings) -> RateLimitPolicy:
     policies = SecurityPolicies.from_settings(settings)
     operation_id = _operation_id(request)
-    if not operation_id:
+    rule = AUTHENTICATED_RATE_LIMIT_RULES.get(operation_id)
+    if rule is None:
         raise RateLimitUnavailable("protected operation needs a stable identifier")
-    if request.method == "GET":
-        if operation_id in _MANAGEMENT_READ_OPERATIONS:
-            quota = policies.management_read
-        else:
-            quota = policies.authenticated_read
-    elif request.method == "POST" and operation_id in _AUTHORIZATION_WRITE_OPERATIONS:
-        quota = policies.authorization_write
-    else:
-        quota = policies.ordinary_write
+    expected_method, quota_name = rule
+    if request.method != expected_method:
+        raise RateLimitUnavailable("protected operation method does not match policy")
+    quotas: dict[ActorQuotaName, RateLimitPolicy] = {
+        "authenticated_read": policies.authenticated_read,
+        "management_read": policies.management_read,
+        "ordinary_write": policies.ordinary_write,
+        "authorization_write": policies.authorization_write,
+    }
+    quota = quotas[quota_name]
     try:
         return RateLimitPolicy(
             name=operation_id,
@@ -92,7 +114,11 @@ async def enforce_principal_rate_limit(
         return
     # Each CAPTCHA scene has its own 10/5-minute quota in check_captcha_create.
     # A generic bucket here would combine unrelated private scenes.
-    if _operation_id(request) == "create_authenticated_captcha":
+    operation_id = _operation_id(request)
+    exempt_method = AUTHENTICATED_RATE_LIMIT_EXEMPT_OPERATIONS.get(operation_id)
+    if exempt_method is not None:
+        if request.method != exempt_method:
+            raise unavailable("rate_limit_policy_unavailable")
         return
     try:
         policy = actor_policy_for(request, settings)

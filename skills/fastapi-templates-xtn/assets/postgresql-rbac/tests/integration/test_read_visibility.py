@@ -114,6 +114,31 @@ async def test_user_reads_apply_strict_visibility_and_filtered_pagination(
         headers=manager_headers,
     )
     assert visible.status_code == 200
+    assert visible.json()["data"]["user_name"] == world.users["lower"].user_name
+
+    exact_match = await client.get(
+        f"/api/v1/users?user_name={world.users['lower'].user_name}",
+        headers=manager_headers,
+    )
+    assert exact_match.status_code == 200
+    exact_page = exact_match.json()["data"]
+    assert exact_page["total"] == 1
+    assert [item["id"] for item in exact_page["items"]] == [
+        str(world.users["lower"].id)
+    ]
+    assert exact_page["items"][0]["user_name"] == world.users["lower"].user_name
+
+    hidden_exact_match = await client.get(
+        f"/api/v1/users?user_name={world.users['peer'].user_name}",
+        headers=manager_headers,
+    )
+    assert hidden_exact_match.status_code == 200
+    assert hidden_exact_match.json()["data"] == {
+        "items": [],
+        "page": 1,
+        "page_size": 20,
+        "total": 0,
+    }
 
     super_admin_headers = await _headers(access_token, world.users["super_admin"])
     super_admin_list = await client.get(
@@ -231,6 +256,7 @@ async def test_disabled_roles_remain_assigned_but_do_not_contribute_authority(
     data = response.json()["data"]
     assert set(data) == {
         "id",
+        "user_name",
         "is_active",
         "assigned_role_ids",
         "effective_role_ids",
@@ -305,3 +331,4 @@ async def test_list_select_count_does_not_grow_with_page_size(
     )
 
     assert full_page == one_item
+    assert full_page <= 8

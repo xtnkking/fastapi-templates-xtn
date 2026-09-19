@@ -9,6 +9,7 @@ def test_user_response_separates_assigned_and_effective_authority() -> None:
     disabled_role_id = uuid.uuid4()
     response = UserResponse(
         id=uuid.uuid4(),
+        user_name="alice",
         is_active=True,
         assigned_role_ids=(base_role_id, disabled_role_id),
         effective_role_ids=(base_role_id,),
@@ -18,12 +19,14 @@ def test_user_response_separates_assigned_and_effective_authority() -> None:
     )
 
     assert response.assigned_role_ids == (base_role_id, disabled_role_id)
+    assert response.user_name == "alice"
     assert response.effective_role_ids == (base_role_id,)
     assert response.effective_management_tier == 0
 
     properties = UserResponse.model_json_schema()["properties"]
     assert {
         "assigned_role_ids",
+        "user_name",
         "effective_role_ids",
         "effective_management_tier",
         "effective_permissions",

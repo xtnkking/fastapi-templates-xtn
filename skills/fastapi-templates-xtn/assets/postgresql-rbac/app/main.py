@@ -1,13 +1,16 @@
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from time import perf_counter
+from typing import Literal, cast
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from redis.asyncio import Redis
+from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -194,6 +197,132 @@ app = FastAPI(title="PostgreSQL Access Control Example", lifespan=lifespan)
 for authentication_router in authentication_routers():
     app.include_router(authentication_router)
 app.include_router(access_router)
+
+
+class _ReadinessDependencyUnavailable(RuntimeError):
+    """Represent missing or malformed readiness authority without secret detail."""
+
+
+EXPECTED_ALEMBIC_HEAD = "0004_password_auth"
+_READINESS_REDIS_KEY_TTL_MS = 5_000
+_READINESS_REDIS_CLEANUP_TIMEOUT_SECONDS = 0.1
+_POSTGRESQL_READINESS_QUERY = text(
+    """
+    SELECT
+        (SELECT count(*) FROM alembic_version) = 1
+        AND EXISTS (
+            SELECT 1
+            FROM alembic_version
+            WHERE version_num = :expected_head
+        )
+        AND EXISTS (
+            SELECT 1
+            FROM rbac_state
+            WHERE scope = 'global'
+              AND epoch >= 0
+              AND public_registration_enabled IN (TRUE, FALSE)
+        )
+    """
+)
+_REDIS_READINESS_SCRIPT = """
+local probe_key = KEYS[1]
+local probe_value = ARGV[1]
+local ttl_ms = tonumber(ARGV[2])
+if not ttl_ms or ttl_ms <= 0 then
+    return 0
+end
+redis.call('PSETEX', probe_key, ttl_ms, probe_value)
+if redis.call('GET', probe_key) ~= probe_value then
+    redis.call('DEL', probe_key)
+    return 0
+end
+return redis.call('DEL', probe_key)
+"""
+
+
+async def _probe_postgresql() -> None:
+    async with engine.connect() as connection:
+        ready = await connection.scalar(
+            _POSTGRESQL_READINESS_QUERY,
+            {"expected_head": EXPECTED_ALEMBIC_HEAD},
+        )
+        if ready is not True:
+            raise _ReadinessDependencyUnavailable
+
+
+async def _best_effort_delete_readiness_key(client: Redis, key: str) -> None:
+    try:
+        async with asyncio.timeout(_READINESS_REDIS_CLEANUP_TIMEOUT_SECONDS):
+            await cast(Awaitable[int], client.delete(key))
+    except asyncio.CancelledError:
+        # This helper runs only while the primary probe exception is unwinding.
+        # A second cancellation from cleanup must not replace that exception.
+        return
+    except Exception:
+        # The probe key has a short TTL; cleanup must not replace the probe failure.
+        return
+
+
+async def _probe_redis(
+    client: Redis | None,
+    *,
+    key_namespace: Literal["active-jti", "rate-limit"],
+) -> None:
+    if client is None:
+        raise _ReadinessDependencyUnavailable
+    key = f"readiness:v1:{key_namespace}:{uuid.uuid4().hex}"
+    value = uuid.uuid4().hex
+    cleanup_needed = True
+    try:
+        if await cast(Awaitable[bool], client.ping()) is not True:
+            raise _ReadinessDependencyUnavailable
+        result = await cast(
+            Awaitable[object],
+            client.eval(
+                _REDIS_READINESS_SCRIPT,
+                1,
+                key,
+                value,
+                str(_READINESS_REDIS_KEY_TTL_MS),
+            ),
+        )
+        if type(result) is not int or result != 1:
+            raise _ReadinessDependencyUnavailable
+        cleanup_needed = False
+    finally:
+        if cleanup_needed:
+            await _best_effort_delete_readiness_key(client, key)
+
+
+async def _run_readiness_check(
+    *,
+    request: Request,
+    dependency: str,
+    timeout_seconds: float,
+    operation: Callable[[], Awaitable[None]],
+) -> bool:
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            await operation()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        safe_log(
+            logger,
+            logging.ERROR,
+            "dependency.readiness.unavailable",
+            extra={
+                "request_id": request_id_for(request),
+                "http_status_code": 503,
+                "business_code": int(BusinessCode.SERVICE_UNAVAILABLE),
+                "dependency": dependency,
+                "dependency_operation": "readiness_check",
+                "error_category": dependency_error_category(exc),
+                **safe_exception_metadata(exc),
+            },
+        )
+        return False
+    return True
 
 
 class RequestObservabilityMiddleware:
@@ -582,4 +711,62 @@ async def liveness(request: Request) -> ApiResponse[dict[str, str]]:
         code=BusinessCode.OK,
         message="服务正常",
         data={"status": "ok"},
+    )
+
+
+@app.get(
+    "/health/ready",
+    response_model=ApiResponse[dict[str, str]],
+    include_in_schema=False,
+)
+async def readiness(
+    request: Request,
+    response: Response,
+) -> ApiResponse[dict[str, str]] | JSONResponse:
+    settings = get_settings()
+    active_jti_redis = getattr(request.app.state, "redis", None)
+    rate_limit_redis = getattr(request.app.state, "rate_limit_redis", None)
+    results = await asyncio.gather(
+        _run_readiness_check(
+            request=request,
+            dependency="postgresql",
+            timeout_seconds=settings.readiness_timeout_seconds,
+            operation=_probe_postgresql,
+        ),
+        _run_readiness_check(
+            request=request,
+            dependency="active_jti_redis",
+            timeout_seconds=settings.readiness_timeout_seconds,
+            operation=lambda: _probe_redis(
+                active_jti_redis,
+                key_namespace="active-jti",
+            ),
+        ),
+        _run_readiness_check(
+            request=request,
+            dependency="rate_limit_redis",
+            timeout_seconds=settings.readiness_timeout_seconds,
+            operation=lambda: _probe_redis(
+                rate_limit_redis,
+                key_namespace="rate-limit",
+            ),
+        ),
+    )
+    if not all(results):
+        return JSONResponse(
+            status_code=503,
+            content=error_content(
+                request,
+                code=BusinessCode.SERVICE_UNAVAILABLE,
+                message="服务暂时不可用",
+            ),
+            headers=request_id_headers(request, {"Cache-Control": "no-store"}),
+        )
+
+    response.headers["Cache-Control"] = "no-store"
+    return api_response(
+        request,
+        code=BusinessCode.OK,
+        message="服务已就绪",
+        data={"status": "ready"},
     )

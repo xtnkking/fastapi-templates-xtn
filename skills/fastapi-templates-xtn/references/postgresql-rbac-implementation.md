@@ -6,6 +6,11 @@ when concrete code is requested. The maintained example is in
 baseline or adapt every equivalent boundary in an existing application. Do not
 copy only the route layer.
 
+For a maintainer-facing Chinese map of how authentication, authorization,
+rate limiting, logging, and audits fit together, read
+[中文架构总览](architecture-overview.zh-CN.md). This English reference remains
+the authoritative detailed implementation contract.
+
 ## Fixed Baseline
 
 The example deliberately resolves choices that commonly produce security gaps:
@@ -23,7 +28,7 @@ The example deliberately resolves choices that commonly produce security gaps:
 | Hierarchy | Larger tier is higher; ordinary management requires strict `>` |
 | Protected authority | The `super_admin` identity is outside ordinary administration |
 | Production token target | Exact default `sub`/`jti`/`iat`/`exp`/`token_type`; consented optional `iss`/`aud` pair; no profile or authorization data |
-| Working-tree token adapter | Default five-claim or explicitly approved seven-claim profile, configurable 3600-second default, required Redis active-JTI validation and project-chosen simultaneous-login maximum; no individual PostgreSQL Token table |
+| Bundled token adapter | Default five-claim or explicitly approved seven-claim profile, configurable 3600-second default, required Redis active-JTI validation and project-chosen simultaneous-login maximum; no individual PostgreSQL Token table |
 | Permission cache | None; versions remain available for a later versioned cache |
 | Authorization writes | Global guard first, canonical row locks, reload, policy decision, mutation, version bump, audit |
 | Public API | Neutral `/api/v1` GET/POST routes with the standard numeric-code envelope |
@@ -94,8 +99,8 @@ weaken authentication, authorization, idempotency, or concurrency requirements.
   [`0003_business_audit.py`](../assets/postgresql-rbac/alembic/versions/0003_business_audit.py)
   adds generic append-only business audit.
 - [`0004_password_auth.py`](../assets/postgresql-rbac/alembic/versions/0004_password_auth.py)
-  adds password fields on `users`, account-security audit, and the dedicated
-  administrator-reset capability.
+  adds password fields on `users`, the persisted public-registration switch,
+  account-security audit, and the dedicated administrator-reset capability.
 - [`tests`](../assets/postgresql-rbac/tests/) exercises PostgreSQL behavior,
   including the public contract, system roles, multi-role union, strict
   hierarchy, bounded permission grants, direct and indirect self-elevation,
@@ -142,21 +147,25 @@ database owner and is not a claim of cryptographic immutability. Follow
 state rules, and [Operational logging](operational-logging.md) for non-durable
 request telemetry.
 
-`rbac_state` is coordination metadata, not a business entity or Token table. It
-has exactly two non-null columns and one seeded row:
+`rbac_state` is coordination metadata, not a business entity or Token table. At
+the current migration head it has exactly three non-null columns and one seeded
+row:
 
 | Column | PostgreSQL type | Contract |
 | --- | --- | --- |
 | `scope` | `varchar(16)` | Primary key constrained to the single value `global` |
 | `epoch` | `bigint` | Defaults to `0`, remains non-negative, and increments only for an effective RBAC change |
+| `public_registration_enabled` | `boolean` | Persisted public-registration switch; defaults to `true` and only the current `super_admin` may change it through the protected API |
 
-The initial data is `scope='global', epoch=0`. Every RBAC writer locks this row
-with `SELECT ... FOR UPDATE` before discovering affected assignments or locking
-users and roles. Missing state fails closed; runtime code never recreates it.
-There is no synthetic ID, creation timestamp, user identity, JWT, or session
-data in this table. Runtime and production-maintenance roles cannot delete,
-truncate, disable, or soft-delete it; database enforcement must reject those
-operations.
+At the current head the initial data is `scope='global', epoch=0,
+public_registration_enabled=true`. Every RBAC writer locks this row with
+`SELECT ... FOR UPDATE` before discovering affected assignments or locking
+users and roles. Registration reads and changes the same row so the public
+toggle is authoritative and transactional. Missing state fails closed; runtime
+code never recreates it. There is no synthetic ID, creation timestamp, user
+identity, JWT, or session data in this table. Runtime and
+production-maintenance roles cannot delete, truncate, or soft-delete it;
+database enforcement must reject those operations.
 
 This bundled asset selects the compliant PostgreSQL UUIDv4 profile for user,
 role, permission, audit, and business entity IDs. New runtime entity IDs are
@@ -176,6 +185,14 @@ at every write and login lookup. Email login and verified email recovery are
 outside this baseline. Preserve an existing application's different identity
 contract unless changing it is requested. Immutable `users.id`, never the
 username, is the JWT subject and operator-bootstrap target.
+
+The bundled profile currently compares usernames case-sensitively: normalization
+trims both ends but preserves ASCII letter casing. The management user-list
+`user_name` query runs that same normalization before its exact database match,
+so surrounding whitespace is ignored while `Alice` and `alice` remain distinct.
+If a project selects case-insensitive identity instead, change creation, login,
+management lookup, and PostgreSQL uniqueness together rather than lowercasing
+only one route.
 
 `user_roles` and `role_permissions` use non-sequential surrogate IDs so each bind
 is a distinct episode. They carry trusted bind and soft-delete actor/timestamp
@@ -548,6 +565,10 @@ The asset is a source template. Preserve its `LICENSE`, `NOTICE`, and
 file, generate a fresh JWT secret, and set it as `JWT_SECRET` before startup.
 Never reuse example, test, or documentation secrets.
 
+The official verification profile is Python 3.12, PostgreSQL 17, and Redis 7.
+Other versions require project-owned validation and must not be described as
+verified by this Skill until that validation passes.
+
 PowerShell:
 
 ```powershell
@@ -599,12 +620,13 @@ The main product-specific decisions are:
    [Identity and soft-delete lifecycle](identity-soft-delete.md).
 2. Add stable business capabilities without weakening the fixed administration
    catalog or system-role invariants.
-3. Connect the asset's issuance function, `get_current_principal`, and user
-   provisioning to the product's trusted login or identity provider. The current
-   `Unreleased` adapter implements the default exact five claims, an optional
-   `iss`/`aud` pair, Redis registration and
-   validation, user-version comparison, and logout; the product still owns
-   credential verification and the point that calls issuance. Follow
+3. Preserve the asset's connected local-password login, issuance function,
+   `get_current_principal`, and user-provisioning boundary. If the product
+   deliberately replaces local passwords with another identity provider,
+   connect that trusted verifier at the same issuance boundary. The bundled
+   adapter implements the default exact five claims, an optional `iss`/`aud`
+   pair, Redis registration and validation, user-version comparison, and
+   logout. Follow
    [JWT access-token security](jwt-session-security.md): require the canonical
    selected user ID as `sub` and a UUIDv4 `jti`, remove `ver` from JWT, bind the current
    `users.token_version` in the Redis value, and require the exact active-JTI
@@ -635,7 +657,5 @@ grant bounds, default denial, public administration routes, lock order, or
 ordinary self-management behavior unless the existing application explicitly
 contradicts this baseline.
 
-The immutable `v0.3.0` tag predates the Redis adapter and still uses the older
-`sub`/`ver`/`jti` shape. Do not describe that historical tag as containing the
-current `Unreleased` behavior, and do not call the working tree production-ready
-until its final Redis and PostgreSQL checks pass.
+Do not call a deployment production-ready until its required Redis and
+PostgreSQL checks pass in the target environment.

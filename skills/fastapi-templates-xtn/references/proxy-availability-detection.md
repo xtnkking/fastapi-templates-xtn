@@ -4,6 +4,8 @@ Read this reference only when the request explicitly needs proxy availability,
 latency, exit-IP diagnostics, cached check results, or single/batch checks. The
 existence of a proxy model or ordinary proxy CRUD is not a loading condition.
 Do not add proxy management to an unrelated FastAPI or RBAC service.
+Treat this only as an opt-in extension inside a project already using this
+Skill; do not select or load this Skill solely for generic proxy checking.
 
 Search terms: `proxy check`, `availability`, `latency`, `exit IP`, `ip-api`,
 `connection_version`, `MGET`, `worker pool`.

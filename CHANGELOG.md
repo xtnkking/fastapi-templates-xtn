@@ -6,6 +6,40 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-19
+
+- Corrected login and registration admission order: the public-IP business
+  quota runs before CAPTCHA consumption, then CAPTCHA is consumed before any
+  password check, user creation, or Token issuance. A rate-limit denial does
+  not consume a CAPTCHA, while every accepted invalid-CAPTCHA attempt still
+  spends the login or registration quota.
+- Made authenticated route quotas fail closed when an operation is missing
+  from the explicit immutable policy map. Administrator session revocation now
+  uses the management-change quota instead of the ordinary-write quota.
+- Moved user/role visibility, exact username filtering, soft-delete filtering,
+  pagination, and totals into bounded PostgreSQL queries. User management
+  responses now include `user_name`, and hidden peers or higher users remain
+  indistinguishable from nonexistent targets.
+- Added `Cache-Control: no-store` to the current-session response and added
+  separate `/health/live` and dependency-aware `/health/ready` probes. The
+  readiness probe requires the single expected Alembic head and global
+  `rbac_state` row, then checks both Redis targets with `PING` and a Lua
+  write/read/delete round trip over random five-second keys. It uses bounded
+  timeouts and exposes only overall readiness, never connection details, keys,
+  component states, or internal exceptions.
+- Compressed the main Skill entrypoint and added an opt-in Chinese architecture
+  overview while preserving on-demand routing to detailed references. Archived
+  the [v0.4.0 design discussion](docs/history/v0.4.0/DESIGN_REVIEW.zh-CN.md) so
+  it cannot be mistaken for current behavior.
+- Hardened CI with full-SHA action pins, Ruff formatting, dependency auditing,
+  stricter release validation, and route-policy coverage checks. The official
+  verification environment is Python 3.12, PostgreSQL 17, and Redis 7.
+- Resolved dependency-audit findings by requiring `pytest>=9.0.3,<10` with the
+  compatible `pytest-asyncio>=1.4,<2` line, and upgrading CI to `pip>=26.2`
+  before dependency installation and audit.
+- This release changes no database table or migration. The four migrations
+  published in `v0.5.0` remain immutable.
+
 ## [0.5.0] - 2026-09-13
 
 - **BREAKING:** New projects now use required, non-reusable

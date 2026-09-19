@@ -3,7 +3,12 @@
 Read this reference when a product needs durable evidence for important business
 actions such as refunds, balance adjustments, approvals, sensitive exports,
 destructive lifecycle changes, or security-relevant configuration changes. This
-module is optional. Do not add it merely because an application has CRUD routes.
+Skill already includes the `business_audit_events` table, SQLAlchemy model,
+append-only controls, sanitizer, and catalog-backed writer as reusable baseline
+infrastructure. That does not enable an audit event for any product action by
+itself. Add call sites only for actions the project has explicitly placed in a
+reviewed event catalog; never audit ordinary CRUD merely because the writer and
+table exist.
 
 Use progressive loading:
 
@@ -55,6 +60,10 @@ separate catalog and table such as `account_security_audit_events`. Do not store
 authentication material in any audit table.
 
 ## Decide What To Audit
+
+An empty product event catalog is valid: the infrastructure may exist while no
+ordinary business route writes an event. Enabling one action does not enable
+events for every action in that domain.
 
 An action belongs in the event catalog when at least one of these is true:
 

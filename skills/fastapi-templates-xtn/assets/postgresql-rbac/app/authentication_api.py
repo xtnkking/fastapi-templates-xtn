@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -75,12 +76,15 @@ def authentication_routers() -> tuple[APIRouter, ...]:
 def _identity_abuse_flow(
     request: Request,
     settings: SettingsDependency,
+    *,
+    post_admission_check: Callable[[], Awaitable[None]] | None = None,
 ) -> IdentityAbuseFlow | None:
     if not settings.rate_limit_enabled:
         return None
     return build_identity_abuse_flow(
         get_rate_limit_redis(request),
         settings=settings,
+        post_admission_check=post_admission_check,
     )
 
 
@@ -286,15 +290,25 @@ async def register_local_account(
     service: LocalAuthenticationServiceDependency,
 ) -> ApiResponse[RegistrationData]:
     response.headers["Cache-Control"] = "no-store"
-    await _consume_captcha(
+
+    async def check_captcha() -> None:
+        await _consume_captcha(
+            request,
+            settings,
+            captcha_id=body.captcha_id,
+            answer=body.captcha_answer,
+            scene="register",
+        )
+
+    abuse_flow = _identity_abuse_flow(
         request,
         settings,
-        captcha_id=body.captcha_id,
-        answer=body.captcha_answer,
-        scene="register",
+        post_admission_check=check_captcha,
     )
+    if abuse_flow is None:
+        await check_captcha()
     user_id = await service.register(
-        abuse_flow=_identity_abuse_flow(request, settings),
+        abuse_flow=abuse_flow,
         client_ip=trusted_client_ip(request.scope),
         user_name=body.user_name,
         password=body.password.get_secret_value(),
@@ -322,15 +336,25 @@ async def login_with_local_password(
     service: LocalAuthenticationServiceDependency,
 ) -> ApiResponse[AccessTokenData]:
     response.headers["Cache-Control"] = "no-store"
-    await _consume_captcha(
+
+    async def check_captcha() -> None:
+        await _consume_captcha(
+            request,
+            settings,
+            captcha_id=body.captcha_id,
+            answer=body.captcha_answer,
+            scene="login",
+        )
+
+    abuse_flow = _identity_abuse_flow(
         request,
         settings,
-        captcha_id=body.captcha_id,
-        answer=body.captcha_answer,
-        scene="login",
+        post_admission_check=check_captcha,
     )
+    if abuse_flow is None:
+        await check_captcha()
     identity = await service.authenticate(
-        abuse_flow=_identity_abuse_flow(request, settings),
+        abuse_flow=abuse_flow,
         client_ip=trusted_client_ip(request.scope),
         user_name=body.user_name,
         password=body.password.get_secret_value(),
@@ -364,9 +388,11 @@ async def login_with_local_password(
 )
 async def my_active_sessions(
     request: Request,
+    response: Response,
     settings: SettingsDependency,
     context: Annotated[AuthorizationContext, Depends(get_authorization_context)],
 ) -> ApiResponse[ActiveSessionsData]:
+    response.headers["Cache-Control"] = "no-store"
     timestamps = await list_active_sessions(
         get_redis(request),
         user_id=context.principal.user_id,

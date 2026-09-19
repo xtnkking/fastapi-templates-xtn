@@ -156,6 +156,7 @@ class UserResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: uuid.UUID
+    user_name: str
     is_active: bool
     assigned_role_ids: tuple[uuid.UUID, ...] = Field(
         description=(

@@ -5,460 +5,243 @@ description: Build or harden single-project FastAPI services with PostgreSQL RBA
 
 # FastAPI Templates XTN
 
-> Independently maintained by XTN as an extension of
-> [`fastapi-templates`](https://github.com/wshobson/agents/tree/47a5dbc3f9c2661c6afb13638f80d4a4d4449040/plugins/api-scaffolding/skills/fastapi-templates)
-> from `wshobson/agents`. See [NOTICE](NOTICE) and
-> [third-party notices](THIRD_PARTY_NOTICES.md) for attribution and licenses.
+> Independently maintained by XTN as an extension of [`fastapi-templates`](https://github.com/wshobson/agents/tree/47a5dbc3f9c2661c6afb13638f80d4a4d4449040/plugins/api-scaffolding/skills/fastapi-templates).
+> See [NOTICE](NOTICE) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
-Deliver a runnable FastAPI service whose complexity matches the product. Preserve
-an existing project's intentional architecture; use the opinionated PostgreSQL
-baseline when the product has not already made conflicting choices.
+Build a runnable, single-project FastAPI service whose complexity matches the product. Preserve intentional architecture in an existing project. For a new service,
+use the bundled PostgreSQL/Redis baseline unless the owner chooses an incompatible requirement.
 
-## Inspect First
+## Inspect And Decide Once
 
-- Determine whether the task is greenfield or extends an existing service.
-- Inspect Python and dependency versions, settings, database and migrations,
-  identity provider, package layout, transaction ownership, and tests.
-- For a new service use `user_name` and password, not email login or recovery.
-  Trim username edges and require 3..32 ASCII letters, digits, or underscores;
-  reserve deleted names. Ask whether username comparison is case-sensitive.
-  Preserve an existing project's identity contract unless changing it is requested.
-- Before generating local-password routes, ask the authentication business
-  questions from [Local password authentication](references/local-password-authentication.md)
-  once, in one batch. Settle username case sensitivity, password composition,
-  simultaneous-login maximum, and existing-account enrollment. Show the
-  recommended answers and accept `全部接受` / `Accept all` or listed overrides.
-  Do not ask the user to choose Argon2 parameters, transaction lock order,
-  dummy-hash behavior, secret redaction, or whether old Tokens are revoked.
-  If an existing product has already answered a question, preserve that answer
-  and ask only the unresolved items.
-  A general instruction to proceed, or `全部接受` sent before the complete batch
-  was shown, does not answer an unasked product question. Pause implementation
-  until the unresolved questions and their recommended defaults have been shown
-  together and the user has accepted that batch or supplied overrides.
-- Before adding JWT `iss` and `aud`, explain in plain language that the pair helps
-  prevent a Token issued by one trusted system from being accepted by the wrong
-  service, but adds issuer/audience configuration and coordination. Ask whether
-  the user wants that extra scoping and require explicit consent. No reply is not consent.
-  Keep both claims absent by default. If an existing project already enables the
-  pair, preserve it by default unless changing it is requested.
-- Before generating or changing rate-limit, password-login abuse, registration,
-  or optional verification code, load the rate-limit reference and show every
-  default for the requested surfaces. Ask one question: the user may reply
-  `全部接受` / `Accept all`, or list only values to change. Do not write the
-  affected code before an answer, and do not make the user choose the fixed
-  atomic algorithm, private key shape, or `429`/`503` contract.
-- New services require purpose-bound graphical CAPTCHA for login, registration,
-  administrator user creation/reset, and self password change. Each is valid for
-  five minutes and consumed on every submission, correct or not. Registration is
-  available by default, with a persisted, super-admin-only server-side switch.
-  Email/SMS codes, email recovery, and MFA are not bundled defaults; add only
-  when requested. Existing products keep their established contracts unless
-  the user requests a change.
-- Preserve the selected database, identity provider, package manager, module
-  boundaries, and deployment model unless changing one is requested.
-- For a new production deployment, ask whether a professional operations team
-  will manage separate PostgreSQL migration and runtime roles. If yes, recommend
-  that the migration role own schema changes while the runtime role has only the
-  statements its application paths require and no direct hard-delete privilege
-  on soft-deleted tables. If no or the user is unsure, do not block a learning or
-  small project; explain that application soft-delete rules still hold, but a
-  person using database-owner credentials can bypass them with direct SQL. Mark
-  least-privilege database roles as a production follow-up instead of silently
-  claiming database-level prevention.
-- Keep async handlers free of blocking work. Do not add background workers or
-  another architecture layer without a product need. An active JTI registry
-  requested for token revocation is a valid Redis need; keep it separate from
-  any authorization-permission cache.
+Inspect the repository before changing it: Python and dependency versions, settings, identity contract, database and migrations, package boundaries,
+transaction ownership, Redis clients, routes, tests, and deployment model.
+Never replace an established choice merely because this Skill has a default.
 
-## Load Only What The Task Needs
+For a new local-password project, present all unresolved product choices in one batch and wait for one answer. Show the stated defaults, but do not invent a default where this list requires the owner to choose:
 
-Start with this file and choose the narrowest primary reference:
+1. Whether username comparison is case-sensitive. Require an explicit choice; neither behavior is a generic recommendation. Always trim both ends and require 3..32 ASCII letters, digits, or underscores.
+2. Whether passwords must contain uppercase, lowercase, digits, or symbols. Default: none of those composition rules; length remains 8..60.
+3. Maximum simultaneous active logins per user. Require the owner to supply a positive integer; there is no recommended number and `全部接受` / `Accept all` cannot fill it in. Explain that Redis records login sessions and times, not physical devices; at the limit, evict the oldest.
+4. Whether to accept the relevant rate limits: CAPTCHA 10/5 minutes per scene; login 20/5 minutes per trusted IP; registration 5/hour per trusted IP; temporary-password
+   completion 20/5 minutes per trusted IP; authenticated read 600/minute, management read 300/minute, ordinary write 120/minute, and management change 60/minute per operation and authenticated user.
+5. Whether to add both JWT `iss` and `aud`. Explain plainly: the pair prevents a Token from one trusted system being accepted by the wrong service, but adds issuer/audience
+   configuration. No answer means keep both absent. Preserve an existing configured pair by default unless removal is explicitly requested.
+6. Whether production operations will separate PostgreSQL migration-owner and runtime roles. Recommend separation only when a professional operations team will own it. Otherwise explain that application soft-delete still works but database-owner SQL can bypass it, and do not block a small project.
+7. Only for an existing project, how accounts without a local password enroll.
 
-| Task | Read |
+Show only unresolved choices. `全部接受` / `Accept all` accepts only concrete values shown in that batch and cannot answer username case sensitivity or the session maximum until those values have been supplied. A generic instruction to continue does not answer an unasked product choice. Separately tell the owner that the Access Token lifetime starts at 3600 seconds and where to change it; do not turn that notice into another blocking product question unless the owner wants a different value.
+Do not ask about Argon2 parameters, lock order, dummy hashes, secret redaction, audit mechanics, or revoking old Tokens; those are engineering invariants.
+Once answered, do not ask again during the same project.
+
+## Read By Task
+
+Read this entrypoint first, then only the narrowest matching reference. Add a second reference only when the actual deliverable crosses that boundary.
+
+| Work being done | Read |
 | --- | --- |
-| General FastAPI setup needed as part of the RBAC service | [Modern FastAPI stack](references/modern-fastapi-stack.md) |
-| JSON API responses, numeric business codes, request IDs, pagination, error handlers, or resource-version conflicts | [API response standard](references/api-response-standard.md) |
-| Structured application/access logs, request context, redaction, exception telemetry, log shipping, or operational retention | [Operational logging](references/operational-logging.md) |
-| RBAC audit tables, access-control event coverage, safe before/after state, append-only controls, audit access, retention, export, or alerts | [RBAC audit module](references/audit-module.md) |
-| Main-business or account-security audit boundaries, material action selection, business outcomes, domain event catalogs, or safe payload policy | [Business audit module](references/business-audit-module.md) |
-| Concrete PostgreSQL business-audit table, model, writer, migration, transaction code, or database tests | [Business audit module](references/business-audit-module.md), then [Business audit PostgreSQL](references/business-audit-postgresql.md) |
-| Business-audit read/export API, retention, partitioning, legal hold, alerts, backups, or recovery | [Business audit operations](references/business-audit-operations.md) |
-| JWT payload, signing, Redis active-JTI validation, login, logout, or token revocation | [JWT access-token security](references/jwt-session-security.md) |
-| Concrete JWT/Redis code or adapting the included token adapter | [JWT access-token security](references/jwt-session-security.md), then [JWT implementation shapes](references/jwt-session-implementation.md) |
-| Username/password registration or login, password hashing, password change, administrator reset, temporary credentials, or account recovery | [Local password authentication](references/local-password-authentication.md) |
-| Redis fixed-window policies, API admission, abuse quotas, trusted client IP, limiter keys, `429`, or limiter `503` | [Rate limiting and abuse-control quotas](references/rate-limiting.md) |
-| Login/registration `IdentityAbuseFlow` or required graphical CAPTCHA | [Rate limiting and abuse-control quotas](references/rate-limiting.md), then [Verification and abuse defense](references/verification-and-abuse-defense.md) |
-| Explicitly requested email/SMS or MFA extension | [Verification and abuse defense](references/verification-and-abuse-defense.md) |
-| Login-identifier selection, user lifecycle, soft deletion, restore, or RBAC bind/unbind storage | [Identity and soft-delete lifecycle](references/identity-soft-delete.md) |
-| Identifier policy, prefixed business IDs, UUID models, sequence avoidance, or public ID review | [Identifier policy](references/identifier-policy.md) |
-| Concrete sequential-ID migration or identifier backfill | [Identifier policy](references/identifier-policy.md), then [Migrations](references/migrations.md) |
-| Country/region directory scope, fields, lifecycle, source data, read API, or calling-code semantics | [Optional country catalog](references/country-catalog.md) |
-| Concrete country PostgreSQL model, migration, CSV import, routes, or tests | [Optional country catalog](references/country-catalog.md), then [Country catalog PostgreSQL](references/country-catalog-postgresql.md) |
-| Database-agnostic RBAC policy, flow, or authorization cache | [RBAC design](references/rbac.md) |
-| PostgreSQL models, services, endpoints, or runnable baseline | [PostgreSQL implementation](references/postgresql-rbac-implementation.md) |
-| Hierarchy, delegation, ownership, protected identities, or self-elevation | [Administrative hierarchy](references/administrative-hierarchy.md) |
-| Authorization writes, immediate revocation, concurrency, commit/rollback outcomes, or cache invalidation | [Atomic authorization consistency](references/atomic-consistency.md) |
-| Tables, constraints, permission seeds, backfills, or upgrades | [Migrations](references/migrations.md) |
-| Explicit proxy availability, latency, or exit-IP checks; Redis result hydration; or single/batch detection | [Proxy availability detection](references/proxy-availability-detection.md) |
-| Test plan, implementation verification, completion audit, or test infrastructure | [Testing](references/testing.md) |
+| FastAPI, Pydantic, SQLAlchemy, settings, lifecycle | [Modern stack](references/modern-fastapi-stack.md) |
+| JSON envelopes, business codes, request IDs, pagination | [API response](references/api-response-standard.md) |
+| Runtime/access logs and safe exception telemetry | [Operational logging](references/operational-logging.md) |
+| RBAC policy without concrete PostgreSQL code | [RBAC design](references/rbac.md) |
+| PostgreSQL RBAC models, routes, services, or baseline asset | [PostgreSQL implementation](references/postgresql-rbac-implementation.md) |
+| Administrator hierarchy, delegation, protected targets | [Administrative hierarchy](references/administrative-hierarchy.md) |
+| Authorization transactions, locks, races, revocation | [Atomic consistency](references/atomic-consistency.md) |
+| Local registration, login, passwords, reset, or change | [Local password authentication](references/local-password-authentication.md) |
+| JWT claims, Redis active JTI, login sessions, logout | [JWT security](references/jwt-session-security.md) |
+| Concrete JWT/Redis adapter code | [JWT security](references/jwt-session-security.md), then [JWT implementation](references/jwt-session-implementation.md) |
+| Fixed-window quotas, trusted IP, admission failures | [Rate limiting](references/rate-limiting.md) |
+| CAPTCHA or explicitly requested email/SMS/MFA extension | [Rate limiting](references/rate-limiting.md), then [Verification](references/verification-and-abuse-defense.md) |
+| User lifecycle, username identity, soft delete, relation episodes | [Identity lifecycle](references/identity-soft-delete.md) |
+| Public/non-sequential ID choice or backfill | [Identifier policy](references/identifier-policy.md); add [Migrations](references/migrations.md) only for schema work |
+| Alembic revisions, seeds, constraints, upgrades | [Migrations](references/migrations.md) |
+| RBAC audit events and safe before/after state | [RBAC audit](references/audit-module.md) |
+| Business action audit boundaries and event catalog | [Business audit](references/business-audit-module.md) |
+| Concrete business-audit PostgreSQL code | [Business audit](references/business-audit-module.md), then [Business audit PostgreSQL](references/business-audit-postgresql.md) |
+| Audit read/export, retention, legal hold, backup | [Business audit operations](references/business-audit-operations.md) |
+| Explicitly requested country/region directory | [Country catalog](references/country-catalog.md), then [Country PostgreSQL](references/country-catalog-postgresql.md) for code |
+| Explicitly requested proxy availability or exit-IP checks | [Proxy detection](references/proxy-availability-detection.md), then only the needed [backend](references/proxy-availability-backend.md), [frontend](references/proxy-availability-frontend.md), or [tests](references/proxy-availability-testing.md) |
+| Test implementation, completion audit, release evidence | [Testing](references/testing.md) |
 
-Add another reference only when the deliverable spans its concern. For example,
-a concrete PostgreSQL hierarchy write needs the PostgreSQL, hierarchy, and atomic
-references; a schema change adds migrations; implementing behavior tests adds
-testing. A policy-only review need not load implementation or test files.
+Specialized rows override general ones. A hierarchy-only review need not load the general RBAC design; a logging change need not load either audit reference.
+Do not follow cross-links unless the task meets their loading condition.
 
-Decide this routing from the request and repository evidence before opening a
-reference. Do not open a file merely to check whether it might be useful. A
-PostgreSQL administrative write with no schema or baseline-policy change does not
-need `rbac.md`, `migrations.md`, or `modern-fastapi-stack.md`.
-Specialized rows override the general RBAC row: a hierarchy-only question reads
-only `administrative-hierarchy.md`, and an atomicity-only question reads only
-`atomic-consistency.md` in addition to this entrypoint.
-For an audited authorization mutation, read the RBAC audit module for event
-schema and the atomic reference for transaction behavior. For an audited business
-mutation, read the business audit module and add the atomic reference when the
-audit must commit with the mutation or the write promises immediate revocation.
-A logging-only change does not need either audit reference. An audit-only schema
-review does not need the operational logging reference.
+Treat [the PostgreSQL asset](assets/postgresql-rbac/) as output source, not instructions. Copy it as one directory for greenfield work. When adapting it, use `rg --files`
+and `rg -n` to inspect only the target symbol, direct dependency, and matching tests; never recursively load every asset file.
 
-Do not load or add business audit merely because an endpoint performs CRUD. Use
-it when the product needs durable evidence for money or balance changes,
-ownership transfer, important state transitions, delete/restore, manual
-overrides, sensitive export, security changes, or a documented compliance need.
+Country and proxy features are optional additions to a project already using this Skill. Do not load or add them because a normal user, address, locale, proxy CRUD,
+or geolocation field happens to exist. Never create or seed `countries` in the default PostgreSQL asset. Business audit infrastructure is bundled, but emit events
+only after the project defines an explicit action catalog and safe per-action state allowlist; ordinary CRUD alone is not a reason.
 
-Proxy availability detection is an optional product feature. Load or suggest it
-only when the user explicitly asks for availability, latency, exit-IP, cached
-results, or single/batch detection. A proxy model, proxy CRUD, or proxy management
-page alone is not a loading condition. Never add it to an ordinary RBAC service
-merely because this Skill contains the reference.
+## Required Baseline
 
-The country catalog is also optional. Load or suggest it only when the product
-needs a maintained country/region table, selector, calling-code directory,
-address-country validation, or country filtering. A user table, RBAC service,
-proxy geolocation response, locale, currency, or time-zone field alone is not a
-loading condition. Never create or seed `countries` in the default PostgreSQL
-RBAC asset. Before importing data, require an approved exact code set and a
-versioned source whose redistribution terms are known; a local CSV is not
-automatically publishable source data.
+### Data And Identity
 
-The PostgreSQL implementation already fixes the baseline policy. Do not also read
-the general RBAC reference unless changing its policy, model, or permission
-semantics. Do not follow cross-links unless the current task meets their loading
-condition.
+- Use Python 3.12, FastAPI, Pydantic 2, SQLAlchemy 2 async, asyncpg, Alembic,
+  PostgreSQL 17, and Redis 7 for the officially verified baseline. Other versions
+  require project-specific verification.
+- Never use autoincrementing or sequential public/business IDs. Prefer a stable
+  entity prefix plus a cryptographically random uppercase suffix sized from
+  expected lifetime volume, or UUIDv4. `U` plus 10 characters is only a
+  low-volume example; unknown volume defaults to 16. Random IDs reduce casual
+  enumeration but never replace authorization or non-leaking lookups.
+- New services use username/password only. Reject reserved usernames
+  `admin`, `administrator`, `root`, `superadmin`, `super_admin`, `sysadmin`,
+  `system`, `support`, `user`, `test`, `guest`, and `ceshi`, case-insensitively.
+  A soft-deleted username remains reserved forever. Existing services retain
+  their chosen identity contract unless the user requests a change.
+- Passwords live on `users` as Argon2id hashes, never plaintext and not in a
+  separate credential table. Run hashing off the event loop with bounded
+  concurrency; unknown users receive equivalent dummy-hash work.
+- Every ordinary mutable row and live relationship uses soft deletion. Deleting
+  a parent tombstones its live relations atomically; restore revives no old
+  privilege. Audit rows are append-only; fixed catalog/state rows are not
+  runtime-deletable. Physical purge is only controlled maintenance, disposable
+  tests, or a reviewed migration.
 
-Treat [assets/postgresql-rbac](assets/postgresql-rbac/) as output source, not
-instructions. Copy it as one directory without reading every file. Never load the
-asset recursively. Use `rg --files` and `rg -n "symbol-or-route"`, then inspect
-only the code being adapted, its direct policy/query dependency, and matching
-tests. Running a test does not require reading its implementation first.
+### Authentication And Abuse Defense
 
-## Fixed Baseline And Invariants
+- Require graphical CAPTCHA for exactly `login`, `register`, `admin_create`,
+  `admin_reset`, and `self_change`. Each challenge lasts five minutes, is bound
+  to its purpose and trusted IP or authenticated canonical user, and is consumed
+  on its first submitted answer, correct or wrong. Refresh replaces the old
+  challenge only after new issuance succeeds.
+- Login and registration execute trusted-IP business admission before CAPTCHA,
+  then credentials or registration, then Token issuance. Invalid, random,
+  expired, or wrong-purpose CAPTCHA submissions have already consumed the
+  login/registration quota; a quota rejection must not consume the CAPTCHA.
+- Use one Redis Lua fixed-window counter per business operation and subject.
+  Anonymous operations use purpose plus trusted IP; authenticated operations
+  use operation plus server-authenticated user ID. Never add a whole-site,
+  all-user, username, or cross-business shared quota. Keep limits in typed
+  settings, `.env.example`, and asset documentation.
+- A trustworthy denial is HTTP/business `429/429001` with integer
+  `Retry-After`; missing IP, unavailable/malformed limiter or verification state
+  is fail-closed `503/503001` without `Retry-After`. No protected callback runs
+  after denial. Limit keys use HMAC-private subjects and never enter logs or
+  responses. Rate limiting may be disabled only in explicitly local/test work.
+- Public registration defaults on through the persisted PostgreSQL switch;
+  only `super_admin` may change it. Public registration and administrator user
+  creation bind only the mandatory `user` role in the same transaction and
+  never accept an initial role from the client.
+- Self password change requires old password plus CAPTCHA. Administrator reset
+  requires capability, CAPTCHA, and a strictly lower target, but not the actor's
+  password again. Its temporary password has no time expiry, can complete one
+  formal password setup, and is invalidated by completion, reset, or deletion.
+  There is no anonymous forgot-password route; use administrator reset. Sole
+  `super_admin` password recovery remains an offline operator action.
+- Email/SMS codes and MFA are not defaults. Add them only when explicitly
+  requested; do not add an email field or delivery provider merely for auth.
 
-Unless existing product decisions conflict, keep these defaults:
+### Access Tokens And Sessions
 
-- Python 3.12+, FastAPI, Pydantic 2, SQLAlchemy 2 async, asyncpg, Alembic, named
-  constraints, explicit foreign keys, and PostgreSQL integration tests. SQLite
-  cannot prove this lock or constraint contract.
-- Use non-sequential primary/API IDs for users, roles, permissions, audit rows,
-  and every business entity. For a new project without an established strategy,
-  prefer a registered entity prefix plus a cryptographically random uppercase
-  suffix; `U` plus 10 characters is the low-volume user example, while unknown
-  volume defaults to 16 characters. Size the suffix from lifetime volume under
-  [identifier policy](references/identifier-policy.md). Random UUIDv4 remains
-  compliant, and the bundled PostgreSQL asset intentionally uses that profile.
-  Access Token JTI remains a fresh random UUIDv4 protocol identifier. Never use
-  `SERIAL`, `BIGSERIAL`, `IDENTITY`, integer autoincrement, `max(id)+1`, or a
-  hidden sequential public alias. Integer tiers, versions, epochs, and counts
-  are not identifiers. Non-sequential IDs reduce casual enumeration; they never
-  replace capability checks, object authorization, non-leaking `404`s, rate
-  limits, or IDOR tests.
-- Use stable, exact `resource:action` positive grants. Active roles union
-  permissions and take the maximum tier. Do not add deny rules, wildcards, role
-  inheritance, scope languages, or a permission cache to the baseline.
-- Seed the immutable system roles `super_admin`, `admin`, and `user` at tiers
-  `1000`, `500`, and `0`. They cannot be disabled, soft-deleted, renamed,
-  re-ranked, or have their grants changed through public administration APIs.
-  Every normally registered or provisioned user receives `user` in the same
-  PostgreSQL transaction and cannot lose it through the role-unbind API. Never
-  accept an initial role from a public registration body.
-- Limit each user to at most 10 live `user_roles` assignments. This is a limit of
-  10 live role bindings. Disabled roles still count, and tombstones do not count.
-  The mandatory `user` assignment and any `super_admin` assignment both count.
-  Enforce the final live total after authoritative locks in every service path,
-  including bootstrap and offline handover, and again in PostgreSQL so direct SQL and
-  concurrent writers cannot exceed the limit.
-  In the bundled fresh baseline, this database guard belongs to `0001` and
-  `0004_password_auth` is the sole migration head. The password revision is the
-  direct baseline addition for the still-unadopted schema, not a compatibility
-  shim.
-- Make every ordinary runtime removal of a mutable persisted row a soft delete,
-  including users, custom roles, business entities, and relationship unbinds.
-  Before adding any table, classify its row lifecycle explicitly: mutable rows
-  use soft deletion, append-only evidence permits no deletion, and permanent
-  state/catalog rows permit no runtime deletion. There is no unclassified table
-  whose rows may be hard-deleted by default.
-  Tombstone a deleted parent's complete live relation set atomically; a later
-  bind creates a new relation episode, and restore never revives old privilege.
-  System roles and the fixed permission catalog have no runtime deletion command.
-  Audit rows are append-only rather than soft-deletable, and the singleton
-  `rbac_state` is never deleted. Limit physical purge to explicit controlled
-  non-audit maintenance, disposable tests, or reviewed migrations. Follow
-  [Identity and soft-delete lifecycle](references/identity-soft-delete.md).
-  These are mandatory application rules. Database privilege separation is a
-  deployment hardening choice to discuss as described under Inspect First; the
-  database owner can always bypass ordinary application controls.
-- Apply capability, ownership, and row policy consistently to detail, list,
-  search, count, export, bulk, and nested operations. Keep ownership and row
-  policy separate from RBAC.
-- Larger tiers are higher. Compare complete current and proposed multi-role
-  authority: ordinary actors manage only strictly lower authority. Deny peer,
-  higher, incomparable, and protected targets, plus direct and indirect
-  self-elevation. The sole `super_admin` uses tier `1000`; `admin` uses `500`;
-  custom roles use `1..999`, while strict dominance limits an `admin` to roles
-  below `500`.
-- Apply the same strict hierarchy to administrative user and role list, count,
-  search, detail, export, and nested reads. The current `super_admin` may view
-  all non-deleted users and roles. Every other administrator sees only authority
-  strictly below its own and never sees itself, a peer, a higher target, or a
-  protected target through administration routes. Return a non-leaking `404`
-  for a concealed detail; expose the caller's own authority only through
-  `/api/v1/me/access`.
-- Apply capability before administrative-write visibility. A caller missing the
-  operation capability receives `403001` before target existence, visibility,
-  or version can affect the response. After locks and the capability recheck,
-  conceal a self, peer, higher, or protected user or role with the same `404001`
-  as an unknown ID; apply this to every role ID in a bind or unbind request too.
-  Only a visible target that fails delegation, affected-user, system-role, or
-  another operation-specific policy returns `403001`.
-- Keep role assignment, role definition, and permission replacement as separate
-  capabilities. New roles start with no permissions. A grantor may grant only
-  permissions it currently holds and must still pass strict hierarchy and
-  complete affected-user anti-escalation checks. Do not add an independent
-  `can_delegate` subsystem. The seeded `admin` manages strictly lower users
-  and custom roles, but cannot delete or change system roles.
-- Initialize the first `super_admin` only after the intended person has an
-  existing account with the mandatory `user` role. Tell the user to personally
-  run the supplied PostgreSQL `sql/bootstrap_super_admin.sql` from a trusted
-  host and identify the account only by immutable `users.id`; do not bootstrap
-  by email or `user_name`, auto-promote the first registrant, expose an HTTP
-  bootstrap route, or execute an ad hoc bare assignment. The script owns one guarded transaction,
-  refuses a different existing holder, increments authorization versions only
-  when the binding changes, and audits the result.
-- Exactly one `super_admin` holds office. Never expose an online transfer route,
-  permission, or quota. A later change is performed only by an authorized
-  operator using the supplied guarded PostgreSQL handover script: one transaction
-  checks both user IDs, swaps the assignment, updates versions, and audits it.
-- Privileged bodies use `extra="forbid"` and never accept super-admin status,
-  protection, delegation, or caller-selected current authorization-version fields. A
-  required `expected_version` is only an optimistic concurrency condition and
-  never chooses the stored version. Protect system roles, the final
-  `super_admin` and bootstrap paths explicitly.
-- Keep the authorization mechanism private to the implementation. Public paths,
-  OpenAPI tags, operation IDs, application titles, and errors must not use
-  `rbac`; use resource routes under `/api/v1` and the numeric business-code
-  registry in [API response standard](references/api-response-standard.md). The
-  baseline administration API uses only `GET` and `POST`. Internal modules such
-  as `app.rbac` may remain.
-- Every ordinary JSON response uses exactly `code`, `message`, `data`, and the
-  mandatory server-generated UUIDv4 `request_id`; return the same value in
-  `X-Request-ID`. Use real HTTP status codes and six-digit integer business
-  codes whose first three digits match the HTTP status. Simple page-number lists
-  return only `items`, `page`, `page_size`, and `total` inside `data`. Do not
-  trust a caller's request ID as the server ID. Follow
-  [API response standard](references/api-response-standard.md).
-- Emit application-owned operational logs as one-line structured JSON to stdout
-  with stable event names, UTC timestamp, level, service/build identity, and the
-  server request ID. Use a pure ASGI observer and emit exactly one completion at
-  the terminal response, send, disconnect, cancellation, or application-failure
-  boundary; a failure after the final body gets a separate post-response event,
-  never a second completion. Include the route template, observed HTTP status,
-  numeric business code, monotonic duration, response state, outcome, and only
-  the canonical user ID after full authentication. Never log raw
-  paths, query strings, request/response bodies, arbitrary headers, email,
-  username, passwords, credentials, cookies, bearer tokens, JWT/JTI values,
-  proxy URLs, or database/Redis URLs. Logging failure does not decide transaction
-  success. Follow [Operational logging](references/operational-logging.md).
-- Keep durable audit separate from operational logs. `rbac_audit_events` is an
-  append-only record only for access-control administration and decisions; it is
-  not a Token, login, proxy, or general activity table. Server code owns actor,
-  targets, action, decision, reason, source, schema version, safe bounded
-  before/after state, correlation ID, and database time. Clients cannot submit
-  audit rows. An allowed privileged mutation and its audit commit together;
-  denied auditing occurs only after protected rollback and cannot turn denial
-  into success. Follow [Audit module](references/audit-module.md).
-- Keep business evidence separate from RBAC evidence. The bundled asset provides
-  a reusable append-only `business_audit_events` model, migration, and staging
-  helper, but applications emit rows only for an explicit action catalog with a
-  per-action state allowlist. Use `outcome` values `succeeded`, `failed`, and
-  `denied`; never copy arbitrary request bodies or exception data. A succeeded
-  mutation and its audit row commit in the same PostgreSQL transaction. Write a
-  meaningful failed or denied event only after the protected transaction has
-  rolled back, and never record an uncertain commit as failed. Follow
-  [Business audit module](references/business-audit-module.md).
-- Keep rate-limit policy in one typed configuration module. The bundled asset
-  uses a Redis Lua fixed window: one per-business subject counter with atomic
-  `INCR`, first-use `EXPIRE`, and remaining TTL; never share a quota across all
-  users, all IPs, or unrelated operations. Anonymous authentication uses trusted
-  IP; authenticated operations use the server-authenticated user ID. Redis keys
-  use HMAC-private subjects. Expose editable defaults in settings,
-  `.env.example`, and the asset README.
-  A valid denial is `429001` with `Retry-After`; missing, failed, or malformed
-  Redis authority is fail-closed `503001` without `Retry-After`. Keep limiter
-  Redis outside PostgreSQL transactions and prefer a separately operated
-  limiter Redis when production capacity or failure isolation requires it.
-  Never permit a deployment environment to disable these protections. The
-  bundled settings require an explicit `APP_ENVIRONMENT` and provide no code
-  default; a missing value must stop startup even when rate limiting is enabled.
-  This prevents an omitted deployment setting from silently becoming local.
-  The
-  bundled escape hatch accepts `RATE_LIMIT_ENABLED=false` only when
-  `APP_ENVIRONMENT` is explicitly `dev`, `development`, `local`, `test`, or
-  `testing`; it intentionally bypasses API admission and `IdentityAbuseFlow` and
-  is only for isolated local work or tests.
-- Require graphical CAPTCHA in five fixed scenes, with an atomic one-use Redis
-  consume on every answer (including wrong purpose/owner). Refresh invalidates
-  the old image only when new issuance succeeds. For an authenticated scene bind
-  the challenge to the current canonical user ID, not a supplied target ID.
-  Each scene has its own issuance quota (10 per five minutes by default).
-  Optional email/SMS and MFA integrations require an explicit project request;
-  the baseline needs no delivery provider or email/phone field.
-- Route product-owned login and registration callbacks through the bundled
-  `IdentityAbuseFlow`; do not reconstruct its ordering in a route. Credential
-  callbacks return a verified value or `None`, perform real-or-dummy credential
-  work, and never issue a Token. Token issuance starts only after the flow has
-  admitted the attempt, recorded success, and returned. A registration callback
-  runs only after every registration bucket admits it.
-- Keep public registration available by default but check the persisted
-  registration switch again in the creating transaction. A public read returns
-  only `registration_enabled`; only the current `super_admin` may change it.
-  Closing it leaves administrator user creation and existing login unaffected.
-  Neither path permits caller-selected initial roles: both bind only `user`.
-- Use the bundled local-password baseline when the project selects passwords:
-  Argon2id runs outside the event loop; the nullable hash and password state live
-  on `users`, and user soft deletion clears the hash; unknown users perform the
-  same class of Argon2 verification against a process dummy hash; and public
-  login failures do not reveal whether the user, credential, or account status
-  caused rejection. Self-service password change verifies the current password.
-  Administrator recovery creates a temporary credential only for a strictly
-  lower, visible, non-protected user and requires graphical CAPTCHA, not the
-  administrator's current password again. Self password change requires both
-  the old password and CAPTCHA. Successful change, reset, or reset completion replaces the
-  user hash, increments `users.token_version`, and writes its account-security
-  audit in one PostgreSQL transaction. It never issues a replacement Token.
-  There is no anonymous forgot-password endpoint: use human verification plus
-  administrator reset, and reserve sole
-  `super_admin` recovery for the offline operator command. Follow
-  [Local password authentication](references/local-password-authentication.md).
-- By default, an Access Token contains exactly `sub`, `jti`, `iat`, `exp`, and
-  `token_type`. `sub` is the only user identity claim and is the canonical string
-  of the project's immutable `users.id`, whether a validated prefixed ID or
-  UUIDv4; the selected `user_name` login policy never changes that subject.
-  Add `iss` and `aud` only as a pair after the plain-language explanation and the
-  user's explicit consent. When enabled, issue and validate both exactly; when
-  disabled, reject either as an unexpected claim. Silence is not agreement, and
-  an existing project's configured pair remains enabled unless removal or
-  migration is requested. Never put username, email, display name, roles,
-  permissions, tier, status, protection flags, or versions in the payload.
-  Require a unique random UUIDv4 `jti` and validate it against the server-side
-  Redis active-JTI record before authorization. The Access Token lifetime defaults
-  to 3600 seconds; expose it as configuration and explicitly tell the user to
-  adjust it for business risk and login experience. Do not add a PostgreSQL Token
-  table or a per-request Token-record query. After Redis, reload the existing
-  PostgreSQL identity and RBAC authority and compare the Redis-bound user version;
-  fail closed on unavailable state. Reject missing, blank, example, short,
-  repetitive, low-diversity, whitespace-containing, or control-character HS256
-  secrets at startup; never fall back to an insecure default. Bound both encoded
-  and presented Access Tokens to 4096 bytes. Current-Token logout removes only
-  the exact Redis JTI. Ordinary users may invoke only current-Token logout;
-  an administrator with the exact capability may revoke a strictly lower user's
-  sessions by incrementing `users.token_version` in PostgreSQL after a locked
-  authority recheck and account-security audit. Ask the project owner to set a
-  maximum active-session count; Redis atomically evicts the oldest session only
-  on successful issuance. The index tracks logins and times, not physical
-  devices. Follow
-  [JWT access-token security](references/jwt-session-security.md).
-- Use HTTP `401`/business `401001` for invalid, expired, missing, or revoked
-  credentials; `403`/`403001` for a visible but forbidden action;
-  `404`/`404001` for a missing or deliberately concealed resource; and
-  `503`/`503001` when a required authentication authority is unavailable.
-- Apply the same authorization service at HTTP, WebSocket, job, CLI, and direct
-  service trust boundaries. Audit privileged decisions without secrets.
+- Access Tokens default to one hour (3600 seconds); explicitly tell the owner to
+  adjust that value for business risk and login experience. They contain exactly
+  `sub`, `jti`, `iat`, `exp`, and `token_type`. `sub` is the canonical immutable
+  user ID; `jti` is a fresh UUIDv4. Never include username, email, roles,
+  permissions, tier, flags, or versions. Add `iss` and `aud` only together after
+  explicit consent.
+- Reject weak, blank, example, repetitive, whitespace/control-bearing, or short
+  HS256 secrets at startup. Bound encoded and presented Tokens to 4096 bytes.
+- Authenticate in this order: validate JWT shape/signature, require the exact
+  active JTI in Redis, then load the current live PostgreSQL user and complete
+  authority and compare the Redis-bound `users.token_version`. Fail closed on
+  unavailable authority. Never recreate Redis state from a JWT.
+- Store no Token/session table in PostgreSQL and perform no per-request Token-row
+  query. Do not add Refresh Tokens. A successful issuance atomically applies the
+  chosen active-login maximum and evicts the oldest Redis session when needed.
+- Ordinary logout removes only the current JTI. Ordinary users have no
+  logout-all endpoint. A capable administrator may revoke all sessions only for
+  a visible, strictly lower user by incrementing `users.token_version` with the
+  account-security audit in one PostgreSQL transaction.
 
-## Atomic Authorization Boundary
+### Authorization And Hierarchy
 
-Every authorization control-plane write, and every protected business write that
-promises immediate revocation, has one authoritative transaction. Under the
-shared lock order, every writer acquires the fixed
-`rbac_state(scope='global')` guard as its first lock, then reloads the
-actor and complete affected authority from PostgreSQL, decides again, and commits
-the mutation, all version increments, and the allowed audit together. On denial,
-roll back the whole attempt before writing a denied audit in
-a separate transaction. A route check, old JWT, cached context, or earlier ORM
-read cannot replace this decision. Follow [atomic authorization consistency](references/atomic-consistency.md).
-Role update, lifecycle, deletion, and permission bind/unbind
-commands require `expected_version` in the JSON body and compare it with
-`roles.version` only after locks, authoritative reload, and the complete policy
-and hierarchy decision. An unauthorized caller receives `403001` without learning
-whether the submitted version is current. A stale value for an authorized caller
-returns HTTP `409` with business code `409002`; it cannot mutate state or write an
-allowed audit. Build the successful response body's role and new version from the
-same immutable snapshot before releasing those locks. User role bind/unbind
-remains an incremental, idempotent, single-transaction command and does not
-require a user version in this baseline: under the global guard, bind checks that
-the complete final set has at most 10 live assignments, unbind tombstones the
-live relation, and a later bind creates a new relation episode instead of
-reviving it. PostgreSQL independently enforces the same deferred final-state
-limit for direct and concurrent writers.
-Redis is outside the PostgreSQL authorization transaction. Never perform Redis
-I/O while holding authorization locks, and never recreate a missing active-JTI
-entry from a JWT. Account-wide Token revocation increments
-  `users.token_version`; each request compares it with the version bound in Redis
-while loading the existing user and RBAC state. Do not add PostgreSQL Token rows
-or a Token-cleanup database queue.
+- Seed immutable system roles `super_admin`, `admin`, and `user` at tiers 1000,
+  500, and 0. They cannot be deleted, disabled, renamed, re-ranked, or edited by
+  public APIs. Custom roles use tiers 1..999, start with no permissions, and use
+  exact positive `resource:action` grants. Do not add deny rules, wildcards,
+  inheritance, or a separate delegation subsystem.
+- Exactly one `super_admin` exists. After the chosen account already has `user`,
+  tell the owner to run `sql/bootstrap_super_admin.sql` personally with its
+  immutable user ID. Never auto-promote the first registrant or expose online
+  bootstrap/transfer APIs. Later handover also uses the guarded offline SQL.
+- Each user has at most 10 live role assignments, including `user`, disabled
+  roles, and `super_admin`; tombstones do not count. Enforce the final state
+  after authoritative locks in every path and again in PostgreSQL.
+- Larger tiers are higher. Except for the sole super administrator, an actor may
+  manage only strictly lower complete multi-role authority. Hide self, peer,
+  higher, protected, and incomparable targets from administrative list, count,
+  search, detail, nested, bulk, and export operations. Hidden and unknown detail
+  targets use the same `404001`; the actor sees itself only at `/api/v1/me/access`.
+- Check the exact capability before target visibility. Missing capability is
+  `403001`; after authoritative locks, concealed targets remain `404001`. A
+  visible target that fails delegation or affected-user policy is `403001`.
+  Role assignment, role definition, and permission replacement are separate
+  capabilities. A grantor can grant only permissions it currently holds.
+- Public management routes use only `GET` and `POST`. Public paths, tags,
+  operation IDs, titles, schemas, and errors never expose the term `rbac`;
+  internal module and table names may use it.
 
-## Implementation Workflow
+### Transactions, Responses, Logs, And Audit
 
-1. For greenfield work, settle username case sensitivity, password composition,
-   simultaneous-session count, and any legacy-account enrollment. Then
-   define actors, protected resources, stable capabilities, row-level rules,
-   administrative effects, expected failure responses, and which operations
-   require RBAC or business audit. For business audit, define the action catalog,
-   resource meaning, outcomes, and safe state fields before writing events.
-2. For greenfield PostgreSQL RBAC, copy the complete asset. In an existing app,
-   preserve its policy, transaction, query, and migration boundaries.
-3. Implement complete configuration, models, schemas, dependencies, services,
-   routes, migrations, and tests. Never copy a route without its policy, locking
-   query, database constraint, audit path, and negative tests.
-4. Keep authentication, capability checks, ownership, and row policy
-   distinct. Configure safe structured logging at the application boundary and
-   keep it independent from audit transaction success. Run formatting, linting,
-   typing, migrations, PostgreSQL tests, an ASGI exercise, and secret-marker log
-   and audit tests; report anything not verified.
+- Every authorization write locks `rbac_state(scope='global')` first, reloads
+  actor and all affected authority from PostgreSQL, decides again, and commits
+  mutation, version changes, and allowed RBAC audit together. Redis I/O never
+  occurs while these locks are held.
+- Roll back a denied protected transaction before attempting its denied audit.
+  A denied-audit failure must preserve the original `403`/`404`/`409`, never
+  become `500`. Role mutations require a strict integer `expected_version`;
+  an authorized stale value returns `409002`. Build responses from immutable
+  snapshots while locks are still owned.
+- Every ordinary JSON response has exactly `code`, `message`, `data`, and a
+  server-generated UUIDv4 `request_id`, echoed in `X-Request-ID`. Use real HTTP
+  statuses and six-digit integer business codes with matching first three
+  digits. Page data contains only `items`, `page`, `page_size`, and `total`.
+- Emit one-line structured operational logs with stable events, UTC time,
+  service/build identity, request ID, route template, status, business code,
+  duration, and authenticated canonical user ID when available. Never log raw
+  paths/queries, bodies, arbitrary headers, username, passwords, CAPTCHA,
+  cookies, Token/JTI, proxy credentials, or database/Redis URLs. Logging failure
+  never changes business or transaction outcomes.
+- Keep operational logs, `rbac_audit_events`, account-security evidence, and
+  `business_audit_events` separate. Audits are server-owned and append-only.
+  Successful protected changes commit with their audit. Business events exist
+  only for an approved catalog such as money, ownership, important state,
+  delete/restore, manual override, sensitive export, or compliance. Do not add
+  `business_audit_delivery_outbox`, delivery workers, leases, retries, or DLQ.
+  Its only outcomes are `succeeded`, `failed`, and `denied`.
+- Keep `/health/live` process-only. Under short per-dependency timeouts,
+  `/health/ready` requires exactly the expected Alembic head and the global
+  `rbac_state` row, plus `PING` and a Lua write/read/delete probe on both the
+  active-JTI and limiter Redis targets. Use random non-secret keys with a
+  five-second TTL. Return only overall ready/unavailable with
+  `Cache-Control: no-store`; expose and log no keys, URLs, or exception text.
 
-## Completion Gate
+## Implement And Verify
 
-For implementation or completion work, load [Testing](references/testing.md) and
-apply only the matrix for the delivered surfaces. At minimum:
+1. Settle the single decision batch, define actors/capabilities/row policy, and
+   define explicit RBAC or business audit actions before writing code.
+2. Copy the whole asset for greenfield PostgreSQL work. In an existing project,
+   preserve its policy, transactions, query boundaries, and migration history.
+3. Implement settings, models, schemas, dependencies, services, routes,
+   migrations, and tests together. Never copy a route without its policy,
+   locking query, database constraint, audit path, and negative tests.
+4. Keep authentication, capabilities, ownership, row policy, logging, and audit
+   as distinct boundaries. Do not add workers or architecture layers without a
+   concrete product need.
+5. For completion work, read [Testing](references/testing.md) and run only the
+   relevant matrix: format, lint, strict typing, OpenAPI/API contract, policy,
+   IDOR, audit/log secret scans, real PostgreSQL/Redis behavior, migrations,
+   concurrency, rollback, and ASGI requests.
 
-- install and import in a clean environment; run formatting, linting, strict
-  typing, migration, PostgreSQL/Redis behavior, API-contract, policy, audit,
-  logging, JWT, IDOR, concurrency, rollback, and secret-leak checks that apply;
-- verify the fixed system roles, 10-live-role limit, strict read/write hierarchy,
-  soft-delete lifecycle, transaction/audit coupling, response contract, Redis
-  active-JTI gate, and both Token-revocation scopes end to end;
-- for every delivered limiter surface, run real-Redis fixed-window tests for
-  atomic first-use TTL, expiry, key privacy, concurrent admission, no global
-  quota, trusted-IP failure, and `429001`/`503001` headers;
-- test the five graphical-CAPTCHA scenes, owner/purpose isolation, atomic
-  replacement and single-use consumption (including wrong answers and races);
-- prove `IdentityAbuseFlow` never calls credential or registration callbacks
-  after admission denial/unavailability, maps a `None` credential to one generic
-  failure, and keeps the product
-  Token issuer outside the credential callback and after the successful return;
-- test proxy detection and the country catalog only when the user requested
-  those optional features, using their own reference checklists; and
-- report every skipped production assumption or unavailable integration service.
+Integration tests may use only newly created, empty, disposable PostgreSQL and
+Redis targets whose isolation guards pass. Never use an existing application or
+production target. Report every unavailable integration service or skipped
+deployment assumption; do not call the result production-ready without the
+required PostgreSQL, Redis, migration, and concurrency evidence.
 
-Never call the result production-ready while required PostgreSQL, Redis,
-migration, concurrency, or deployment behavior remains unverified.
+Do not add multi-tenancy, a permission cache, Refresh Tokens, PostgreSQL Token
+sessions, whole-site rate limits, online super-admin transfer, ordinary-user
+logout-all, anonymous password recovery, default email/SMS/MFA, role inheritance,
+deny permissions, device fingerprinting, default country data, default proxy
+detection, audit delivery workers, or unrelated background infrastructure.

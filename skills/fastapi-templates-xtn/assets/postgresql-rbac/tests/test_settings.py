@@ -28,6 +28,7 @@ SETTINGS_ENV_NAMES = (
     "RATE_LIMIT_NAMESPACE",
     "REDIS_CONNECT_TIMEOUT_SECONDS",
     "REDIS_SOCKET_TIMEOUT_SECONDS",
+    "READINESS_TIMEOUT_SECONDS",
     "SQL_ECHO",
 )
 
@@ -244,6 +245,17 @@ def test_rate_limit_defaults_are_explicit_and_configurable() -> None:
     assert settings.rate_limit_registration_ip_per_hour == 5
     assert settings.rate_limit_temporary_complete_ip_per_five_minutes == 20
     assert settings.max_active_sessions_per_user == 2
+    assert settings.readiness_timeout_seconds == 1.0
+
+
+def test_readiness_timeout_is_short_bounded_and_configurable() -> None:
+    settings = settings_for_test(readiness_timeout_seconds=2.5)
+
+    assert settings.readiness_timeout_seconds == 2.5
+    with pytest.raises(ValidationError, match="readiness_timeout_seconds"):
+        settings_for_test(readiness_timeout_seconds=0)
+    with pytest.raises(ValidationError, match="readiness_timeout_seconds"):
+        settings_for_test(readiness_timeout_seconds=10.1)
 
 
 def test_session_limit_must_be_positive_and_explicit(

@@ -9,9 +9,14 @@ Use this checklist for the first public preview and subsequent releases.
 - [ ] The bundled Skill passes the current `skill-creator` quick validator.
 - [ ] The optional country CSV validator's focused unit tests pass without
   modifying or bundling a source dataset.
-- [ ] Ruff, strict mypy, and non-PostgreSQL tests pass.
+- [ ] Ruff format and lint, strict mypy, `pip-audit`, and non-PostgreSQL tests
+  pass.
+- [ ] Test dependencies retain `pytest>=9.0.3,<10` and
+  `pytest-asyncio>=1.4,<2`, and CI upgrades to `pip>=26.2` before installation
+  and audit. Any lower baseline has a new clean dependency-audit result or an
+  explicit temporary exception in both Security documents and CI.
 - [ ] PostgreSQL-marked tests pass against PostgreSQL 17.
-- [ ] Redis-backed authentication tests pass against the active-JTI Redis, and
+- [ ] Redis-backed authentication tests pass against Redis 7 for active JTI, and
   rate-limit, login/registration defense, and required graphical-CAPTCHA tests
   pass against a separately configured rate-limit Redis. The Redis-only
   CAPTCHA/session test uses a third empty logical database that does not
@@ -28,16 +33,25 @@ Use this checklist for the first public preview and subsequent releases.
 - [ ] `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md` are present at repository,
   Skill, and copied-asset boundaries.
 - [ ] README limitations match the behavior actually implemented by the asset.
+- [ ] Both READMEs identify Python 3.12, PostgreSQL 17, and Redis 7 as the
+  official verification environment, link the Chinese architecture overview,
+  and document the distinct `/health/live` and `/health/ready` contracts. The
+  readiness contract includes the exact migration head, global `rbac_state`,
+  both Redis `PING` plus Lua write/read/delete probes, no-store responses, and
+  non-disclosure.
 - [ ] After all local checks, `python -B scripts/validate_release.py` passes from
   the final clean tree.
 
-## v0.5.0 acceptance baseline
+## v0.5.1 acceptance baseline
 
 - [ ] A new project uses required `user_name` (3..32 ASCII letters, digits, or
   underscore, trimmed; reserved names and soft-deleted names cannot be reused).
-  Ask only whether username casing matters, password composition beyond 8..60
-  characters, maximum simultaneous logins, and how to enroll existing accounts.
-  Preserve the chosen identity contract in an existing project.
+  Ask once about username casing, password composition beyond 8..60 characters,
+  the positive maximum simultaneous-login count, relevant rate-limit defaults,
+  whether to enable `iss` and `aud` together, and whether professional operations
+  will separate PostgreSQL migration-owner and runtime roles. Only an existing
+  project also needs a decision for accounts without a local password. Preserve
+  the chosen identity contract in an existing project.
 - [ ] The PostgreSQL registration switch starts enabled, remains changeable
   through a super-admin-only command, and is checked transactionally on each
   public registration. A public read returns only the switch's boolean; closing
@@ -76,7 +90,7 @@ Use this checklist for the first public preview and subsequent releases.
 
 The `v0.4.0` section below records the published historical checklist. Its
 retired choices (email selection, online transfer, global quotas, or self logout-all)
-must not be carried into `v0.5.0`.
+must not be carried into `v0.5.1`.
 
 ## GitHub repository
 
@@ -93,6 +107,31 @@ must not be carried into `v0.5.0`.
 - [ ] Protect `v*` tags from deletion or replacement.
 - [ ] Keep Issues enabled. Close external pull requests according to
   `CONTRIBUTING.md`.
+
+## Release v0.5.1
+
+- [ ] Review the complete diff, both READMEs, both changelogs, the current
+  release checklist, the archived v0.4.0 design record, and the Chinese
+  architecture overview. Match version `0.5.1` and date `2026-09-19` in asset
+  metadata, installer URLs, changelogs, and the release validator.
+- [ ] Confirm `v0.5.1` adds no schema revision and does not modify the four
+  migrations published in `v0.5.0`. Any later schema change must add a forward
+  Alembic revision instead of rewriting released history.
+- [ ] Run Ruff format and lint, strict mypy, `pip-audit`, non-PostgreSQL tests,
+  disposable PostgreSQL 17 / Redis 7 integration tests, migration
+  upgrade-downgrade-upgrade checks, release validation, and the Skill quick
+  validator. Verify live/readiness behavior, including the expected Alembic
+  head, global `rbac_state`, both Redis `PING` plus Lua write/read/delete probes,
+  cleanup, no-store, and non-disclosure, as well as every explicit route quota map.
+- [ ] Confirm the final CI log uses `pip>=26.2`, resolves
+  `pytest>=9.0.3,<10` with `pytest-asyncio>=1.4,<2`, and completes `pip-audit`
+  without an unrecorded ignore.
+- [ ] Commit and push `main`; wait for both CI jobs on that exact commit to
+  pass. Create and push immutable `v0.5.1` on that commit without replacing or
+  moving `v0.5.0` or any older tag.
+- [ ] Publish a non-draft, non-prerelease GitHub Release for `v0.5.1`, then
+  verify its source archive and a fresh `$skill-installer` installation from
+  the tagged Skill path.
 
 ## Release v0.5.0
 

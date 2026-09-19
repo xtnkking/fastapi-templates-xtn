@@ -4,9 +4,12 @@ from typing import cast
 from unittest.mock import AsyncMock
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ClauseElement
 
+from app.rbac.domain import AuthoritySnapshot, RoleGrant
 from app.rbac.models import Role, User
 from app.rbac.queries import (
+    list_visible_users_page,
     load_authority_snapshots_for_users,
     load_live_super_admin_holder_ids,
     load_role_grants_for_roles,
@@ -134,3 +137,50 @@ async def test_super_admin_holder_loader_returns_the_complete_live_set() -> None
 
     assert holder_ids == frozenset({first_id, second_id})
     scalars.assert_awaited_once()
+
+
+async def test_exact_user_name_filter_applies_to_count_and_page_queries() -> None:
+    scalar = AsyncMock(return_value=0)
+    scalars = AsyncMock(return_value=SimpleNamespace(all=lambda: []))
+    session = cast(
+        AsyncSession,
+        SimpleNamespace(scalar=scalar, scalars=scalars),
+    )
+    actor = AuthoritySnapshot.build(
+        user_id=uuid.uuid4(),
+        user_is_active=True,
+        user_is_protected=False,
+        authz_version=0,
+        roles=(
+            RoleGrant(
+                role_id=uuid.uuid4(),
+                key="super_admin",
+                management_tier=1000,
+                permissions=frozenset(),
+                is_system=True,
+                is_protected=True,
+                is_super_admin=True,
+            ),
+        ),
+    )
+
+    users, total = await list_visible_users_page(
+        session,
+        actor=actor,
+        page=1,
+        page_size=20,
+        user_name="Case_Sensitive",
+    )
+
+    assert users == ()
+    assert total == 0
+    scalar_call = scalar.await_args
+    scalars_call = scalars.await_args
+    assert scalar_call is not None
+    assert scalars_call is not None
+    count_statement = cast(ClauseElement, scalar_call.args[0])
+    page_statement = cast(ClauseElement, scalars_call.args[0])
+    for statement in (count_statement, page_statement):
+        compiled = statement.compile()
+        assert "users.user_name =" in str(compiled)
+        assert "Case_Sensitive" in compiled.params.values()
