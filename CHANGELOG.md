@@ -4,7 +4,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.6.1] - Unreleased
+## [0.6.1] - 2026-09-20
 
 - Kept anonymous login and registration CAPTCHA challenges deliberately
   independent of the issuing IP so VPN and mobile-network changes do not make

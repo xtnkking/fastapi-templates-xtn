@@ -6,7 +6,7 @@ Use this checklist for the first public preview and subsequent releases.
 
 ## Prepare v0.6.1
 
-Release readiness: `DRAFT`
+Release readiness: `READY`
 
 Keep this status as `DRAFT` while any pre-tag item is unchecked. Change it to
 `READY` only after personally verifying every item against the exact commit that
@@ -18,24 +18,24 @@ validator.
 
 ### Pre-tag evidence
 
-- [ ] `VERSION`, asset package metadata, current migration/architecture notes,
+- [x] `VERSION`, asset package metadata, current migration/architecture notes,
   and both changelogs consistently identify `0.6.1`; the configurable Access
   Token default is 86,400 seconds (24 hours), and published migrations remain
   unchanged.
-- [ ] The Skill quick validator, release validator, updater tests, country-data
+- [x] The Skill quick validator, release validator, updater tests, country-data
   validator tests, Ruff, mypy, dependency audit, unit tests, and disposable
   PostgreSQL 17/Redis 7 integration tests all pass on the exact release commit.
-- [ ] CI installs the Python 3.12/Linux dependency resolution through
+- [x] CI installs the Python 3.12/Linux dependency resolution through
   `constraints-ci-py312.txt`; recursive closure validation confirms every
   package selected by the project and test roots, including `uvloop`, has an
   exact pin; `pip check` passes; and the reviewed versions have no unrecorded
   vulnerability exception.
-- [ ] Wheel validation proves that both locale catalogs plus `LICENSE`, `NOTICE`,
+- [x] Wheel validation proves that both locale catalogs plus `LICENSE`, `NOTICE`,
   and `THIRD_PARTY_NOTICES.md` are present in the built artifact.
-- [ ] A dry run resolves the intended installed Skill target, and an isolated
+- [x] A dry run resolves the intended installed Skill target, and an isolated
   update test proves exact staged copying, complete backup, successful
   replacement, and rollback behavior without deleting the retained backup.
-- [ ] The final diff, English/Chinese install instructions, release notes,
+- [x] The final diff, English/Chinese install instructions, release notes,
   attribution, and limitations have been reviewed by XTN; the exact branch CI
   run for this commit is green.
 

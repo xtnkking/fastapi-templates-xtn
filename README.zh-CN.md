@@ -8,14 +8,13 @@
 
 ## 当前状态
 
-仓库工作区正在准备 `v0.6.1`；唯一权威版本值位于
+`v0.6.1` 是最新正式标签；唯一权威版本值位于
 [`skills/fastapi-templates-xtn/VERSION`](skills/fastapi-templates-xtn/VERSION)。
-在真正创建 `v0.6.1` Release 之前，最新正式标签仍是 `v0.6.0`。需要不可变基线时
-应安装已经发布的标签。
+需要当前不可变基线时应安装此标签。
 
-本次修复范围和逐项验收状态记录在
+本次已完成的修复范围和逐项验收状态记录在
 [`V0.6.1_OPTIMIZATION_PLAN.zh-CN.md`](V0.6.1_OPTIMIZATION_PLAN.zh-CN.md)；
-发布前仍以 `RELEASE_CHECKLIST.zh-CN.md` 的 `DRAFT` 门槛为准。
+发布证据记录在 `RELEASE_CHECKLIST.zh-CN.md`。
 
 `v0.6.0` 增加了项目级“管理员重置密码模式”。默认 `direct`：管理员设置的
 新密码立即成为正式密码，用户拿到后可以直接登录；可选 `temporary`：用户必须先
@@ -116,7 +115,7 @@
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.0/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.1/skills/fastapi-templates-xtn
 ```
 
 安装器不会覆盖已经安装的 Skill，不能把它描述成更新工具。已有安装请按照

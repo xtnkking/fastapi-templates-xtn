@@ -10,11 +10,11 @@ release validation rejects inconsistent asset or documentation versions.
 
 Use `$skill-installer` only when the destination does not already exist. Install
 an immutable published tag, not a moving branch. The latest published release is
-currently `v0.6.0`:
+currently `v0.6.1`:
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.0/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.1/skills/fastapi-templates-xtn
 ```
 
 `$skill-installer` intentionally refuses to overwrite an existing directory. It

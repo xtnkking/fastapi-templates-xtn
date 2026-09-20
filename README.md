@@ -9,14 +9,13 @@ structured logging, and separate durable audits.
 
 ## Status
 
-The repository worktree is preparing `v0.6.1`; the authoritative value is
+`v0.6.1` is the latest published tag; the authoritative version value is in
 [`skills/fastapi-templates-xtn/VERSION`](skills/fastapi-templates-xtn/VERSION).
-`v0.6.0` remains the latest published tag until the `v0.6.1` release is
-actually created. Install a published tag for an immutable baseline.
+Install this immutable tag for the current baseline.
 
-The current repair scope and item-by-item status are recorded in the Chinese
-[`v0.6.1 optimization plan`](V0.6.1_OPTIMIZATION_PLAN.zh-CN.md). The `DRAFT`
-gate in `RELEASE_CHECKLIST.md` remains authoritative for publication.
+The completed repair scope and item-by-item status are recorded in the Chinese
+[`v0.6.1 optimization plan`](V0.6.1_OPTIMIZATION_PLAN.zh-CN.md), with release
+evidence in `RELEASE_CHECKLIST.md`.
 
 `v0.6.0` adds a project-wide administrator password-reset choice. The
 default `direct` mode makes the administrator-supplied value the permanent
@@ -142,7 +141,7 @@ Install the immutable latest published release for a new destination:
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.0/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.1/skills/fastapi-templates-xtn
 ```
 
 The installer does not overwrite an installed Skill and must not be described as

@@ -9,11 +9,11 @@
 ## 首次安装
 
 只有目标目录不存在时才使用 `$skill-installer`。应安装不可变的正式标签，而不是
-持续变化的分支。目前最新正式版是 `v0.6.0`：
+持续变化的分支。目前最新正式版是 `v0.6.1`：
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.0/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.1/skills/fastapi-templates-xtn
 ```
 
 `$skill-installer` 会主动拒绝覆盖已有目录，它不是更新工具。
