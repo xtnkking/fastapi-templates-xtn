@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 import sys
 import tomllib
@@ -14,8 +15,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = REPO_ROOT / "skills" / "fastapi-templates-xtn"
 ASSET_ROOT = SKILL_ROOT / "assets" / "postgresql-rbac"
 EXPECTED_NAME = "fastapi-templates-xtn"
-RELEASE_VERSION = "0.5.1"
-RELEASE_DATE = "2026-09-19"
+RELEASE_VERSION = "0.6.0"
+RELEASE_DATE = "2026-09-20"
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 RELEASE_INSTALL_URL = (
     f"https://github.com/xtnkking/fastapi-templates-xtn/tree/{RELEASE_TAG}/"
@@ -53,6 +54,7 @@ REQUIRED_SKILL_FILES = (
     "THIRD_PARTY_NOTICES.md",
     "agents/openai.yaml",
     "references/api-response-standard.md",
+    "references/api-internationalization.md",
     "references/audit-module.md",
     "references/business-audit-module.md",
     "references/business-audit-operations.md",
@@ -84,6 +86,10 @@ REQUIRED_ASSET_FILES = (
     "alembic/env.py",
     "app/abuse_flow.py",
     "app/api_contract.py",
+    "app/i18n.py",
+    "app/locales/__init__.py",
+    "app/locales/en.json",
+    "app/locales/zh-CN.json",
     "app/abuse_defense.py",
     "app/audit.py",
     "app/authentication_api.py",
@@ -117,6 +123,7 @@ REQUIRED_ASSET_FILES = (
     "tests/test_authentication_service.py",
     "tests/test_integration_safety.py",
     "tests/test_health.py",
+    "tests/test_i18n.py",
     "tests/test_business_audit.py",
     "tests/test_captcha.py",
     "tests/test_captcha_redis_live.py",
@@ -192,6 +199,7 @@ COUNTRY_OR_FLAG_PATH_RE = re.compile(
 TEXT_SUFFIXES = {
     "",
     ".ini",
+    ".json",
     ".md",
     ".mako",
     ".py",
@@ -300,6 +308,9 @@ def validate_frontmatter(errors: list[str]) -> None:
     verification_reference = "references/verification-and-abuse-defense.md"
     if verification_reference not in content:
         fail(errors, f"SKILL.md does not route to {verification_reference}")
+    i18n_reference = "references/api-internationalization.md"
+    if i18n_reference not in content:
+        fail(errors, f"SKILL.md does not route to {i18n_reference}")
 
 
 def validate_identity_and_row_lifecycle(errors: list[str]) -> None:
@@ -1055,6 +1066,24 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             errors,
             "registration switch must live in PostgreSQL, not a deployment setting",
         )
+    if active_environment.get("ADMIN_PASSWORD_RESET_MODE") != "direct":
+        fail(
+            errors,
+            "administrator password reset must default to direct mode in .env.example",
+        )
+    for label, marker in (
+        (
+            "settings",
+            'admin_password_reset_mode: Literal["direct", "temporary"] = "direct"',
+        ),
+        ("API", "reset_mode=settings.admin_password_reset_mode"),
+        ("service", 'require_password_change = reset_mode == "temporary"'),
+        ("service", 'else "permanent_password_set"'),
+    ):
+        if marker not in text[label]:
+            fail(
+                errors, f"{label} must implement the selected administrator reset mode"
+            )
     for label, marker in (
         ("users model", "public_registration_enabled: Mapped[bool]"),
         ("service", "if not state.public_registration_enabled:"),
@@ -1142,7 +1171,7 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         "RegistrationRequest": {"password"},
         "LoginRequest": {"password"},
         "PasswordChangeRequest": {"current_password", "new_password"},
-        "AdminPasswordResetRequest": {"temporary_password"},
+        "AdminPasswordResetRequest": {"new_password"},
         "AdminUserCreateRequest": {"temporary_password"},
         "PasswordResetCompletionRequest": {"temporary_password", "new_password"},
     }
@@ -1151,6 +1180,13 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         for field_name in field_names:
             if actual.get(field_name) != "SecretStr":
                 fail(errors, f"{class_name}.{field_name} must use SecretStr")
+    if set(schema_class_fields.get("AdminPasswordResetRequest", {})) != {
+        "new_password"
+    }:
+        fail(
+            errors,
+            "AdminPasswordResetRequest must expose only new_password beyond CAPTCHA fields",
+        )
 
     user_model = _class_node(trees["users model"], "User")
     audit_model = _class_node(trees["models"], "AccountSecurityAuditEvent")
@@ -1361,6 +1397,9 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             "test_captcha_is_required_before_public_registration_calls_service",
             "test_registration_status_public_read_exposes_only_boolean",
             "test_temporary_password_login_returns_403002_without_a_token",
+            "test_admin_reset_defaults_to_a_direct_permanent_password",
+            "test_admin_reset_and_temporary_completion_are_separate_commands",
+            "test_admin_reset_request_cannot_select_the_project_mode",
             "test_password_routes_are_post_only_and_do_not_expose_the_mechanism",
         ),
         "service tests": (
@@ -1381,7 +1420,7 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             "test_registration_and_login_persist_complete_local_identity",
             "test_registration_toggle_blocks_public_creation_but_not_admin_creation",
             "test_self_password_change_updates_user_and_revokes_old_token",
-            "test_admin_reset_requires_captcha_and_forces_temporary_completion",
+            "test_admin_reset_supports_direct_and_temporary_project_modes",
         ),
         "PostgreSQL persistence tests": (
             "test_rotation_updates_same_user_row",
@@ -1397,15 +1436,27 @@ def validate_local_password_authentication(errors: list[str]) -> None:
     if "from app import password_models" not in text["Alembic environment"]:
         fail(errors, "Alembic metadata must import password_models")
     for label, markers in {
+        "skill": (
+            "Administrator password-reset mode.",
+            "never let the API caller choose per request",
+            "offline recovery always use temporary credentials",
+        ),
+        "reference": (
+            "ADMIN_PASSWORD_RESET_MODE",
+            "Administrator reset is a project-wide choice",
+            "controls only the administrator HTTP reset",
+        ),
         "README": (
             "username/password login",
             "Public registration is enabled by default",
             "Changing that holder is another guarded, audited offline PostgreSQL script",
+            f"`{RELEASE_TAG}` adds a project-wide administrator password-reset choice",
         ),
         "Chinese README": (
             "用户名密码",
             "公开注册初始开启",
             "受保护的交接脚本",
+            f"`{RELEASE_TAG}` 增加了项目级“管理员重置密码模式”",
         ),
     }.items():
         for marker in markers:
@@ -1542,6 +1593,7 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
             "APP_ENVIRONMENT=development",
             "RATE_LIMIT_HMAC_KEY=",
             "MAX_ACTIVE_SESSIONS_PER_USER=",
+            "ADMIN_PASSWORD_RESET_MODE=direct",
             "RATE_LIMIT_CAPTCHA_CREATE_PER_FIVE_MINUTES=10",
             "RATE_LIMIT_LOGIN_IP_PER_FIVE_MINUTES=20",
             "RATE_LIMIT_REGISTRATION_IP_PER_HOUR=5",
@@ -1551,6 +1603,7 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
             "test_app_environment_is_required_for_every_rate_limit_mode",
             "test_rate_limit_defaults_are_explicit_and_configurable",
             "test_session_limit_must_be_positive_and_explicit",
+            "test_admin_password_reset_defaults_to_direct_and_accepts_temporary",
         ),
         "abuse-defense tests": (
             "test_anonymous_quota_does_not_use_user_supplied_account",
@@ -2374,6 +2427,254 @@ def validate_rbac_database_naming(errors: list[str]) -> None:
                 fail(errors, f"{relative} contains obsolete RBAC name: {marker!r}")
 
 
+def validate_api_internationalization(errors: list[str]) -> None:
+    paths = {
+        "entrypoint": SKILL_ROOT / "SKILL.md",
+        "reference": SKILL_ROOT / "references" / "api-internationalization.md",
+        "response reference": SKILL_ROOT / "references" / "api-response-standard.md",
+        "Chinese architecture": (
+            SKILL_ROOT / "references" / "architecture-overview.zh-CN.md"
+        ),
+        "README": REPO_ROOT / "README.md",
+        "Chinese README": REPO_ROOT / "README.zh-CN.md",
+        "asset README": ASSET_ROOT / "README.md",
+        "changelog": REPO_ROOT / "CHANGELOG.md",
+        "Chinese changelog": REPO_ROOT / "CHANGELOG.zh-CN.md",
+        "release checklist": REPO_ROOT / "RELEASE_CHECKLIST.md",
+        "Chinese release checklist": REPO_ROOT / "RELEASE_CHECKLIST.zh-CN.md",
+        "implementation": ASSET_ROOT / "app" / "i18n.py",
+        "contract": ASSET_ROOT / "app" / "api_contract.py",
+        "application": ASSET_ROOT / "app" / "main.py",
+        "errors": ASSET_ROOT / "app" / "rbac" / "errors.py",
+        "pyproject": ASSET_ROOT / "pyproject.toml",
+        "tests": ASSET_ROOT / "tests" / "test_i18n.py",
+        "Chinese catalog": ASSET_ROOT / "app" / "locales" / "zh-CN.json",
+        "English catalog": ASSET_ROOT / "app" / "locales" / "en.json",
+    }
+    if any(not path.is_file() for path in paths.values()):
+        return
+
+    require_semantics(
+        errors,
+        path=paths["reference"],
+        checks=(
+            (
+                "default Chinese and English Accept-Language contract",
+                (r"Accept-Language.*zh-CN.*en",),
+            ),
+            (
+                "canonical response language and cache variation headers",
+                (r"Content-Language.*Vary.*Accept-Language",),
+            ),
+            (
+                "stable machine fields are not translated",
+                (r"HTTP status.*business code.*remain language-independent",),
+            ),
+            (
+                "validation uses stable error types rather than raw messages",
+                (
+                    r"Do not return Pydantic.s raw.*error\[.type.\]",
+                    r"error\[.type.\].*raw",
+                ),
+            ),
+            (
+                "validation paths do not reflect attacker-controlled keys",
+                (r"mask an extra field.*mapping keys",),
+            ),
+            (
+                "request language never selects a resource path",
+                (r"Never turn a request value into a file path or dynamic import",),
+            ),
+            (
+                "specific language exclusions override broad fallbacks",
+                (r"specific language range.*q=0.*wildcard",),
+            ),
+        ),
+    )
+    for label in (
+        "entrypoint",
+        "response reference",
+        "Chinese architecture",
+        "README",
+        "Chinese README",
+        "asset README",
+    ):
+        text = paths[label].read_text(encoding="utf-8")
+        for marker in ("Accept-Language", "Content-Language", "Vary: Accept-Language"):
+            if marker not in text:
+                fail(errors, f"{label} is missing API i18n marker {marker!r}")
+
+    document_markers = {
+        "Chinese architecture": (
+            "api-internationalization.md",
+            "OpenAPI",
+            "数据库",
+        ),
+        "README": (f"`{RELEASE_TAG}`", "Database-authored", "OpenAPI"),
+        "Chinese README": (f"`{RELEASE_TAG}`", "数据库", "OpenAPI"),
+        "asset README": ("Database-authored", "OpenAPI developer metadata"),
+    }
+    for label, markers in document_markers.items():
+        content = paths[label].read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in content:
+                fail(errors, f"{label} is missing API i18n boundary {marker!r}")
+
+    release_documents = {
+        "changelog": (
+            f"## [{RELEASE_VERSION}] - {RELEASE_DATE}",
+            "Accept-Language",
+        ),
+        "Chinese changelog": (
+            f"## [{RELEASE_VERSION}] - {RELEASE_DATE}",
+            "Accept-Language",
+        ),
+        "release checklist": (
+            f"## {RELEASE_TAG} acceptance baseline",
+            "Accept-Language",
+        ),
+        "Chinese release checklist": (
+            f"## {RELEASE_TAG} 验收基线",
+            "Accept-Language",
+        ),
+    }
+    for label, (heading, marker) in release_documents.items():
+        content = paths[label].read_text(encoding="utf-8")
+        _, separator, remainder = content.partition(heading)
+        if not separator:
+            fail(errors, f"{label} is missing {heading!r}")
+            continue
+        release_section = remainder.split("\n## ", maxsplit=1)[0]
+        if marker not in release_section:
+            fail(errors, f"{label} does not document API i18n under {heading!r}")
+
+    implementation_tree = _parse_python(
+        errors, paths["implementation"], label="API i18n implementation"
+    )
+    if implementation_tree is None:
+        return
+    message_key_class = _class_node(implementation_tree, "MessageKey")
+    if message_key_class is None:
+        fail(errors, "API i18n implementation is missing MessageKey")
+        return
+    message_keys = {
+        node.value.value
+        for node in message_key_class.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    }
+    if not message_keys:
+        fail(errors, "MessageKey must contain a closed set of string keys")
+        return
+
+    catalogs: dict[str, dict[str, object]] = {}
+    for label in ("Chinese catalog", "English catalog"):
+        try:
+            raw_catalog = json.loads(paths[label].read_text(encoding="utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            fail(errors, f"{label} is not valid UTF-8 JSON: {exc}")
+            continue
+        if not isinstance(raw_catalog, dict):
+            fail(errors, f"{label} must be a JSON object")
+            continue
+        catalogs[label] = raw_catalog
+        if set(raw_catalog) != message_keys:
+            fail(errors, f"{label} keys do not exactly match MessageKey")
+        for key, value in raw_catalog.items():
+            if (
+                not isinstance(key, str)
+                or not isinstance(value, str)
+                or value != value.strip()
+                or not value
+                or len(value) > 200
+                or any(ord(character) < 32 for character in value)
+            ):
+                fail(errors, f"{label} contains an unsafe value for {key!r}")
+
+    implementation = paths["implementation"].read_text(encoding="utf-8")
+    for marker in (
+        'DEFAULT_LOCALE = "zh-CN"',
+        'SUPPORTED_LOCALES = ("zh-CN", "en")',
+        "_MAX_ACCEPT_LANGUAGE_LENGTH",
+        "_MAX_LANGUAGE_RANGES",
+        "_match_specificity",
+        "def validation_field",
+        "request.state.locale",
+        'headers["Content-Language"]',
+        'headers["Vary"]',
+        "CATALOGS[locale][key.value]",
+    ):
+        if marker not in implementation:
+            fail(errors, f"API i18n implementation is missing {marker!r}")
+
+    required_code_markers = {
+        "contract": (
+            "message_key: MessageKey",
+            "translate(request, message_key)",
+            "apply_language_headers(localized_headers, locale_for_request(request))",
+        ),
+        "application": (
+            "request.state.locale = locale_for_request(request)",
+            "apply_language_headers(response_headers, request.state.locale)",
+            "field=validation_field(error)",
+            "message=validation_message(request, error)",
+        ),
+        "errors": ("message_key: MessageKey", "self.message_key = message_key"),
+        "pyproject": ('app = ["locales/*.json"]',),
+        "tests": (
+            "test_catalogs_are_complete_bounded_and_safe",
+            "test_accept_language_negotiation",
+            "test_untrusted_language_values_never_escape_supported_locales",
+            "test_concurrent_requests_do_not_share_locale",
+            "test_validation_outer_and_field_messages_are_localized",
+            "test_validation_fields_do_not_echo_untrusted_keys",
+            "test_unhandled_500_keeps_language_headers",
+            '"zh-CN;q=0, *;q=1"',
+            '"zh-CN;q=0, zh;q=1"',
+        ),
+    }
+    for label, markers in required_code_markers.items():
+        content = paths[label].read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in content:
+                fail(errors, f"{label} is missing API i18n marker {marker!r}")
+
+    for source_path in sorted((ASSET_ROOT / "app").rglob("*.py")):
+        source = source_path.read_text(encoding="utf-8")
+        relative = source_path.relative_to(REPO_ROOT)
+        if "public_message" in source:
+            fail(errors, f"{relative} stores rendered public_message instead of a key")
+        if source_path.name != "i18n.py" and re.search(r"[\u4e00-\u9fff]", source):
+            fail(
+                errors,
+                f"{relative} contains rendered Chinese API text outside catalogs",
+            )
+        tree = _parse_python(errors, source_path, label=str(relative))
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            call_name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else None
+            )
+            keyword_names = {keyword.arg for keyword in node.keywords}
+            if call_name in {"api_response", "error_content"}:
+                if "message" in keyword_names or "message_key" not in keyword_names:
+                    fail(errors, f"{relative} has a response call without message_key")
+            if call_name == "RbacError" and (
+                "public_message" in keyword_names or "message_key" not in keyword_names
+            ):
+                fail(errors, f"{relative} constructs RbacError without message_key")
+
+
 def validate_api_response_contract(errors: list[str]) -> None:
     paths = {
         "entrypoint": SKILL_ROOT / "SKILL.md",
@@ -2414,7 +2715,7 @@ def validate_api_response_contract(errors: list[str]) -> None:
         ),
         "application": (
             "request.state.request_id = str(uuid.uuid4())",
-            'MutableHeaders(scope=message)["X-Request-ID"]',
+            'response_headers["X-Request-ID"]',
             "handle_request_validation_error",
             "handle_unexpected_error",
             "handle_database_unavailable",
@@ -3311,6 +3612,7 @@ def main() -> int:
     validate_administrative_read_visibility(errors)
     validate_super_admin_bootstrap(errors)
     validate_rbac_database_naming(errors)
+    validate_api_internationalization(errors)
     validate_api_response_contract(errors)
     validate_observability_and_audit(errors)
     validate_business_audit(errors)

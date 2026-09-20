@@ -19,7 +19,7 @@ restarting applies new limits. Lua and route files contain no policy numbers.
 | CAPTCHA scene sent to the wrong issue endpoint or parsed invalid CAPTCHA body, per trusted IP or authenticated actor | 10 per 5 minutes |
 | Login submission, trusted client IP | 20 per 5 minutes |
 | Public registration submission, trusted client IP | 5 per hour |
-| Complete an administrator-issued temporary password, trusted client IP | 20 per 5 minutes |
+| Complete a temporary password from administrator user creation or optional temporary reset, trusted client IP | 20 per 5 minutes |
 | Authenticated ordinary read, per operation and actor user ID | 600 per minute |
 | Authenticated ordinary write, per operation and actor user ID | 120 per minute |
 | Administrative read, per operation and actor user ID | 300 per minute |

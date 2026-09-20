@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Annotated, Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from app.rbac.domain import MAX_ROLES_PER_USER
 
@@ -60,9 +61,9 @@ class RoleUpdateRequest(BaseModel):
     def require_at_least_one_field(self) -> Self:
         mutable_fields = self.model_fields_set & {"name", "description"}
         if not mutable_fields:
-            raise ValueError("at least one role field is required")
+            raise PydanticCustomError("role_fields_required", "role_fields_required")
         if any(getattr(self, field_name) is None for field_name in mutable_fields):
-            raise ValueError("role fields cannot be null")
+            raise PydanticCustomError("role_fields_not_null", "role_fields_not_null")
         return self
 
 
@@ -82,7 +83,7 @@ class PermissionIdsRequest(BaseModel):
     @classmethod
     def unique_permission_ids(cls, value: list[uuid.UUID]) -> list[uuid.UUID]:
         if len(value) != len(set(value)):
-            raise ValueError("permission IDs must be unique")
+            raise PydanticCustomError("permission_ids_unique", "permission_ids_unique")
         return value
 
 
@@ -98,7 +99,7 @@ class RoleIdsRequest(BaseModel):
     @classmethod
     def unique_role_ids(cls, value: list[uuid.UUID]) -> list[uuid.UUID]:
         if len(value) != len(set(value)):
-            raise ValueError("role IDs must be unique")
+            raise PydanticCustomError("role_ids_unique", "role_ids_unique")
         return value
 
 
@@ -113,7 +114,9 @@ class RolePermissionsReplaceRequest(BaseModel):
     @classmethod
     def unique_permissions(cls, value: list[str]) -> list[str]:
         if len(value) != len(set(value)):
-            raise ValueError("permission keys must be unique")
+            raise PydanticCustomError(
+                "permission_keys_unique", "permission_keys_unique"
+            )
         return value
 
 

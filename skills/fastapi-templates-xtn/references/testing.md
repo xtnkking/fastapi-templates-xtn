@@ -54,6 +54,12 @@ order cannot affect results.
 - Import and construct the application with explicit test settings.
 - Exercise liveness, readiness, validation errors, and the documented error
   envelope.
+- Verify default `zh-CN` and requested `en` runtime messages, bounded
+  `Accept-Language` negotiation, `Content-Language`, merged `Vary`, exact catalog
+  key parity, localized validation details, specific `q=0` precedence over
+  parent/wildcard ranges, hostile-header fallback, untrusted validation-key
+  masking, unhandled-error headers, and concurrent request isolation. Follow
+  [API internationalization](api-internationalization.md).
 - Verify transaction commit and rollback behavior.
 - Test pagination bounds and deterministic ordering.
 - Confirm secrets and internal model fields never appear in responses or logs.
@@ -88,7 +94,8 @@ When the project uses local passwords, load and test the complete contract in
 hasher or an isolated login-flow mock is not a completed authentication system.
 
 Prove the product questions were answered once: username case comparison,
-password composition, simultaneous-login maximum, and existing-account
+password composition, simultaneous-login maximum, administrator reset mode,
+and existing-account
 enrollment. Then cover the bundled baseline end to end:
 
 - public registration is initially enabled but a persisted super-admin-only
@@ -118,10 +125,16 @@ enrollment. Then cover the bundled baseline end to end:
   challenge is single-use on a wrong or right answer; self change requires its
   current password, while administrator reset needs the exact capability,
   CAPTCHA, and strict-lower policy, not the actor's password again;
-  sole-super-admin reset remains offline only;
-- temporary reset completion is one-time, issues no Token, and successful
-  change/reset increments `users.token_version` so two independently issued old
-  Tokens both fail their next authentication;
+  administrator creation and sole-super-admin offline recovery remain temporary
+  regardless of the administrator-reset mode;
+- administrator reset accepts only `new_password`; default `direct` writes
+  `must_change_password=false` and permits normal login, while selected
+  `temporary` writes true and requires one completion before Token issuance;
+  neither request body nor caller can select the project mode;
+- temporary completion is one-time and issues no Token. Both reset modes and
+  successful completion increment `users.token_version`, so two independently
+  issued old Tokens both fail their next authentication. The reset audit action
+  is shared while reason codes distinguish permanent from temporary setup;
 - change-versus-reset, reset-versus-delete, and reset-versus-protected-write
   races use barriers and assert both possible commit orders without sleeps;
 - allowed account-security audit failure rolls back the password mutation,

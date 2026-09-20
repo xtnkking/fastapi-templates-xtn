@@ -30,6 +30,13 @@ from app.api_contract import (
 )
 from app.authentication_api import authentication_routers
 from app.database import engine
+from app.i18n import (
+    MessageKey,
+    apply_language_headers,
+    locale_for_request,
+    validation_field,
+    validation_message,
+)
 from app.observability import (
     bind_request_context,
     configure_logging,
@@ -51,19 +58,22 @@ from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-HTTP_ERROR_CONTRACT: dict[int, tuple[BusinessCode, str]] = {
-    400: (BusinessCode.BAD_REQUEST, "请求内容不合法"),
-    401: (BusinessCode.INVALID_AUTHENTICATION, "身份验证失败"),
-    403: (BusinessCode.ACCESS_FORBIDDEN, "无权执行该操作"),
-    404: (BusinessCode.NOT_FOUND, "资源不存在"),
-    405: (BusinessCode.METHOD_NOT_ALLOWED, "请求方法不允许"),
-    409: (BusinessCode.CONFLICT, "当前资源状态存在冲突"),
-    413: (BusinessCode.PAYLOAD_TOO_LARGE, "请求内容过大"),
-    415: (BusinessCode.UNSUPPORTED_MEDIA_TYPE, "请求媒体类型不支持"),
-    422: (BusinessCode.VALIDATION_FAILED, "请求参数校验失败"),
-    429: (BusinessCode.RATE_LIMITED, "请求过于频繁"),
-    500: (BusinessCode.INTERNAL_ERROR, "服务器内部错误"),
-    503: (BusinessCode.SERVICE_UNAVAILABLE, "服务暂时不可用"),
+HTTP_ERROR_CONTRACT: dict[int, tuple[BusinessCode, MessageKey]] = {
+    400: (BusinessCode.BAD_REQUEST, MessageKey.ERROR_BAD_REQUEST),
+    401: (BusinessCode.INVALID_AUTHENTICATION, MessageKey.ERROR_UNAUTHENTICATED),
+    403: (BusinessCode.ACCESS_FORBIDDEN, MessageKey.ERROR_FORBIDDEN),
+    404: (BusinessCode.NOT_FOUND, MessageKey.ERROR_NOT_FOUND),
+    405: (BusinessCode.METHOD_NOT_ALLOWED, MessageKey.ERROR_METHOD_NOT_ALLOWED),
+    409: (BusinessCode.CONFLICT, MessageKey.ERROR_CONFLICT),
+    413: (BusinessCode.PAYLOAD_TOO_LARGE, MessageKey.ERROR_PAYLOAD_TOO_LARGE),
+    415: (
+        BusinessCode.UNSUPPORTED_MEDIA_TYPE,
+        MessageKey.ERROR_UNSUPPORTED_MEDIA_TYPE,
+    ),
+    422: (BusinessCode.VALIDATION_FAILED, MessageKey.ERROR_VALIDATION_FAILED),
+    429: (BusinessCode.RATE_LIMITED, MessageKey.ERROR_RATE_LIMITED),
+    500: (BusinessCode.INTERNAL_ERROR, MessageKey.ERROR_INTERNAL),
+    503: (BusinessCode.SERVICE_UNAVAILABLE, MessageKey.ERROR_SERVICE_UNAVAILABLE),
 }
 
 
@@ -343,6 +353,7 @@ class RequestObservabilityMiddleware:
 
         request = Request(scope, receive=receive)
         request.state.request_id = str(uuid.uuid4())
+        request.state.locale = locale_for_request(request)
         request.state.request_started_at = perf_counter()
         request.state.request_completion_recorded = False
         context_token = bind_request_context(request.state.request_id)
@@ -379,7 +390,9 @@ class RequestObservabilityMiddleware:
             pending_status_code: int | None = None
             if message["type"] == "http.response.start":
                 pending_status_code = int(message["status"])
-                MutableHeaders(scope=message)["X-Request-ID"] = request.state.request_id
+                response_headers = MutableHeaders(scope=message)
+                response_headers["X-Request-ID"] = request.state.request_id
+                apply_language_headers(response_headers, request.state.locale)
 
             try:
                 await send(message)
@@ -522,8 +535,8 @@ async def handle_request_validation_error(
     errors = ValidationErrorData(
         errors=[
             ValidationErrorItem(
-                field=".".join(str(part) for part in error.get("loc", ())),
-                message=str(error.get("msg", "Invalid value")),
+                field=validation_field(error),
+                message=validation_message(request, error),
             )
             for error in exc.errors()
         ]
@@ -533,7 +546,7 @@ async def handle_request_validation_error(
         content=error_content(
             request,
             code=BusinessCode.VALIDATION_FAILED,
-            message="请求参数校验失败",
+            message_key=MessageKey.ERROR_VALIDATION_FAILED,
             data=errors,
         ),
         headers=request_id_headers(request, {"Cache-Control": "no-store"}),
@@ -550,7 +563,7 @@ async def handle_access_error(request: Request, exc: RbacError) -> JSONResponse:
         content=error_content(
             request,
             code=exc.business_code,
-            message=exc.public_message,
+            message_key=exc.message_key,
         ),
         headers=request_id_headers(request, headers),
     )
@@ -572,7 +585,7 @@ async def handle_rate_limit_exceeded(
         content=error_content(
             request,
             code=BusinessCode.RATE_LIMITED,
-            message="请求过于频繁，请稍后重试",
+            message_key=MessageKey.ERROR_RATE_LIMITED_RETRY,
         ),
         headers=request_id_headers(
             request,
@@ -591,7 +604,7 @@ async def handle_invalid_login_credentials(
         content=error_content(
             request,
             code=BusinessCode.INVALID_AUTHENTICATION,
-            message="身份验证失败",
+            message_key=MessageKey.ERROR_UNAUTHENTICATED,
         ),
         headers=request_id_headers(
             request,
@@ -623,7 +636,7 @@ async def handle_rate_limit_unavailable(
         content=error_content(
             request,
             code=BusinessCode.SERVICE_UNAVAILABLE,
-            message="服务暂时不可用",
+            message_key=MessageKey.ERROR_SERVICE_UNAVAILABLE,
         ),
         headers=request_id_headers(request, {"Cache-Control": "no-store"}),
     )
@@ -636,23 +649,26 @@ async def handle_http_error(
 ) -> JSONResponse:
     known_contract = HTTP_ERROR_CONTRACT.get(exc.status_code)
     status_code = exc.status_code
-    contract: tuple[int | BusinessCode, str]
+    contract: tuple[int | BusinessCode, MessageKey]
     if known_contract is not None:
         contract = known_contract
     else:
         if 400 <= status_code <= 599:
-            contract = (generic_error_code(status_code), "请求失败")
+            contract = (
+                generic_error_code(status_code),
+                MessageKey.ERROR_REQUEST_FAILED,
+            )
         else:
             status_code = 500
-            contract = (BusinessCode.INTERNAL_ERROR, "服务器内部错误")
-    code, message = contract
+            contract = (BusinessCode.INTERNAL_ERROR, MessageKey.ERROR_INTERNAL)
+    code, message_key = contract
     headers = dict(exc.headers or {})
     headers.setdefault("Cache-Control", "no-store")
     if status_code == 401:
         headers.setdefault("WWW-Authenticate", "Bearer")
     return JSONResponse(
         status_code=status_code,
-        content=error_content(request, code=code, message=message),
+        content=error_content(request, code=code, message_key=message_key),
         headers=request_id_headers(request, headers),
     )
 
@@ -664,7 +680,7 @@ async def handle_unexpected_error(request: Request, exc: Exception) -> JSONRespo
         content=error_content(
             request,
             code=BusinessCode.INTERNAL_ERROR,
-            message="服务器内部错误",
+            message_key=MessageKey.ERROR_INTERNAL,
         ),
         headers=request_id_headers(request, {"Cache-Control": "no-store"}),
     )
@@ -694,7 +710,7 @@ async def handle_database_unavailable(
         content=error_content(
             request,
             code=BusinessCode.SERVICE_UNAVAILABLE,
-            message="服务暂时不可用",
+            message_key=MessageKey.ERROR_SERVICE_UNAVAILABLE,
         ),
         headers=request_id_headers(request, {"Cache-Control": "no-store"}),
     )
@@ -709,7 +725,7 @@ async def liveness(request: Request) -> ApiResponse[dict[str, str]]:
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="服务正常",
+        message_key=MessageKey.HEALTH_LIVE,
         data={"status": "ok"},
     )
 
@@ -758,7 +774,7 @@ async def readiness(
             content=error_content(
                 request,
                 code=BusinessCode.SERVICE_UNAVAILABLE,
-                message="服务暂时不可用",
+                message_key=MessageKey.ERROR_SERVICE_UNAVAILABLE,
             ),
             headers=request_id_headers(request, {"Cache-Control": "no-store"}),
         )
@@ -767,6 +783,6 @@ async def readiness(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="服务已就绪",
+        message_key=MessageKey.HEALTH_READY,
         data={"status": "ready"},
     )

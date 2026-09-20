@@ -15,6 +15,7 @@ from starlette.types import Message, Receive, Scope, Send
 
 import app.main as main_module
 from app.api_contract import ApiResponse, BusinessCode, api_response
+from app.i18n import MessageKey
 from app.main import (
     RequestObservabilityMiddleware,
     handle_access_error,
@@ -104,7 +105,7 @@ def build_test_app() -> FastAPI:
         return api_response(
             request,
             code=BusinessCode.OK,
-            message="ok",
+            message_key=MessageKey.COMMON_SUCCESS,
             data={"status": "ok"},
         )
 
@@ -116,7 +117,7 @@ def build_test_app() -> FastAPI:
         return api_response(
             request,
             code=BusinessCode.OK,
-            message="ok",
+            message_key=MessageKey.COMMON_SUCCESS,
             data={"value": value},
         )
 
@@ -163,7 +164,7 @@ def build_test_app() -> FastAPI:
         return api_response(
             request,
             code=BusinessCode.OK,
-            message="ok",
+            message_key=MessageKey.COMMON_SUCCESS,
             data={"status": "scheduled"},
         )
 
@@ -175,7 +176,7 @@ def build_test_app() -> FastAPI:
         return api_response(
             request,
             code=BusinessCode.OK,
-            message="ok",
+            message_key=MessageKey.COMMON_SUCCESS,
             data={"context_request_id": observed},
         )
 

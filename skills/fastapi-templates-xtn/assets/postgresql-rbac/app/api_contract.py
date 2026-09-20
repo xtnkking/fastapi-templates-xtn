@@ -6,6 +6,14 @@ from typing import Any
 from fastapi import Request
 from fastapi.routing import APIRoute
 from pydantic import UUID4, BaseModel, ConfigDict, Field
+from starlette.datastructures import MutableHeaders
+
+from app.i18n import (
+    MessageKey,
+    apply_language_headers,
+    locale_for_request,
+    translate,
+)
 
 
 class BusinessCode(IntEnum):
@@ -147,20 +155,22 @@ def request_id_headers(
 ) -> dict[str, str]:
     result = dict(headers or {})
     result["X-Request-ID"] = request_id_for(request)
-    return result
+    localized_headers = MutableHeaders(headers=result)
+    apply_language_headers(localized_headers, locale_for_request(request))
+    return dict(localized_headers.items())
 
 
 def api_response[T](
     request: Request,
     *,
     code: BusinessCode,
-    message: str,
+    message_key: MessageKey,
     data: T | None,
 ) -> ApiResponse[T]:
     request.state.business_code = int(code)
     return ApiResponse(
         code=int(code),
-        message=message,
+        message=translate(request, message_key),
         data=data,
         request_id=uuid.UUID(request_id_for(request)),
     )
@@ -170,13 +180,13 @@ def error_content(
     request: Request,
     *,
     code: int | BusinessCode,
-    message: str,
+    message_key: MessageKey,
     data: Any = None,
 ) -> dict[str, Any]:
     request.state.business_code = int(code)
     response = ApiResponse[Any](
         code=int(code),
-        message=message,
+        message=translate(request, message_key),
         data=data,
         request_id=uuid.UUID(request_id_for(request)),
     )

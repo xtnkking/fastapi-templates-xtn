@@ -9,8 +9,28 @@ structured logging, and separate durable audits.
 
 ## Status
 
-`v0.5.1` is the latest published tag. Install the tagged release for a
-reproducible baseline; later `main` changes may not be released yet.
+`v0.6.0` is the latest published tag. Install the tagged release for a
+reproducible baseline.
+
+`v0.6.0` adds a project-wide administrator password-reset choice. The
+default `direct` mode makes the administrator-supplied value the permanent
+password immediately; optional `temporary` mode requires the user to complete
+one formal-password setup. Project generation must explain and ask about both;
+`direct` is simpler but the administrator knows and privately delivers the final
+password; `temporary` adds a step but lets the user choose the final password.
+An API caller cannot switch modes per request. Both modes retain CAPTCHA,
+capability and strict-lower checks, old-Token revocation, atomic audit, and
+secret-free responses/logs. Administrator-created users and offline recovery of
+the sole `super_admin` remain temporary-password flows.
+
+`v0.6.0` also adds request-level API internationalization. Every
+client-facing runtime response message, including safe validation details,
+supports default `zh-CN` and requested `en` through `Accept-Language`.
+Responses declare `Content-Language` and `Vary: Accept-Language`; status codes,
+numeric business codes, data, request IDs, logs, audit fields, and internal
+reason codes remain language-independent. Additional languages are explicit
+project extensions. Database-authored product content and OpenAPI developer
+metadata are not translated by this module.
 
 ## Upstream And Attribution
 
@@ -22,7 +42,7 @@ Copyright (c) 2024 Seth Hobson under MIT. XTN's additions are independently
 maintained and are not affiliated with or endorsed by upstream. Preserve
 [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-## Baseline In v0.5.1
+## Baseline In v0.6.0
 
 - Greenfield services use only `user_name` and password, not email login or
   self-service forgot-password. Usernames trim edge whitespace, require 3..32
@@ -92,7 +112,7 @@ maintained and are not affiliated with or endorsed by upstream. Preserve
 | CAPTCHA scene at wrong issue endpoint, per trusted IP or actor | 10 / 5 min |
 | Login, per trusted IP | 20 / 5 min |
 | Registration, per trusted IP | 5 / hour |
-| Temporary-password completion, per trusted IP | 20 / 5 min |
+| Temporary-password completion for administrator-created users or optional temporary reset, per trusted IP | 20 / 5 min |
 | Authenticated ordinary read / write, per operation and actor | 600 / min; 120 / min |
 | Admin read / change, per operation and actor | 300 / min; 60 / min |
 
@@ -114,7 +134,7 @@ Install the immutable latest published release:
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.5.1/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.0/skills/fastapi-templates-xtn
 ```
 
 The installer does not overwrite an installed Skill. Back up local changes
@@ -160,7 +180,7 @@ python -B skills/fastapi-templates-xtn/scripts/test_validate_country_csv.py
 python -B scripts/validate_release.py
 ```
 
-The `v0.5.1` test baseline requires `pytest>=9.0.3,<10` together with
+The `v0.6.0` test baseline requires `pytest>=9.0.3,<10` together with
 `pytest-asyncio>=1.4,<2`; do not lower those ranges or the `pip>=26.2` audit
 baseline without rerunning the dependency audit.
 

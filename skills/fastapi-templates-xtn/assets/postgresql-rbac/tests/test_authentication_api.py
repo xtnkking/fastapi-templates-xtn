@@ -648,12 +648,16 @@ async def test_admin_reset_and_temporary_completion_are_separate_commands() -> N
     service = AsyncMock()
     service.reset_user_password.return_value = True
     service.complete_password_reset.return_value = True
+    temporary_settings = get_settings().model_copy(
+        update={"admin_password_reset_mode": "temporary"}
+    )
 
     async def current_context() -> AuthorizationContext:
         return context
 
     app.dependency_overrides[get_authorization_context] = current_context
     app.dependency_overrides[get_local_authentication_service] = lambda: service
+    app.dependency_overrides[get_settings] = lambda: temporary_settings
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -662,9 +666,10 @@ async def test_admin_reset_and_temporary_completion_are_separate_commands() -> N
             reset = await client.post(
                 f"/api/v1/users/{target_id}/password/reset",
                 json={
-                    "temporary_password": NEW_PASSWORD,
+                    "new_password": NEW_PASSWORD,
                     **CAPTCHA,
                 },
+                headers={"Accept-Language": "en"},
             )
             complete = await client.post(
                 "/api/v1/auth/password/reset/complete",
@@ -682,8 +687,80 @@ async def test_admin_reset_and_temporary_completion_are_separate_commands() -> N
     assert complete.status_code == 200
     assert complete.json()["data"] == {"changed": True}
     assert "access_token" not in complete.text
+    assert NEW_PASSWORD not in reset.text
+    assert reset.json()["message"] == "Temporary password set"
+    assert reset.headers["Content-Language"] == "en"
     assert service.reset_user_password.await_args.kwargs["target_user_id"] == target_id
+    assert service.reset_user_password.await_args.kwargs["new_password"] == NEW_PASSWORD
+    assert service.reset_user_password.await_args.kwargs["reset_mode"] == "temporary"
     assert service.complete_password_reset.await_args.kwargs["user_name"] == "Alice"
+
+
+async def test_admin_reset_defaults_to_a_direct_permanent_password() -> None:
+    context = _context(password_reset=True)
+    target_id = uuid.uuid4()
+    service = AsyncMock()
+    service.reset_user_password.return_value = True
+
+    async def current_context() -> AuthorizationContext:
+        return context
+
+    app.dependency_overrides[get_authorization_context] = current_context
+    app.dependency_overrides[get_local_authentication_service] = lambda: service
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                f"/api/v1/users/{target_id}/password/reset",
+                json={"new_password": NEW_PASSWORD, **CAPTCHA},
+                headers={"Accept-Language": "en"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"changed": True}
+    assert response.json()["message"] == "Password reset successful"
+    assert response.headers["Content-Language"] == "en"
+    assert NEW_PASSWORD not in response.text
+    assert service.reset_user_password.await_args.kwargs == {
+        "context": context,
+        "target_user_id": target_id,
+        "new_password": NEW_PASSWORD,
+        "reset_mode": "direct",
+    }
+
+
+async def test_admin_reset_request_cannot_select_the_project_mode() -> None:
+    context = _context(password_reset=True)
+    service = AsyncMock()
+
+    async def current_context() -> AuthorizationContext:
+        return context
+
+    app.dependency_overrides[get_authorization_context] = current_context
+    app.dependency_overrides[get_local_authentication_service] = lambda: service
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                f"/api/v1/users/{uuid.uuid4()}/password/reset",
+                json={
+                    "new_password": NEW_PASSWORD,
+                    "reset_mode": "temporary",
+                    **CAPTCHA,
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert NEW_PASSWORD not in response.text
+    service.reset_user_password.assert_not_awaited()
 
 
 async def test_password_requests_reject_unknown_fields_without_echoing_secrets() -> (
@@ -728,3 +805,8 @@ def test_password_routes_are_post_only_and_do_not_expose_the_mechanism() -> None
         assert "rbac" not in str(operation).casefold()
         for response in operation["responses"].values():
             assert "X-Request-ID" in response["headers"]
+
+    reset_schema = schema["components"]["schemas"]["AdminPasswordResetRequest"]
+    expected_fields = {"captcha_id", "captcha_answer", "new_password"}
+    assert set(reset_schema["properties"]) == expected_fields
+    assert set(reset_schema["required"]) == expected_fields

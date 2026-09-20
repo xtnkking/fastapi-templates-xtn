@@ -1,6 +1,6 @@
 ---
 name: fastapi-templates-xtn
-description: Build or harden single-project FastAPI services with PostgreSQL RBAC, strict administrative hierarchy, username/password authentication and five purpose-bound graphical CAPTCHA flows, Redis-gated Access Tokens, per-business Redis fixed-window limits, non-sequential identifiers, atomic authorization writes, structured logging, and durable audits. Use for FastAPI RBAC work, not services without authorization requirements.
+description: Build or harden single-project FastAPI services with PostgreSQL RBAC, strict administrative hierarchy, username/password authentication and five purpose-bound graphical CAPTCHA flows, Redis-gated Access Tokens, per-business Redis fixed-window limits, zh-CN/en runtime API messages, non-sequential identifiers, atomic authorization writes, structured logging, and durable audits. Use for FastAPI RBAC work, not services without authorization requirements.
 ---
 
 # FastAPI Templates XTN
@@ -22,12 +22,13 @@ For a new local-password project, present all unresolved product choices in one 
 1. Whether username comparison is case-sensitive. Require an explicit choice; neither behavior is a generic recommendation. Always trim both ends and require 3..32 ASCII letters, digits, or underscores.
 2. Whether passwords must contain uppercase, lowercase, digits, or symbols. Default: none of those composition rules; length remains 8..60.
 3. Maximum simultaneous active logins per user. Require the owner to supply a positive integer; there is no recommended number and `全部接受` / `Accept all` cannot fill it in. Explain that Redis records login sessions and times, not physical devices; at the limit, evict the oldest.
-4. Whether to accept the relevant rate limits: CAPTCHA 10/5 minutes per scene; login 20/5 minutes per trusted IP; registration 5/hour per trusted IP; temporary-password
+4. Administrator password-reset mode. Default: `direct`, where the administrator sets the user's new permanent password and the user may log in without another password-change step; this is simpler, but the administrator knows and must privately deliver the final password. Optional: `temporary`, where the administrator's password can only complete one formal-password setup; this adds a step, but the user chooses the final password. Explain both and ask the owner to choose; never let the API caller choose per request.
+5. Whether to accept the relevant rate limits: CAPTCHA 10/5 minutes per scene; login 20/5 minutes per trusted IP; registration 5/hour per trusted IP; temporary-password
    completion 20/5 minutes per trusted IP; authenticated read 600/minute, management read 300/minute, ordinary write 120/minute, and management change 60/minute per operation and authenticated user.
-5. Whether to add both JWT `iss` and `aud`. Explain plainly: the pair prevents a Token from one trusted system being accepted by the wrong service, but adds issuer/audience
+6. Whether to add both JWT `iss` and `aud`. Explain plainly: the pair prevents a Token from one trusted system being accepted by the wrong service, but adds issuer/audience
    configuration. No answer means keep both absent. Preserve an existing configured pair by default unless removal is explicitly requested.
-6. Whether production operations will separate PostgreSQL migration-owner and runtime roles. Recommend separation only when a professional operations team will own it. Otherwise explain that application soft-delete still works but database-owner SQL can bypass it, and do not block a small project.
-7. Only for an existing project, how accounts without a local password enroll.
+7. Whether production operations will separate PostgreSQL migration-owner and runtime roles. Recommend separation only when a professional operations team will own it. Otherwise explain that application soft-delete still works but database-owner SQL can bypass it, and do not block a small project.
+8. Only for an existing project, how accounts without a local password enroll.
 
 Show only unresolved choices. `全部接受` / `Accept all` accepts only concrete values shown in that batch and cannot answer username case sensitivity or the session maximum until those values have been supplied. A generic instruction to continue does not answer an unasked product choice. Separately tell the owner that the Access Token lifetime starts at 3600 seconds and where to change it; do not turn that notice into another blocking product question unless the owner wants a different value.
 Do not ask about Argon2 parameters, lock order, dummy hashes, secret redaction, audit mechanics, or revoking old Tokens; those are engineering invariants.
@@ -41,6 +42,7 @@ Read this entrypoint first, then only the narrowest matching reference. Add a se
 | --- | --- |
 | FastAPI, Pydantic, SQLAlchemy, settings, lifecycle | [Modern stack](references/modern-fastapi-stack.md) |
 | JSON envelopes, business codes, request IDs, pagination | [API response](references/api-response-standard.md) |
+| API response text, `Accept-Language`, validation messages, or a new language | [API internationalization](references/api-internationalization.md) |
 | Runtime/access logs and safe exception telemetry | [Operational logging](references/operational-logging.md) |
 | RBAC policy without concrete PostgreSQL code | [RBAC design](references/rbac.md) |
 | PostgreSQL RBAC models, routes, services, or baseline asset | [PostgreSQL implementation](references/postgresql-rbac-implementation.md) |
@@ -125,10 +127,16 @@ only after the project defines an explicit action catalog and safe per-action st
   never accept an initial role from the client.
 - Self password change requires old password plus CAPTCHA. Administrator reset
   requires capability, CAPTCHA, and a strictly lower target, but not the actor's
-  password again. Its temporary password has no time expiry, can complete one
-  formal password setup, and is invalidated by completion, reset, or deletion.
-  There is no anonymous forgot-password route; use administrator reset. Sole
-  `super_admin` password recovery remains an offline operator action.
+  password again. Use the project-selected reset mode: `direct` is the default
+  and stores the administrator-supplied value as the permanent password;
+  `temporary` requires one formal-password setup before Token issuance. A
+  temporary password has no timer and is invalidated by completion, another
+  reset, or deletion. Both modes rotate the hash, increment `token_version`,
+  revoke old Tokens, and write the same atomic account-security audit without
+  exposing the password. There is no anonymous forgot-password route; use
+  administrator reset. Administrator-created users and sole `super_admin`
+  offline recovery always use temporary credentials and are not changed by the
+  administrator-reset mode.
 - Email/SMS codes and MFA are not defaults. Add them only when explicitly
   requested; do not add an email field or delivery provider merely for auth.
 
@@ -197,6 +205,13 @@ only after the project defines an explicit action catalog and safe per-action st
   server-generated UUIDv4 `request_id`, echoed in `X-Request-ID`. Use real HTTP
   statuses and six-digit integer business codes with matching first three
   digits. Page data contains only `items`, `page`, `page_size`, and `total`.
+- Localize all client-facing runtime API messages in Simplified Chinese and
+  English. Default to `zh-CN`; select `zh-CN` or `en` from a bounded standard
+  `Accept-Language` value, and return canonical `Content-Language` plus
+  `Vary: Accept-Language`. Routes and services use stable message keys, not
+  rendered text. Never localize HTTP/business codes, response fields, data
+  machine values, permission/role keys, logs, audit actions, outcomes, or
+  reason codes. Additional languages are explicit project extensions.
 - Emit one-line structured operational logs with stable events, UTC time,
   service/build identity, request ID, route template, status, business code,
   duration, and authenticated canonical user ID when available. Never log raw

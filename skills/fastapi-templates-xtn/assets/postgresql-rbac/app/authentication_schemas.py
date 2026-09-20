@@ -9,6 +9,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
 from app.rbac.provisioning import normalize_identity
 
@@ -27,7 +28,9 @@ class _UsernameRequest(_ClosedRequest):
             normalized = normalize_identity(value, field="user_name")
         except ValueError as exc:
             if str(exc) == "reserved_user_name":
-                raise ValueError("该用户名不可使用，请更换") from exc
+                raise PydanticCustomError(
+                    "username_reserved", "username_reserved"
+                ) from exc
             raise
         assert normalized is not None
         return normalized
@@ -56,12 +59,12 @@ class PasswordChangeRequest(_CaptchaAnswer):
             self.current_password.get_secret_value()
             == self.new_password.get_secret_value()
         ):
-            raise ValueError("new_password must differ from current_password")
+            raise PydanticCustomError("passwords_must_differ", "passwords_must_differ")
         return self
 
 
 class AdminPasswordResetRequest(_CaptchaAnswer):
-    temporary_password: SecretStr = Field(min_length=1, max_length=128)
+    new_password: SecretStr = Field(min_length=1, max_length=128)
 
 
 class AdminUserCreateRequest(_UsernameRequest, _CaptchaAnswer):
@@ -108,7 +111,7 @@ class PasswordResetCompletionRequest(_UsernameRequest):
             self.temporary_password.get_secret_value()
             == self.new_password.get_secret_value()
         ):
-            raise ValueError("new_password must differ from temporary_password")
+            raise PydanticCustomError("passwords_must_differ", "passwords_must_differ")
         return self
 
 

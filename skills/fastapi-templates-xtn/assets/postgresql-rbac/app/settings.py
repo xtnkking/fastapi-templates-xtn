@@ -1,6 +1,6 @@
 import unicodedata
 from functools import lru_cache
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     jwt_secret: SecretStr
     rate_limit_hmac_key: SecretStr
     max_active_sessions_per_user: int = Field(ge=1)
+    admin_password_reset_mode: Literal["direct", "temporary"] = "direct"
     jwt_issuer: str | None = None
     jwt_audience: str | None = None
     jwt_access_token_ttl_seconds: int = Field(default=3600, ge=1)

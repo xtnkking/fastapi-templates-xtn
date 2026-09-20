@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fastapi-postgresql-rbac-example"
-version = "0.5.1"
+version = "0.6.0"
 description = "Opinionated single-project RBAC reference for FastAPI and PostgreSQL"
 requires-python = ">=3.12"
 dependencies = [
@@ -32,6 +32,9 @@ test = [
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["locales/*.json"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

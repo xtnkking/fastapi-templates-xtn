@@ -37,6 +37,7 @@ from app.authentication_service import (
     get_local_authentication_service,
 )
 from app.captcha import CaptchaService
+from app.i18n import MessageKey
 from app.rate_limit_middleware import trusted_client_ip
 from app.rbac.dependencies import (
     PrincipalDependency,
@@ -124,7 +125,7 @@ async def _issue_captcha(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="验证码已生成",
+        message_key=MessageKey.AUTH_CAPTCHA_CREATED,
         data=CaptchaData(captcha_id=captcha_id, image_base64=image_base64),
     )
 
@@ -240,7 +241,7 @@ async def read_registration_status(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="成功",
+        message_key=MessageKey.COMMON_SUCCESS,
         data=RegistrationStatusData(
             registration_enabled=await service.registration_enabled()
         ),
@@ -270,7 +271,7 @@ async def update_registration_status(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="注册设置已更新",
+        message_key=MessageKey.AUTH_REGISTRATION_SETTINGS_UPDATED,
         data=RegistrationStatusData(registration_enabled=enabled),
     )
 
@@ -317,7 +318,7 @@ async def register_local_account(
     return api_response(
         request,
         code=BusinessCode.CREATED,
-        message="注册成功",
+        message_key=MessageKey.AUTH_REGISTRATION_SUCCEEDED,
         data=RegistrationData(user_id=user_id),
     )
 
@@ -372,7 +373,7 @@ async def login_with_local_password(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="登录成功",
+        message_key=MessageKey.AUTH_LOGIN_SUCCEEDED,
         data=AccessTokenData(
             access_token=access_token,
             expires_in=settings.jwt_access_token_ttl_seconds,
@@ -402,7 +403,7 @@ async def my_active_sessions(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="成功",
+        message_key=MessageKey.COMMON_SUCCESS,
         data=ActiveSessionsData(
             active_count=len(timestamps),
             login_times=tuple(
@@ -443,7 +444,7 @@ async def change_my_password(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="密码修改成功，请重新登录",
+        message_key=MessageKey.AUTH_PASSWORD_CHANGED_RELOGIN,
         data=PasswordMutationData(changed=changed),
     )
 
@@ -478,12 +479,17 @@ async def reset_user_password(
     changed = await service.reset_user_password(
         context=context,
         target_user_id=user_id,
-        temporary_password=body.temporary_password.get_secret_value(),
+        new_password=body.new_password.get_secret_value(),
+        reset_mode=settings.admin_password_reset_mode,
     )
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="临时密码已设置",
+        message_key=(
+            MessageKey.AUTH_TEMPORARY_PASSWORD_SET
+            if settings.admin_password_reset_mode == "temporary"
+            else MessageKey.AUTH_PASSWORD_RESET_SUCCEEDED
+        ),
         data=PasswordMutationData(changed=changed),
     )
 
@@ -523,7 +529,7 @@ async def create_user_with_temporary_password(
     return api_response(
         request,
         code=BusinessCode.CREATED,
-        message="用户创建成功",
+        message_key=MessageKey.AUTH_USER_CREATED,
         data=RegistrationData(user_id=user_id),
     )
 
@@ -553,6 +559,6 @@ async def complete_temporary_password_reset(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="密码设置成功，请重新登录",
+        message_key=MessageKey.AUTH_PASSWORD_SETUP_RELOGIN,
         data=PasswordMutationData(changed=changed),
     )

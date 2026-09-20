@@ -14,6 +14,7 @@ from app.api_contract import (
     RequestIdRoute,
     api_response,
 )
+from app.i18n import MessageKey
 from app.rbac.dependencies import (
     PrincipalDependency,
     SessionDependency,
@@ -147,7 +148,7 @@ async def logout_current_access_token(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="退出登录成功",
+        message_key=MessageKey.AUTH_LOGOUT_SUCCEEDED,
         data=OperationResponse(changed=True),
     )
 
@@ -166,7 +167,7 @@ async def read_my_authority(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="查询成功",
+        message_key=MessageKey.COMMON_QUERY_SUCCESS,
         data=AuthorityResponse(
             user_id=authority.user_id,
             management_tier=authority.management_tier,
@@ -221,7 +222,7 @@ async def list_permissions(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="查询成功",
+        message_key=MessageKey.COMMON_QUERY_SUCCESS,
         data=PageData(
             items=items,
             page=page,
@@ -257,7 +258,7 @@ async def get_permission(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="查询成功",
+        message_key=MessageKey.COMMON_QUERY_SUCCESS,
         data=PermissionResponse(
             id=permission.id,
             key=permission.key,
@@ -299,7 +300,7 @@ async def list_roles(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="查询成功",
+        message_key=MessageKey.COMMON_QUERY_SUCCESS,
         data=PageData(
             items=responses,
             page=page,
@@ -339,7 +340,7 @@ async def get_role(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="查询成功",
+        message_key=MessageKey.COMMON_QUERY_SUCCESS,
         data=_role_response(role, grant.permissions),
     )
 
@@ -364,7 +365,7 @@ async def create_role(
     return api_response(
         request,
         code=BusinessCode.CREATED,
-        message="创建成功",
+        message_key=MessageKey.COMMON_CREATED,
         data=result,
     )
 
@@ -394,7 +395,7 @@ async def update_role(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="操作成功",
+        message_key=MessageKey.COMMON_OPERATION_SUCCESS,
         data=result,
     )
 
@@ -441,7 +442,7 @@ async def disable_role(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="操作成功",
+        message_key=MessageKey.COMMON_OPERATION_SUCCESS,
         data=result,
     )
 
@@ -472,7 +473,7 @@ async def enable_role(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="操作成功",
+        message_key=MessageKey.COMMON_OPERATION_SUCCESS,
         data=result,
     )
 
@@ -501,7 +502,7 @@ async def delete_role(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="操作成功",
+        message_key=MessageKey.COMMON_OPERATION_SUCCESS,
         data=result,
     )
 
@@ -549,7 +550,7 @@ async def bind_role_permissions(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="操作成功",
+        message_key=MessageKey.COMMON_OPERATION_SUCCESS,
         data=result,
     )
 
@@ -580,7 +581,7 @@ async def unbind_role_permissions(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="操作成功",
+        message_key=MessageKey.COMMON_OPERATION_SUCCESS,
         data=result,
     )
 
@@ -622,7 +623,7 @@ async def list_users(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="查询成功",
+        message_key=MessageKey.COMMON_QUERY_SUCCESS,
         data=PageData(
             items=items,
             page=page,
@@ -657,7 +658,7 @@ async def get_user(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="查询成功",
+        message_key=MessageKey.COMMON_QUERY_SUCCESS,
         data=await _load_user_response(session, user=user, actor=context),
     )
 
@@ -704,7 +705,7 @@ async def bind_user_roles(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="操作成功",
+        message_key=MessageKey.COMMON_OPERATION_SUCCESS,
         data=result,
     )
 
@@ -735,7 +736,7 @@ async def unbind_user_roles(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="操作成功",
+        message_key=MessageKey.COMMON_OPERATION_SUCCESS,
         data=result,
     )
 
@@ -778,7 +779,7 @@ async def disable_user(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="操作成功",
+        message_key=MessageKey.COMMON_OPERATION_SUCCESS,
         data=result,
     )
 
@@ -807,7 +808,7 @@ async def enable_user(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="操作成功",
+        message_key=MessageKey.COMMON_OPERATION_SUCCESS,
         data=result,
     )
 
@@ -834,6 +835,6 @@ async def revoke_user_sessions(
     return api_response(
         request,
         code=BusinessCode.OK,
-        message="操作成功",
+        message_key=MessageKey.COMMON_OPERATION_SUCCESS,
         data=OperationResponse(changed=True),
     )

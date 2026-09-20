@@ -297,7 +297,9 @@ def test_public_contract_does_not_name_the_authorization_implementation() -> Non
         invalid_request("test"),
         stale_resource_version("test"),
     ]
-    assert all("rbac" not in error.public_message.casefold() for error in public_errors)
+    assert all(
+        "rbac" not in error.message_key.value.casefold() for error in public_errors
+    )
 
     semantic_error = invalid_request("test")
     assert semantic_error.status_code == 400

@@ -25,9 +25,17 @@ delivery provider. Before implementation, ask in one batch:
    a missing number. When full, a successful new login atomically evicts the
    oldest. These are Redis login records and timestamps, not a physical-device
    inventory.
-4. If existing users have no password, how will an administrator verify and
-   enroll them? The default is a controlled temporary-password reset, not a
-   shared initial password.
+4. Which project-wide administrator password-reset mode applies? Default to
+   `direct`: the administrator supplies a new permanent password and the user
+   may log in without another password-change step. It is simpler, but the
+   administrator knows and must privately deliver the final password. Offer
+   `temporary`: the supplied password may only complete one formal-password
+   setup. It adds one step, but the user chooses the final password. Explain both
+   and require a choice before generation; a request body never selects the mode.
+5. If existing users have no password, how will an administrator verify and
+   enroll them? Reuse the selected administrator-reset mode unless the owner
+   explicitly chooses a different controlled enrollment; never use a shared
+   initial password.
 
 Show quota defaults together and allow the user to accept them or name changes.
 Do not ask repeatedly about already decided product facts. `iss`/`aud` require
@@ -89,10 +97,10 @@ reads, writes, and administrator APIs first authenticate.
 | `POST /api/v1/me/captcha` | Authenticated; issues or refreshes only the `admin_create`, `admin_reset`, or `self_change` scene for the current actor. |
 | `POST /api/v1/auth/register` | Public while registration enabled (default on); scene `register` CAPTCHA, per-IP limit, server-side toggle recheck in creation transaction; creates user, initial `user` assignment, password and audits together; returns ID only, never auto-login. When closed, return "暂未开放注册". |
 | `POST /api/v1/auth/login` | Scene `login` CAPTCHA, per-IP limit, real/dummy password check, active account reload, then minimal JWT registered as a Redis active JTI. A temporary credential returns password-change-required and no Token. |
-| `POST /api/v1/auth/password/reset/complete` | Public for a temporary credential issued by an administrator; separate trusted-IP quota, verifies temporary password, sets a new permanent hash and revokes old Tokens. It is **not** an anonymous forgot-password or ownership-proof endpoint. |
+| `POST /api/v1/auth/password/reset/complete` | Public for a temporary credential from administrator user creation or the optional `temporary` reset mode; separate trusted-IP quota, verifies the temporary password, sets a new permanent hash and revokes old Tokens. It is **not** an anonymous forgot-password or ownership-proof endpoint. |
 | `POST /api/v1/me/password/change` | Authenticated; scene `self_change` CAPTCHA and current password required; rotate hash, clear temporary flag, increment `token_version`, and audit in one PostgreSQL transaction. No replacement Token. |
 | `POST /api/v1/users` | Administrator with creation capability; scene `admin_create` CAPTCHA; supplies a temporary password to deliver through a trusted offline channel. Creates only `user` regardless of registration switch. |
-| `POST /api/v1/users/{user_id}/password/reset` | Administrator with exact reset capability; scene `admin_reset` CAPTCHA, locked actor/target recheck and strict lower-target rule; sets a temporary password, increments target token version, and audits. Do not ask for the actor's password again. |
+| `POST /api/v1/users/{user_id}/password/reset` | Administrator with exact reset capability; scene `admin_reset` CAPTCHA, locked actor/target recheck and strict lower-target rule. The request always supplies `new_password`; project setting `ADMIN_PASSWORD_RESET_MODE`, never a client field, decides whether it is permanent (`direct`, default) or requires one completion (`temporary`). Both modes increment target token version and audit. Do not ask for the actor's password again. |
 | `POST /api/v1/auth/logout` | Any authenticated user revokes only the presented active JTI. There is no self-service logout-all command. |
 | `POST /api/v1/users/{user_id}/sessions/revoke` | Only an administrator with capability may force a strictly lower user's active logins out, with locked hierarchy and security audit; it cannot target self, peers, or higher identities. |
 
@@ -110,13 +118,22 @@ PostgreSQL transaction. A failed allowed-audit insertion rolls back the
 mutation. A denied-audit failure never replaces the original denial with `500`.
 Never do Redis I/O while holding authorization locks.
 
-The temporary credential does **not** expire on a timer: it remains valid until
-successful completion, another reset, or account deletion. It still must be
-delivered privately and changed promptly. A person who forgot a password
-contacts an administrator for identity verification outside the API. The sole
-`super_admin` is recovered only from a trusted host using the supplied
-interactive operator command (hidden input, immutable user ID, locked check,
-audit). There is no email/SMS provider or anonymous self-service reset route.
+Administrator reset is a project-wide choice, not a per-request switch. In the
+default `direct` mode, the supplied value immediately becomes the permanent
+password and `must_change_password` is false. In `temporary` mode it is true,
+so login issues no Token until the user successfully completes one formal
+password setup. That temporary credential does **not** expire on a timer: it
+remains valid until successful completion, another reset, or account deletion.
+In both modes the administrator must deliver the password privately; the API,
+logs, and audit rows never echo it. A person who forgot a password contacts an
+administrator for identity verification outside the API. The sole `super_admin`
+is recovered only from a trusted host using the supplied interactive operator command
+(hidden input, immutable user ID, locked check, audit). There is no
+email/SMS provider or anonymous self-service reset route.
+Administrator-created users and this sole-super-admin operator recovery always use
+temporary credentials.
+`ADMIN_PASSWORD_RESET_MODE` controls only the administrator HTTP reset of an
+existing ordinary target.
 
 On a login success, Redis atomically registers the JTI and maintains an index
 of valid active logins with login times. A required project-chosen positive
@@ -131,8 +148,8 @@ version. This Redis index is not a PostgreSQL Token/session table.
 Test username normalization and full-name denylist, the three simple weak
 password patterns, Argon2 work, CAPTCHA for all five protected actions,
 registration on/off and stale-page submission, only-`user` registration,
-generic login errors, one-use temporary completion, actor reauthentication
-only for self-change, admin strict-target rules, atomic hash/audit commits,
+generic login errors, default direct reset, optional one-use temporary reset,
+actor reauthentication only for self-change, admin strict-target rules, atomic hash/audit commits,
 and absent self logout-all/forgot-password routes. Test real Redis session
 count, independent login times, oldest eviction after successful issuance,
 concurrent issuance, and version-change invalidation; also test PostgreSQL

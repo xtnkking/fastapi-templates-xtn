@@ -6,6 +6,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-20
+
+- Added request-local API internationalization for every client-facing runtime
+  response message and safe validation detail. The baseline now ships complete
+  `zh-CN` and `en` catalogs, defaults to Chinese, negotiates a bounded standard
+  `Accept-Language` value, and returns canonical `Content-Language` plus
+  `Vary: Accept-Language`. Stable HTTP/business codes, response data, request
+  IDs, logs, audit fields, and internal reason codes are not translated. A
+  specific `q=0` exclusion overrides parent ranges and wildcards; safe `422`
+  field hints never reflect extra or nested mapping keys; and even an unhandled
+  `500` retains both language headers.
+
+- **BREAKING:** Administrator password reset is now a project-wide choice.
+  `direct` is the default and immediately stores the administrator-supplied
+  value as the user's permanent password; optional `temporary` requires one
+  formal-password completion before login can issue a Token. Project generation
+  must explain and ask about both modes, while API callers cannot switch modes
+  per request. `AdminPasswordResetRequest.temporary_password` is renamed to
+  `new_password`. Both paths keep CAPTCHA, exact capability, strict-lower target,
+  Token revocation, atomic account-security audit, and secret redaction. The
+  existing `users.must_change_password` column supports both, so no migration or
+  table change is required. A project upgrading from `v0.5.1` that intentionally
+  wants the old mandatory-temporary-reset behavior must explicitly set
+  `ADMIN_PASSWORD_RESET_MODE=temporary`.
+
 ## [0.5.1] - 2026-09-19
 
 - Corrected login and registration admission order: the public-IP business

@@ -15,6 +15,7 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from app.api_contract import BusinessCode
+from app.i18n import MessageKey
 from app.rbac.errors import RbacError, unavailable
 from app.settings import Settings
 
@@ -71,7 +72,7 @@ def _invalid() -> RbacError:
     return RbacError(
         status_code=400,
         business_code=BusinessCode.BAD_REQUEST,
-        public_message="验证码无效或已失效，请重新获取",
+        message_key=MessageKey.ERROR_CAPTCHA_INVALID,
         reason_code="captcha_invalid_or_expired",
     )
 

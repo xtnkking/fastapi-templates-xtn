@@ -18,6 +18,13 @@ Generate two different random values for `JWT_SECRET` and
 `RATE_LIMIT_HMAC_KEY` as shown in `.env.example`; example placeholders cannot
 start the application. Ask the product owner for a positive
 `MAX_ACTIVE_SESSIONS_PER_USER`: these are login sessions, not physical devices.
+Ask whether administrator password reset uses `direct` (the default permanent
+password) or `temporary` (one required formal-password setup), then set
+`ADMIN_PASSWORD_RESET_MODE`. This is one project-wide policy; the reset request
+cannot choose it. `direct` is simpler but the administrator knows and privately
+delivers the final password; `temporary` adds a step but lets the user choose
+the final password. Administrator-created new users still start with a temporary
+password in either mode.
 The Access Token lasts 3600 seconds by default; choose a lifetime appropriate
 for this product. Leave `JWT_ISSUER` and `JWT_AUDIENCE` both unset unless the
 owner has explicitly accepted the extra issuer/audience restriction.
@@ -41,6 +48,31 @@ overall ready/unavailable result, never per-component states, connection strings
 keys, or exception details. Use readiness, not liveness, to decide whether a
 deployment should receive traffic.
 
+## Select API Language
+
+All client-facing runtime response messages support Simplified Chinese and
+English. Chinese is the default. Send the standard header below when a client
+needs English:
+
+```http
+Accept-Language: en
+```
+
+The response reports canonical `Content-Language: zh-CN` or
+`Content-Language: en` and includes `Vary: Accept-Language`. Language selection
+changes only human-readable `message` values, including safe field-validation
+messages. HTTP status, numeric business code, `data`, `request_id`, permission
+keys, log events, audit actions, and internal reason codes remain stable.
+A specific `q=0` language exclusion overrides a parent range or wildcard.
+Database-authored product content and OpenAPI developer metadata are outside
+this runtime message module and are not translated by it.
+
+To add another language, update the static registry in `app/i18n.py`, add a
+complete UTF-8 JSON file under `app/locales/`, and add parser, catalog-parity,
+response-header, error, validation, and concurrency tests. Never derive a file
+path from the request header. No database locale field, Cookie, query parameter,
+or translation service is required by this baseline.
+
 ## Edit Rate Limits
 
 Defaults live in `app/settings.py`. Change the corresponding `RATE_LIMIT_*`
@@ -53,7 +85,7 @@ the project owner and agree on changes before generating a new project.
 | CAPTCHA scene at wrong issue endpoint or parsed invalid CAPTCHA body, trusted IP or actor | Same CAPTCHA setting; separate rejection key | 10 / 5 min |
 | Login, trusted IP | `RATE_LIMIT_LOGIN_IP_PER_FIVE_MINUTES` | 20 / 5 min |
 | Public registration, trusted IP | `RATE_LIMIT_REGISTRATION_IP_PER_HOUR` | 5 / hour |
-| Temporary-password completion, trusted IP | `RATE_LIMIT_TEMPORARY_COMPLETE_IP_PER_FIVE_MINUTES` | 20 / 5 min |
+| Temporary-password completion for administrator-created users or optional temporary reset, trusted IP | `RATE_LIMIT_TEMPORARY_COMPLETE_IP_PER_FIVE_MINUTES` | 20 / 5 min |
 | Authenticated ordinary read/write, operation and actor ID | `RATE_LIMIT_AUTHENTICATED_READ_PER_MINUTE` / `RATE_LIMIT_ORDINARY_WRITE_PER_MINUTE` | 600 / min; 120 / min |
 | Administrative read/change, operation and actor ID | `RATE_LIMIT_MANAGEMENT_READ_PER_MINUTE` / `RATE_LIMIT_AUTHORIZATION_WRITE_PER_MINUTE` | 300 / min; 60 / min |
 

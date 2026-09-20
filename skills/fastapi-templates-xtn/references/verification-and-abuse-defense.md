@@ -7,7 +7,9 @@ CAPTCHA baseline. It does not create email, SMS, MFA, or account-recovery flows.
 All five graphical CAPTCHA scenes below are mandatory for the new-project
 baseline. Only email/SMS verification and MFA are optional extensions. There is
 no anonymous forgot-password flow in this Skill; temporary-password completion
-starts only after an authorized administrator reset.
+starts only after administrator user creation or an authorized reset in the
+project's optional `temporary` mode. The default `direct` reset needs no
+completion step.
 
 ## Five Fixed Scenes
 

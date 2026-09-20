@@ -21,6 +21,7 @@ SETTINGS_ENV_NAMES = (
     "JWT_SECRET",
     "RATE_LIMIT_HMAC_KEY",
     "MAX_ACTIVE_SESSIONS_PER_USER",
+    "ADMIN_PASSWORD_RESET_MODE",
     "JWT_ISSUER",
     "JWT_AUDIENCE",
     "JWT_ACCESS_TOKEN_TTL_SECONDS",
@@ -221,6 +222,18 @@ def test_access_token_lifetime_defaults_to_one_hour_and_is_configurable() -> Non
 
     assert default_settings.jwt_access_token_ttl_seconds == 3600
     assert custom_settings.jwt_access_token_ttl_seconds == 900
+
+
+def test_admin_password_reset_defaults_to_direct_and_accepts_temporary() -> None:
+    assert settings_for_test().admin_password_reset_mode == "direct"
+    assert (
+        settings_for_test(
+            admin_password_reset_mode="temporary"
+        ).admin_password_reset_mode
+        == "temporary"
+    )
+    with pytest.raises(ValidationError, match="admin_password_reset_mode"):
+        settings_for_test(admin_password_reset_mode="per_request")
 
 
 def test_redis_url_requires_redis_protocol() -> None:

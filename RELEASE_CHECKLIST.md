@@ -25,7 +25,8 @@ Use this checklist for the first public preview and subsequent releases.
   all database test groups have actually passed.
 - [ ] Local-password tests cover Argon2id offload, real-or-dummy verification,
   password fields on `users`, registration/login, self change, administrator
-  reset, temporary completion, offline operator recovery and super-admin
+  reset in default direct and optional temporary modes, temporary completion,
+  offline operator recovery and super-admin
   handover, oldest-login eviction, Token invalidation, hierarchy, atomic
   account-security audit, and secret-free responses/logs.
 - [ ] No `.env`, token, credential, private key, cache, database, or build artifact
@@ -41,6 +42,35 @@ Use this checklist for the first public preview and subsequent releases.
   non-disclosure.
 - [ ] After all local checks, `python -B scripts/validate_release.py` passes from
   the final clean tree.
+
+## v0.6.0 acceptance baseline
+
+- [ ] Every client-facing runtime API message and safe validation detail uses a
+  stable message key with complete `zh-CN` and `en` catalogs. Missing or
+  unsupported language falls back to Chinese; bounded standard
+  `Accept-Language` negotiation returns canonical `Content-Language` and merges
+  `Vary: Accept-Language` once without changing the four-field envelope. A
+  specific `q=0` exclusion takes precedence over its parent range or `*`.
+- [ ] Catalog keys match exactly; hostile or oversized language headers cannot
+  select a path, import, Redis key, log, or audit value. Mixed concurrent
+  Chinese/English requests stay isolated. HTTP/business codes, response data,
+  request IDs, security headers, logs, audit fields, permission keys, and
+  private reason codes remain language-independent. Database-authored product
+  content and OpenAPI developer metadata remain outside the runtime message
+  translation boundary. Validation field hints never reflect extra or deeper
+  mapping keys, and an unhandled `500` still carries both language headers.
+- [ ] New-project questions explain and require one project-wide administrator
+  password-reset choice: `direct` is the stated default and creates a permanent
+  password immediately; `temporary` requires one formal-password completion.
+  The API always accepts `new_password` and never lets a caller select the mode.
+- [ ] Both modes require `users:password:reset`, `admin_reset` CAPTCHA, and a
+  visible strictly lower target; neither can target self, peer, or higher users.
+  Both increment `token_version`, revoke old Tokens, atomically record the same
+  audit action with mode-specific reason codes, and keep the password out of
+  responses, logs, and audit snapshots.
+- [ ] Default direct-mode integration proves the new password can log in without
+  another step. Optional temporary-mode integration proves login returns no
+  Token until the one-use completion succeeds. No schema or migration changed.
 
 ## v0.5.1 acceptance baseline
 
@@ -108,6 +138,28 @@ must not be carried into `v0.5.1`.
 - [ ] Keep Issues enabled. Close external pull requests according to
   `CONTRIBUTING.md`.
 
+## Release v0.6.0
+
+- [ ] Review the complete diff, both READMEs, both changelogs, the release
+  checklist, and the Chinese architecture overview. Match version `0.6.0` and
+  date `2026-09-20` in asset metadata, installer URLs, changelogs, and the
+  release validator.
+- [ ] Confirm `v0.6.0` adds no schema revision and does not modify the four
+  migrations published in `v0.5.0`. Any later schema change must add a forward
+  Alembic revision instead of rewriting released history.
+- [ ] Run Ruff format and lint, strict mypy, `pip-audit`, non-PostgreSQL tests,
+  release validation, and the Skill quick validator. Let GitHub Actions run the
+  disposable PostgreSQL 17 / Redis 7 integration and migration checks on the
+  exact release commit.
+- [ ] Confirm the final CI log uses `pip>=26.2`, resolves
+  `pytest>=9.0.3,<10` with `pytest-asyncio>=1.4,<2`, and completes `pip-audit`
+  without an unrecorded ignore.
+- [ ] Commit and push `main`; wait for both CI jobs on that exact commit to
+  pass. Create and push immutable `v0.6.0` on that commit without replacing or
+  moving any older tag.
+- [ ] Publish a non-draft, non-prerelease GitHub Release for `v0.6.0`, then
+  verify its source archive and tagged Skill installation URL.
+
 ## Release v0.5.1
 
 - [ ] Review the complete diff, both READMEs, both changelogs, the current
@@ -169,8 +221,8 @@ must not be carried into `v0.5.1`.
   `users.token_version` and commits with the append-only account-security audit.
   Derive password-change counts from succeeded audit actions, excluding
   registration; do not add a password-episode table or independent mutable count.
-  Administrator reset must require current-password reauthentication,
-  `users:password:reset`, and the full strictly-lower hierarchy policy. The sole
+  Administrator reset must not ask for the actor's current password again; it
+  requires `users:password:reset` and the full strictly-lower hierarchy policy. The sole
   `super_admin` recovery path must remain an interactive offline operator command.
 - [ ] Verify the old Python bootstrap entry point is absent and the supplied SQL
   requires an existing active account with `user`. The user must personally run

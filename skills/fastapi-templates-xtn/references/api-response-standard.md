@@ -42,8 +42,10 @@ Keep the ordinary JSON envelope to exactly these stable top-level fields:
 
 Do not add redundant `success`, `status`, `http_status`, or `timestamp` fields.
 HTTP status plus `code` determines success, while server logs provide timing.
-Use a localized `message` when the product localizes API text; keep `code`
-language-independent.
+The baseline localizes every client-facing runtime `message` in `zh-CN` and
+`en`; keep `code` language-independent. Read
+[API internationalization](api-internationalization.md) before changing message
+keys, language negotiation, validation text, or catalogs.
 
 Start with this registry and add codes only for a client-visible distinction:
 
@@ -164,7 +166,7 @@ values, database errors, or stack traces.
   "message": "请求参数校验失败",
   "data": {
     "errors": [
-      {"field": "body.name", "message": "Field required"}
+      {"field": "body.name", "message": "此字段为必填项"}
     ]
   },
   "request_id": "550e8400-e29b-41d4-a716-446655440000"
@@ -353,6 +355,10 @@ per-request-changing body for the same representation.
   distinction.
 - The frontend branches on HTTP status and numeric `code`, never localized
   `message` text.
+- Missing or unsupported `Accept-Language` falls back to `zh-CN`. Every response
+  returns canonical `Content-Language` and `Vary: Accept-Language`;
+  neither language choice nor a localized message changes codes, data, or the
+  request ID.
 - Declare `X-Request-ID` as a UUID response header on every documented success
   and error response. Declare `413001`, `415001`, or `429001` for an endpoint
   only when the application or its controlled gateway actually enforces the
@@ -387,7 +393,10 @@ Test the observable contract rather than only model definitions:
   and
 - OpenAPI documents the closed envelope and page schemas, numeric code, UUID
   request ID header, actual error statuses and rate-limit headers, and required strict
-  `expected_version` fields instead of the framework's default error shape.
+  `expected_version` fields instead of the framework's default error shape; and
+- default Chinese, English, language quality ordering, unsupported and hostile
+  language headers, catalog-key parity, localized validation details, response
+  language/cache headers, and concurrent request isolation are covered.
 
 The bundled PostgreSQL asset demonstrates this contract. When adapting it,
 preserve the target project's naming and localization while retaining the wire

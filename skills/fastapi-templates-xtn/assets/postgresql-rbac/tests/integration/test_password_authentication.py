@@ -13,10 +13,12 @@ from sqlalchemy import select, text
 
 from app.authentication_service import LocalAuthenticationService
 from app.database import SessionFactory
+from app.main import app
 from app.password_models import AccountSecurityAuditEvent
 from app.passwords import PasswordManager, password_manager
 from app.rbac.errors import RbacError
 from app.rbac.models import Role, User, UserRole
+from app.settings import get_settings
 from tests.integration.conftest import World
 
 PASSWORD = "correct horse battery staple 47"
@@ -402,10 +404,16 @@ async def test_self_password_change_updates_user_and_revokes_old_token(
         assert after.token_version == old_token_version + 1
 
 
-async def test_admin_reset_requires_captcha_and_forces_temporary_completion(
+@pytest.mark.parametrize(
+    ("reset_mode", "password_change_required"),
+    [("direct", False), ("temporary", True)],
+)
+async def test_admin_reset_supports_direct_and_temporary_project_modes(
     client: AsyncClient,
     world: World,
     access_token: Callable[[User], Awaitable[str]],
+    reset_mode: str,
+    password_change_required: bool,
 ) -> None:
     manager_password = "silver orchard window planet 94"
     await _enroll_existing_user(
@@ -416,88 +424,110 @@ async def test_admin_reset_requires_captcha_and_forces_temporary_completion(
     manager_token = await access_token(world.users["manager"])
     target_id = await _register(client, "target", PASSWORD)
     old_target_token = await _login(client, "target", PASSWORD)
-
-    missing_captcha = await client.post(
-        f"/api/v1/users/{target_id}/password/reset",
-        headers={"Authorization": f"Bearer {manager_token}"},
-        json={"temporary_password": TEMPORARY_PASSWORD},
+    selected_settings = get_settings().model_copy(
+        update={"admin_password_reset_mode": reset_mode}
     )
-    assert missing_captcha.status_code == 422
-    assert await _login(client, "target", PASSWORD)
+    app.dependency_overrides[get_settings] = lambda: selected_settings
 
-    reset = await client.post(
-        f"/api/v1/users/{target_id}/password/reset",
-        headers={"Authorization": f"Bearer {manager_token}"},
-        json={
-            "temporary_password": TEMPORARY_PASSWORD,
-            **await _captcha(client, "admin_reset", manager_token),
-        },
-    )
-    assert reset.status_code == 200, reset.text
-    async with SessionFactory() as session:
-        temporary_user = await session.get(User, target_id)
-    assert temporary_user is not None
-    assert temporary_user.must_change_password is True
-    assert temporary_user.password_hash is not None
-    assert temporary_user.password_changed_at is not None
+    try:
+        missing_captcha = await client.post(
+            f"/api/v1/users/{target_id}/password/reset",
+            headers={"Authorization": f"Bearer {manager_token}"},
+            json={"new_password": TEMPORARY_PASSWORD},
+        )
+        assert missing_captcha.status_code == 422
+        assert await _login(client, "target", PASSWORD)
 
-    old_token_is_revoked = await client.get(
-        "/api/v1/me/access",
-        headers={"Authorization": f"Bearer {old_target_token}"},
-    )
-    assert old_token_is_revoked.status_code == 401
-    temporary_login = await client.post(
-        "/api/v1/auth/login",
-        json={
-            "user_name": "target",
-            "password": TEMPORARY_PASSWORD,
-            **await _captcha(client, "login"),
-        },
-    )
-    assert temporary_login.status_code == 403
-    assert temporary_login.json()["code"] == 403002
-    assert "access_token" not in temporary_login.text
-
-    completed = await client.post(
-        "/api/v1/auth/password/reset/complete",
-        json={
-            "user_name": "target",
-            "temporary_password": TEMPORARY_PASSWORD,
-            "new_password": NEW_PASSWORD,
-        },
-    )
-    assert completed.status_code == 200, completed.text
-    assert "access_token" not in completed.text
-    assert await _login(client, "target", NEW_PASSWORD)
-    async with SessionFactory() as session:
-        completed_user = await session.get(User, target_id)
-    assert completed_user is not None
-    assert completed_user.must_change_password is False
-    assert completed_user.password_hash is not None
-    assert completed_user.password_hash != temporary_user.password_hash
-    assert completed_user.password_changed_at is not None
-    assert completed_user.password_changed_at >= temporary_user.password_changed_at
-
-    hidden_peer = await client.post(
-        f"/api/v1/users/{world.users['peer'].id}/password/reset",
-        headers={"Authorization": f"Bearer {manager_token}"},
-        json={
-            "temporary_password": TEMPORARY_PASSWORD,
-            **await _captcha(client, "admin_reset", manager_token),
-        },
-    )
-    assert hidden_peer.status_code == 404
-
-    async with SessionFactory() as session:
-        actions = set(
-            await session.scalars(
-                select(AccountSecurityAuditEvent.action).where(
-                    AccountSecurityAuditEvent.target_user_id == target_id
+        reset = await client.post(
+            f"/api/v1/users/{target_id}/password/reset",
+            headers={"Authorization": f"Bearer {manager_token}"},
+            json={
+                "new_password": TEMPORARY_PASSWORD,
+                **await _captcha(client, "admin_reset", manager_token),
+            },
+        )
+        assert reset.status_code == 200, reset.text
+        assert ("临时密码" in reset.json()["message"]) is password_change_required
+        async with SessionFactory() as session:
+            reset_user = await session.get(User, target_id)
+            reset_event = await session.scalar(
+                select(AccountSecurityAuditEvent).where(
+                    AccountSecurityAuditEvent.target_user_id == target_id,
+                    AccountSecurityAuditEvent.action
+                    == "account_security.password.admin_reset",
                 )
             )
+        assert reset_user is not None
+        assert reset_user.must_change_password is password_change_required
+        assert reset_user.password_hash is not None
+        assert reset_user.password_changed_at is not None
+        assert reset_event is not None
+        assert reset_event.reason_code == (
+            "temporary_password_set"
+            if password_change_required
+            else "permanent_password_set"
         )
-        assert "account_security.password.admin_reset" in actions
-        assert "account_security.password.reset_completed" in actions
+
+        old_token_is_revoked = await client.get(
+            "/api/v1/me/access",
+            headers={"Authorization": f"Bearer {old_target_token}"},
+        )
+        assert old_token_is_revoked.status_code == 401
+
+        if password_change_required:
+            temporary_login = await client.post(
+                "/api/v1/auth/login",
+                json={
+                    "user_name": "target",
+                    "password": TEMPORARY_PASSWORD,
+                    **await _captcha(client, "login"),
+                },
+            )
+            assert temporary_login.status_code == 403
+            assert temporary_login.json()["code"] == 403002
+            assert "access_token" not in temporary_login.text
+
+            completed = await client.post(
+                "/api/v1/auth/password/reset/complete",
+                json={
+                    "user_name": "target",
+                    "temporary_password": TEMPORARY_PASSWORD,
+                    "new_password": NEW_PASSWORD,
+                },
+            )
+            assert completed.status_code == 200, completed.text
+            assert "access_token" not in completed.text
+            assert await _login(client, "target", NEW_PASSWORD)
+            async with SessionFactory() as session:
+                completed_user = await session.get(User, target_id)
+                completed_event = await session.scalar(
+                    select(AccountSecurityAuditEvent).where(
+                        AccountSecurityAuditEvent.target_user_id == target_id,
+                        AccountSecurityAuditEvent.action
+                        == "account_security.password.reset_completed",
+                    )
+                )
+            assert completed_user is not None
+            assert completed_user.must_change_password is False
+            assert completed_user.password_hash is not None
+            assert completed_user.password_hash != reset_user.password_hash
+            assert completed_user.password_changed_at is not None
+            assert completed_user.password_changed_at >= reset_user.password_changed_at
+            assert completed_event is not None
+        else:
+            assert await _login(client, "target", TEMPORARY_PASSWORD)
+
+        hidden_peer = await client.post(
+            f"/api/v1/users/{world.users['peer'].id}/password/reset",
+            headers={"Authorization": f"Bearer {manager_token}"},
+            json={
+                "new_password": TEMPORARY_PASSWORD,
+                **await _captcha(client, "admin_reset", manager_token),
+            },
+        )
+        assert hidden_peer.status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_settings, None)
 
 
 @pytest.mark.parametrize(

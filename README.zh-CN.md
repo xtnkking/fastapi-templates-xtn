@@ -8,8 +8,23 @@
 
 ## 当前状态
 
-`v0.5.1` 是最近一次正式发布的标签。需要可复现安装时使用该标签；后续
-`main` 的改动可能尚未发布。
+`v0.6.0` 是最近一次正式发布的标签。需要可复现安装时使用该标签。
+
+`v0.6.0` 增加了项目级“管理员重置密码模式”。默认 `direct`：管理员设置的
+新密码立即成为正式密码，用户拿到后可以直接登录；可选 `temporary`：用户必须先
+用临时密码完成一次正式密码设置。生成项目时必须解释两者并询问使用者，不能让
+接口调用者按单次请求切换。`direct` 更简单，但管理员会知道并需要私下交付最终
+密码；`temporary` 多一步，但最终密码由用户自己设置。两种模式都保留验证码、
+准确权限、严格低级目标、旧 Token
+撤销、原子审计和密码不进入响应／日志的要求。管理员新增用户和唯一
+`super_admin` 线下恢复仍固定使用临时密码。
+
+`v0.6.0` 还增加了请求级 API 多语言。所有面向客户端的运行时响应文案，包括
+安全的参数校验明细，默认支持 `zh-CN`，也可通过 `Accept-Language: en` 请求英文。
+响应会声明 `Content-Language` 和 `Vary: Accept-Language`；HTTP 状态、数字业务码、
+数据、请求 ID、日志、审计字段和内部原因码不随语言变化。其他语言由具体项目按需
+扩展。数据库中由业务人员维护的内容和面向开发者的 OpenAPI 元数据不属于本模块的
+翻译范围。
 
 ## 上游来源与署名
 
@@ -20,7 +35,7 @@
 与上游项目不存在从属或背书关系；再分发时须保留 [NOTICE](NOTICE) 和
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-## v0.5.1 的基础规范
+## v0.6.0 的基础规范
 
 - 新项目只用 `user_name` 和密码，不默认提供邮箱登录或“忘记密码”自助接口。用户名
   去首尾空白，限制为 3～32 位 ASCII 英文字母、数字、下划线；12 个完整敏感名称禁止
@@ -73,7 +88,7 @@
 | 合法验证码场景发错领取入口，按可信 IP 或已登录操作者单独统计 | 10 次／5 分钟 |
 | 登录，每个可信 IP | 20 次／5 分钟 |
 | 注册，每个可信 IP | 5 次／小时 |
-| 完成临时密码，每个可信 IP | 20 次／5 分钟 |
+| 完成管理员新增用户或可选临时重置产生的临时密码，每个可信 IP | 20 次／5 分钟 |
 | 已登录普通查询／写入，每个接口和操作者 | 600 次／分钟；120 次／分钟 |
 | 管理查询／变更，每个接口和操作者 | 300 次／分钟；60 次／分钟 |
 
@@ -93,7 +108,7 @@
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.5.1/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.0/skills/fastapi-templates-xtn
 ```
 
 安装器不会覆盖已经安装的 Skill；替换前先备份本地修改。仓库级安装也可将
@@ -130,7 +145,7 @@ python -B skills/fastapi-templates-xtn/scripts/test_validate_country_csv.py
 python -B scripts/validate_release.py
 ```
 
-`v0.5.1` 的测试基线要求 `pytest>=9.0.3,<10` 与兼容的
+`v0.6.0` 的测试基线要求 `pytest>=9.0.3,<10` 与兼容的
 `pytest-asyncio>=1.4,<2`；如果要降低这些范围或 `pip>=26.2` 的审计基线，必须
 重新运行依赖漏洞扫描，不能直接改回旧版本。
 

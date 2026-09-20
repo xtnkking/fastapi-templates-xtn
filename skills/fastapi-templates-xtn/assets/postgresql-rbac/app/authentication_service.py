@@ -4,7 +4,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import cast
+from typing import Literal, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -14,6 +14,7 @@ from app.abuse_flow import IdentityAbuseFlow, InvalidLoginCredentialsError
 from app.api_contract import BusinessCode
 from app.audit import AuditSource
 from app.database import SessionFactory
+from app.i18n import MessageKey
 from app.observability import safe_exception_metadata, safe_log
 from app.password_models import (
     AccountSecurityActorType,
@@ -55,17 +56,17 @@ logger = logging.getLogger(__name__)
 
 
 def _password_policy_response(exc: PasswordPolicyError) -> RbacError:
-    messages = {
-        "password_same_as_user_name": "密码不能与用户名相同",
-        "password_common_or_weak": "密码过于简单，请更换",
+    message_keys = {
+        "password_same_as_user_name": MessageKey.ERROR_PASSWORD_SAME_AS_USER_NAME,
+        "password_common_or_weak": MessageKey.ERROR_PASSWORD_COMMON_OR_WEAK,
     }
-    message = messages.get(exc.reason_code)
-    if message is None:
+    message_key = message_keys.get(exc.reason_code)
+    if message_key is None:
         return invalid_request(exc.reason_code)
     return RbacError(
         status_code=400,
         business_code=BusinessCode.BAD_REQUEST,
-        public_message=message,
+        message_key=message_key,
         reason_code=exc.reason_code,
     )
 
@@ -74,7 +75,7 @@ def _username_exists() -> RbacError:
     return RbacError(
         status_code=409,
         business_code=BusinessCode.CONFLICT,
-        public_message="用户名已被占用",
+        message_key=MessageKey.ERROR_USER_NAME_TAKEN,
         reason_code="user_identity_exists",
     )
 
@@ -182,7 +183,7 @@ class LocalAuthenticationService:
                             raise RbacError(
                                 status_code=403,
                                 business_code=BusinessCode.ACCESS_FORBIDDEN,
-                                public_message="暂未开放注册",
+                                message_key=MessageKey.ERROR_REGISTRATION_CLOSED,
                                 reason_code="public_registration_closed",
                             )
                         user = await create_user_with_default_role(
@@ -375,8 +376,10 @@ class LocalAuthenticationService:
         *,
         context: AuthorizationContext,
         target_user_id: uuid.UUID,
-        temporary_password: str,
+        new_password: str,
+        reset_mode: Literal["direct", "temporary"],
     ) -> bool:
+        require_password_change = reset_mode == "temporary"
         try:
             async with self._session_factory() as session:
                 async with session.begin():
@@ -400,8 +403,8 @@ class LocalAuthenticationService:
             raise
 
         try:
-            temporary_hash = await self._password_manager.hash_new_password(
-                temporary_password,
+            new_password_hash = await self._password_manager.hash_new_password(
+                new_password,
                 identity_values=target_identity_values,
             )
         except PasswordPolicyError as exc:
@@ -417,7 +420,7 @@ class LocalAuthenticationService:
                     )
                     try:
                         validate_new_password(
-                            temporary_password,
+                            new_password,
                             identity_values=tuple(
                                 value for value in (target_user.user_name,) if value
                             ),
@@ -428,15 +431,19 @@ class LocalAuthenticationService:
                     await self._rotate_password(
                         session,
                         user=target_user,
-                        password_hash=temporary_hash,
-                        must_change_password=True,
+                        password_hash=new_password_hash,
+                        must_change_password=require_password_change,
                     )
                     target_user.token_version += 1
                     session.add(
                         self._account_event(
                             action="account_security.password.admin_reset",
                             outcome=AccountSecurityAuditOutcome.SUCCEEDED,
-                            reason_code="temporary_password_set",
+                            reason_code=(
+                                "temporary_password_set"
+                                if require_password_change
+                                else "permanent_password_set"
+                            ),
                             actor_type=AccountSecurityActorType.USER,
                             actor_user_id=context.principal.user_id,
                             target_user_id=target_user.id,
