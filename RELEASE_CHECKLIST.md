@@ -4,6 +4,39 @@
 
 Use this checklist for the first public preview and subsequent releases.
 
+## Prepare v0.6.2
+
+Release readiness: `DRAFT`
+
+Keep `DRAFT` until the pre-tag evidence is verified. Record the reviewed
+candidate CI before committing this checklist as `READY`, then require the
+final commit's branch CI and tag CI to pass before publishing. A metadata-only
+readiness commit does not exempt the final source from those checks.
+
+### Pre-tag evidence
+
+- [ ] Version metadata, bilingual documentation and release notes consistently
+  identify `0.6.2`; published migration revisions remain byte-for-byte unchanged.
+- [ ] Skill/release validators, updater and country-validator tests, Ruff,
+  strict mypy and all 762 tests pass, including disposable PostgreSQL 17 and
+  Redis 7 integration and the embedded-migration logging regression.
+- [ ] Python 3.12/Linux CI validates the exact dependency closure and passes
+  `pip check` and `pip-audit`, with no unrecorded vulnerability exception.
+- [ ] The wheel contains both locale catalogs and all three legal notices.
+- [ ] Updater tests cover staging, backup, replacement and rollback; a dry run
+  resolves the intended installed Skill without changing it.
+- [ ] The release diff, attribution and bilingual instructions are reviewed
+  under XTN's publication authorization, and the candidate branch CI is green.
+
+### Post-release verification
+
+- [ ] Verify final branch CI, create immutable `v0.6.2`, and wait for tag CI.
+- [ ] Publish a non-draft, non-prerelease GitHub Release marked latest.
+- [ ] Verify the public archive, tagged installation URL and `VERSION`; safely
+  update the local Skill and verify its complete file manifest against the tag.
+
+Only this current `Prepare v0.6.2` block participates in automated readiness.
+
 ## Prepare v0.6.1
 
 Release readiness: `READY`
@@ -49,7 +82,7 @@ validator.
 
 Sections for older versions below are historical planning records. Their
 unchecked boxes are not evidence that an old release did or did not run a check.
-Only the current `Prepare v0.6.1` block participates in automated readiness.
+The `Prepare v0.6.1` block is retained as a historical record.
 
 ## Reusable Local Review Inventory
 

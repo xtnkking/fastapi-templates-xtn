@@ -1,6 +1,7 @@
 import asyncio
+import io
+import logging
 import uuid
-from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -24,15 +25,31 @@ from app.rbac.models import (
     UserRole,
 )
 from tests.integration.conftest import World
+from tests.migration_helpers import alembic_config
 
 pytestmark = pytest.mark.postgresql
 
 
-def alembic_config() -> Config:
-    root = Path(__file__).resolve().parents[2]
-    config = Config(str(root / "alembic.ini"))
-    config.set_main_option("script_location", str(root / "alembic"))
-    return config
+async def test_embedded_migration_preserves_application_logging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = io.StringIO()
+    logger = logging.getLogger("app.migration_regression")
+    dependency_logger = logging.getLogger("httpx")
+    root_handlers = list(logging.getLogger().handlers)
+    monkeypatch.setattr(logger, "handlers", [logging.StreamHandler(output)])
+    monkeypatch.setattr(logger, "level", logging.INFO)
+    monkeypatch.setattr(logger, "disabled", False)
+    monkeypatch.setattr(logger, "propagate", False)
+    monkeypatch.setattr(dependency_logger, "disabled", True)
+
+    await asyncio.to_thread(command.upgrade, alembic_config(), "head")
+    logger.info("migration.completed")
+
+    assert output.getvalue() == "migration.completed\n"
+    assert not logger.disabled
+    assert dependency_logger.disabled
+    assert logging.getLogger().handlers == root_handlers
 
 
 async def recreate_database_at_revision(config: Config, revision: str) -> None:

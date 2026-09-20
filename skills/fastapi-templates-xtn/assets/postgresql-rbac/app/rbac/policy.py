@@ -224,14 +224,13 @@ def decide_role_permissions_change(
     )
 
 
-def decide_user_status_change(
+def _decide_user_administration(
     *,
     actor: AuthoritySnapshot,
     target_before: AuthoritySnapshot,
-    proposed_is_active: bool,
+    required_permission: PermissionKey,
 ) -> PolicyDecision:
-    del proposed_is_active
-    basic = _basic_actor_check(actor, PermissionKey.USERS_STATUS_UPDATE)
+    basic = _basic_actor_check(actor, required_permission)
     if basic is not None:
         return basic
     if actor.user_id == target_before.user_id:
@@ -243,6 +242,18 @@ def decide_user_status_change(
     if not _target_is_within_actor_authority(actor, target_before):
         return deny("permission_ceiling_exceeded")
     return allow()
+
+
+def decide_user_status_change(
+    *,
+    actor: AuthoritySnapshot,
+    target_before: AuthoritySnapshot,
+) -> PolicyDecision:
+    return _decide_user_administration(
+        actor=actor,
+        target_before=target_before,
+        required_permission=PermissionKey.USERS_STATUS_UPDATE,
+    )
 
 
 def decide_user_password_reset(
@@ -251,18 +262,11 @@ def decide_user_password_reset(
     target_before: AuthoritySnapshot,
 ) -> PolicyDecision:
     """Allow credential reset only for a strictly lower, visible identity."""
-    basic = _basic_actor_check(actor, PermissionKey.USERS_PASSWORD_RESET)
-    if basic is not None:
-        return basic
-    if actor.user_id == target_before.user_id:
-        return deny("self_management_forbidden")
-    if target_before.is_protected:
-        return deny("protected_subject")
-    if actor.management_tier <= target_before.management_tier:
-        return deny("target_not_strictly_lower")
-    if not _target_is_within_actor_authority(actor, target_before):
-        return deny("permission_ceiling_exceeded")
-    return allow()
+    return _decide_user_administration(
+        actor=actor,
+        target_before=target_before,
+        required_permission=PermissionKey.USERS_PASSWORD_RESET,
+    )
 
 
 def decide_user_sessions_revoke(
@@ -270,15 +274,8 @@ def decide_user_sessions_revoke(
     actor: AuthoritySnapshot,
     target_before: AuthoritySnapshot,
 ) -> PolicyDecision:
-    basic = _basic_actor_check(actor, PermissionKey.USERS_SESSIONS_REVOKE)
-    if basic is not None:
-        return basic
-    if actor.user_id == target_before.user_id:
-        return deny("self_management_forbidden")
-    if target_before.is_protected:
-        return deny("protected_subject")
-    if actor.management_tier <= target_before.management_tier:
-        return deny("target_not_strictly_lower")
-    if not _target_is_within_actor_authority(actor, target_before):
-        return deny("permission_ceiling_exceeded")
-    return allow()
+    return _decide_user_administration(
+        actor=actor,
+        target_before=target_before,
+        required_permission=PermissionKey.USERS_SESSIONS_REVOKE,
+    )

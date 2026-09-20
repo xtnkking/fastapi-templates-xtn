@@ -20,7 +20,6 @@ async def test_invalid_credentials_have_one_generic_error_without_failure_counte
     with pytest.raises(InvalidLoginCredentialsError):
         await getattr(flow, method)(
             client_ip="203.0.113.8",
-            normalized_identifier="alice",
             verify_real_or_dummy_credentials=verify,
         )
     verify.assert_awaited_once()
@@ -56,7 +55,6 @@ async def test_admission_fails_before_credential_callback(
     with pytest.raises(type(error)):
         await getattr(flow, method)(
             client_ip="203.0.113.8",
-            normalized_identifier="alice",
             verify_real_or_dummy_credentials=verify,
         )
     post_admission_check.assert_not_awaited()
@@ -71,7 +69,6 @@ async def test_registration_only_runs_after_admission() -> None:
     assert (
         await flow.register(
             client_ip="203.0.113.8",
-            normalized_identifier="alice",
             registration_action=action,
         )
         == "new-user"
@@ -80,13 +77,20 @@ async def test_registration_only_runs_after_admission() -> None:
     action.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    ("method", "admission_method"),
+    [
+        ("authenticate", "check_login_attempt"),
+        ("complete_temporary_password_reset", "check_temporary_password_completion"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_authentication_runs_admission_then_request_check_then_credentials() -> (
-    None
-):
+async def test_authentication_runs_admission_then_request_check_then_credentials(
+    method: str, admission_method: str
+) -> None:
     events: list[str] = []
     defense = AsyncMock()
-    defense.check_login_attempt.side_effect = lambda **_kwargs: events.append(
+    getattr(defense, admission_method).side_effect = lambda **_kwargs: events.append(
         "admission"
     )
     post_admission_check = AsyncMock(side_effect=lambda: events.append("request_check"))
@@ -97,17 +101,24 @@ async def test_authentication_runs_admission_then_request_check_then_credentials
 
     verify = AsyncMock(side_effect=verify_credentials)
 
-    result = await IdentityAbuseFlow(
+    flow = IdentityAbuseFlow(
         defense,
         post_admission_check=post_admission_check,
-    ).authenticate(
+    )
+    result = await getattr(flow, method)(
         client_ip="203.0.113.8",
-        normalized_identifier="alice",
         verify_real_or_dummy_credentials=verify,
     )
 
     assert result is not None
     assert events == ["admission", "request_check", "credentials"]
+    getattr(defense, admission_method).assert_awaited_once_with(client_ip="203.0.113.8")
+    other_admission_method = (
+        "check_temporary_password_completion"
+        if method == "authenticate"
+        else "check_login_attempt"
+    )
+    getattr(defense, other_admission_method).assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -130,7 +141,6 @@ async def test_registration_runs_admission_then_request_check_then_action() -> N
         post_admission_check=post_admission_check,
     ).register(
         client_ip="203.0.113.8",
-        normalized_identifier="alice",
         registration_action=action,
     )
 
@@ -138,10 +148,18 @@ async def test_registration_runs_admission_then_request_check_then_action() -> N
     assert events == ["admission", "request_check", "registration"]
 
 
-@pytest.mark.parametrize("method", ["authenticate", "register"])
+@pytest.mark.parametrize(
+    ("method", "admission_method"),
+    [
+        ("authenticate", "check_login_attempt"),
+        ("complete_temporary_password_reset", "check_temporary_password_completion"),
+        ("register", "check_registration_attempt"),
+    ],
+)
 @pytest.mark.asyncio
 async def test_failed_post_admission_check_still_spends_quota_and_skips_action(
     method: str,
+    admission_method: str,
 ) -> None:
     defense = AsyncMock()
     post_admission_check = AsyncMock(side_effect=RuntimeError("invalid_captcha"))
@@ -152,23 +170,18 @@ async def test_failed_post_admission_check_still_spends_quota_and_skips_action(
     )
 
     with pytest.raises(RuntimeError, match="invalid_captcha"):
-        if method == "authenticate":
-            await flow.authenticate(
+        if method != "register":
+            await getattr(flow, method)(
                 client_ip="203.0.113.8",
-                normalized_identifier="alice",
                 verify_real_or_dummy_credentials=action,
             )
         else:
             await flow.register(
                 client_ip="203.0.113.8",
-                normalized_identifier="alice",
                 registration_action=action,
             )
 
-    if method == "authenticate":
-        defense.check_login_attempt.assert_awaited_once()
-    else:
-        defense.check_registration_attempt.assert_awaited_once()
+    getattr(defense, admission_method).assert_awaited_once_with(client_ip="203.0.113.8")
     post_admission_check.assert_awaited_once()
     action.assert_not_awaited()
 
@@ -196,7 +209,6 @@ async def test_registration_admission_failure_skips_request_check_and_action(
     with pytest.raises(type(error)):
         await flow.register(
             client_ip="203.0.113.8",
-            normalized_identifier="alice",
             registration_action=action,
         )
 

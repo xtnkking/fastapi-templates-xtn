@@ -1,12 +1,10 @@
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import cast
 
 import pytest
 import pytest_asyncio
-from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
 from redis.asyncio import Redis
 from sqlalchemy import delete, select, text
@@ -26,6 +24,7 @@ from tests.integration.safety import (
     verify_empty_redis_targets,
     verify_fresh_postgresql_target,
 )
+from tests.migration_helpers import alembic_config
 
 pytestmark = pytest.mark.postgresql
 
@@ -49,10 +48,7 @@ def verified_redis_targets() -> None:
 @pytest.fixture(scope="session", autouse=True)
 def migrated_database(verified_redis_targets: None) -> None:
     asyncio.run(verify_fresh_postgresql_target(get_settings().database_url))
-    root = Path(__file__).resolve().parents[2]
-    config = Config(str(root / "alembic.ini"))
-    config.set_main_option("script_location", str(root / "alembic"))
-    command.upgrade(config, "head")
+    command.upgrade(alembic_config(), "head")
 
 
 @pytest_asyncio.fixture(autouse=True)

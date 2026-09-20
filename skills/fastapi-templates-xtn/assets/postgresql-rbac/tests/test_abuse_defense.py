@@ -15,7 +15,7 @@ def service() -> AbuseDefenseService:
 
 
 @pytest.mark.asyncio
-async def test_anonymous_quota_does_not_use_user_supplied_account(
+async def test_anonymous_quota_uses_only_named_business_and_trusted_ip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     checks: list[tuple[str, str, str]] = []
@@ -29,15 +29,9 @@ async def test_anonymous_quota_does_not_use_user_supplied_account(
 
     monkeypatch.setattr(abuse_module, "check_rate_limit", check)
     defense = service()
-    await defense.check_login_attempt(
-        client_ip="203.0.113.8", normalized_identifier="alice"
-    )
-    await defense.check_login_attempt(
-        client_ip="203.0.113.8", normalized_identifier="bob"
-    )
-    await defense.check_registration_attempt(
-        client_ip="203.0.113.8", normalized_identifier="alice"
-    )
+    await defense.check_login_attempt(client_ip="203.0.113.8")
+    await defense.check_login_attempt(client_ip="203.0.113.8")
+    await defense.check_registration_attempt(client_ip="203.0.113.8")
     await defense.check_temporary_password_completion(client_ip="203.0.113.8")
     assert checks == [
         ("login", "ip", "203.0.113.8"),
@@ -53,9 +47,7 @@ async def test_anonymous_quota_does_not_use_user_supplied_account(
 @pytest.mark.asyncio
 async def test_missing_trusted_ip_never_enters_a_shared_bucket(address: str) -> None:
     with pytest.raises(RateLimitUnavailable):
-        await service().check_login_attempt(
-            client_ip=address, normalized_identifier="alice"
-        )
+        await service().check_login_attempt(client_ip=address)
 
 
 @pytest.mark.asyncio
@@ -156,9 +148,7 @@ async def test_denial_raises_429_with_the_one_business_policy(
 
     monkeypatch.setattr(abuse_module, "check_rate_limit", denied)
     with pytest.raises(RateLimitExceeded) as caught:
-        await service().check_login_attempt(
-            client_ip="203.0.113.8", normalized_identifier="alice"
-        )
+        await service().check_login_attempt(client_ip="203.0.113.8")
     assert caught.value.policy_name == "login"
     assert caught.value.result.retry_after_ms == 1300
 

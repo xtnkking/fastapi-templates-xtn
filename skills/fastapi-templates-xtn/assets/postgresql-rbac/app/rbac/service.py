@@ -47,8 +47,8 @@ from app.rbac.policy import (
     is_administrative_role_visible,
     is_administrative_user_visible,
 )
+from app.rbac.projections import role_response, user_response
 from app.rbac.queries import (
-    UserAccessView,
     count_live_user_roles,
     load_authority_snapshot,
     load_authority_snapshots_for_users,
@@ -127,22 +127,6 @@ def _snapshot_payload(snapshot: AuthoritySnapshot) -> dict[str, object]:
     }
 
 
-def _role_response(role: Role, grant: RoleGrant) -> RoleResponse:
-    return RoleResponse(
-        id=role.id,
-        key=role.key,
-        name=role.name,
-        description=role.description,
-        management_tier=role.management_tier,
-        is_active=role.is_active,
-        is_system=role.is_system,
-        is_protected=role.is_protected,
-        permissions=tuple(sorted(grant.permissions)),
-        version=role.version,
-        deleted_at=role.deleted_at,
-    )
-
-
 def _role_payload(role: RoleResponse) -> dict[str, object]:
     return {
         "role_id": str(role.id),
@@ -156,20 +140,6 @@ def _role_payload(role: RoleResponse) -> dict[str, object]:
         "permissions": list(role.permissions),
         "version": role.version,
     }
-
-
-def _user_response(access: UserAccessView) -> UserResponse:
-    authority = access.authority
-    return UserResponse(
-        id=authority.user_id,
-        user_name=access.user_name,
-        is_active=authority.user_is_active,
-        assigned_role_ids=access.assigned_role_ids,
-        effective_role_ids=tuple(role.role_id for role in authority.roles),
-        effective_management_tier=authority.management_tier,
-        effective_permissions=tuple(sorted(authority.permissions)),
-        authz_version=authority.authz_version,
-    )
 
 
 class RbacService:
@@ -383,7 +353,6 @@ class RbacService:
             decision = decide_user_status_change(
                 actor=actor,
                 target_before=target_before,
-                proposed_is_active=request.is_active,
             )
             if not decision.allowed:
                 raise forbidden(decision.reason_code)
@@ -408,7 +377,7 @@ class RbacService:
                 )
             )[target_user_id]
             return _MutationOutcome(
-                value=_user_response(access),
+                value=user_response(access),
                 reason_code=(
                     "user_status_updated" if changed else "user_status_unchanged"
                 ),
@@ -601,7 +570,7 @@ class RbacService:
             return _MutationOutcome(
                 value=UserRoleMutationResponse(
                     changed=changed,
-                    user=_user_response(access),
+                    user=user_response(access),
                 ),
                 reason_code=(
                     (
@@ -622,34 +591,6 @@ class RbacService:
             target_user_id=target_user_id,
             target_role_id=None,
             operation=mutate,
-        )
-
-    async def assign_role(
-        self,
-        *,
-        context: AuthorizationContext,
-        target_user_id: uuid.UUID,
-        role_id: uuid.UUID,
-    ) -> None:
-        await self.change_user_roles(
-            context=context,
-            target_user_id=target_user_id,
-            role_ids=(role_id,),
-            operation="bind",
-        )
-
-    async def revoke_role(
-        self,
-        *,
-        context: AuthorizationContext,
-        target_user_id: uuid.UUID,
-        role_id: uuid.UUID,
-    ) -> None:
-        await self.change_user_roles(
-            context=context,
-            target_user_id=target_user_id,
-            role_ids=(role_id,),
-            operation="unbind",
         )
 
     async def create_role(
@@ -711,16 +652,7 @@ class RbacService:
             session.add(role)
             await session.flush()
             state.epoch += 1
-            empty_grant = RoleGrant(
-                role_id=role.id,
-                key=role.key,
-                management_tier=role.management_tier,
-                permissions=frozenset(),
-                is_system=False,
-                is_protected=False,
-                is_super_admin=False,
-            )
-            role_after = _role_response(role, empty_grant)
+            role_after = role_response(role, ())
             return _MutationOutcome(
                 value=RoleMutationResponse(changed=True, role=role_after),
                 reason_code="role_created",
@@ -755,7 +687,7 @@ class RbacService:
             )
             self._require_role_administration(locked, operation="update")
             self._require_expected_role_version(locked.role, expected_version)
-            role_before = _role_response(locked.role, locked.role_before)
+            role_before = role_response(locked.role, locked.role_before.permissions)
 
             changed = False
             if request.name is not None and request.name != locked.role.name:
@@ -770,7 +702,7 @@ class RbacService:
             if changed:
                 locked.role.version += 1
                 locked.state.epoch += 1
-            role_after = _role_response(locked.role, locked.role_before)
+            role_after = role_response(locked.role, locked.role_before.permissions)
             return _MutationOutcome(
                 value=RoleMutationResponse(changed=changed, role=role_after),
                 reason_code="role_updated" if changed else "role_unchanged",
@@ -808,12 +740,12 @@ class RbacService:
             )
             self._require_role_administration(locked, operation=verb)
             self._require_expected_role_version(locked.role, expected_version)
-            role_before = _role_response(locked.role, locked.role_before)
+            role_before = role_response(locked.role, locked.role_before.permissions)
             changed = locked.role.is_active != is_active
             if changed:
                 locked.role.is_active = is_active
                 self._bump_shared_authority(locked)
-            role_after = _role_response(locked.role, locked.role_before)
+            role_after = role_response(locked.role, locked.role_before.permissions)
             return _MutationOutcome(
                 value=RoleMutationResponse(changed=changed, role=role_after),
                 reason_code=f"role_{verb}d" if changed else "role_status_unchanged",
@@ -848,7 +780,7 @@ class RbacService:
             )
             self._require_role_administration(locked, operation="delete")
             self._require_expected_role_version(locked.role, expected_version)
-            role_before = _role_response(locked.role, locked.role_before)
+            role_before = role_response(locked.role, locked.role_before.permissions)
             deleted_at = datetime.now(UTC)
             locked.role.is_active = False
             locked.role.deleted_at = deleted_at
@@ -876,13 +808,7 @@ class RbacService:
                 )
             )
             self._bump_shared_authority(locked)
-            role_after = _role_response(
-                locked.role,
-                replace(
-                    locked.role_before,
-                    permissions=frozenset(),
-                ),
-            )
+            role_after = role_response(locked.role, ())
             return _MutationOutcome(
                 value=RoleMutationResponse(changed=True, role=role_after),
                 reason_code="role_soft_deleted",
@@ -955,7 +881,7 @@ class RbacService:
                 raise forbidden(decision.reason_code)
 
             self._require_expected_role_version(locked.role, expected_version)
-            role_before = _role_response(locked.role, locked.role_before)
+            role_before = role_response(locked.role, locked.role_before.permissions)
             changed = locked.role_before.permissions != permission_keys_after
             if changed:
                 if operation == "bind":
@@ -985,7 +911,7 @@ class RbacService:
                     )
                 self._bump_shared_authority(locked)
 
-            role_after = _role_response(locked.role, replacement)
+            role_after = role_response(locked.role, permission_keys_after)
             return _MutationOutcome(
                 value=RoleMutationResponse(changed=changed, role=role_after),
                 reason_code=(

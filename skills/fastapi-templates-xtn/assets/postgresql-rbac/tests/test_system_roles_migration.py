@@ -1,26 +1,10 @@
-import importlib.util
-from pathlib import Path
-from types import ModuleType
 from unittest.mock import Mock
 
 import pytest
 from sqlalchemy.engine import Connection
 
 from app.rbac.domain import RESERVED_ROLE_KEYS, SYSTEM_ROLE_KEYS
-
-VERSIONS = Path(__file__).resolve().parents[1] / "alembic" / "versions"
-
-
-def _load_migration(filename: str) -> ModuleType:
-    migration_path = VERSIONS / filename
-    spec = importlib.util.spec_from_file_location(
-        f"test_{migration_path.stem}",
-        migration_path,
-    )
-    assert spec is not None and spec.loader is not None
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
-    return migration
+from tests.migration_helpers import load_migration
 
 
 def _normalize_sql(statement: object) -> str:
@@ -41,7 +25,7 @@ def test_fresh_migration_chain_remains_linear() -> None:
     )
 
     for filename, revision, down_revision in revisions:
-        migration = _load_migration(filename)
+        migration = load_migration(filename)
         assert migration.revision == revision
         assert migration.down_revision == down_revision
 
@@ -49,7 +33,7 @@ def test_fresh_migration_chain_remains_linear() -> None:
 def test_system_role_downgrade_removes_every_seeded_role(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    migration = _load_migration("0002_system_roles.py")
+    migration = load_migration("0002_system_roles.py")
     connection = Mock(spec=Connection)
     monkeypatch.setattr(migration.op, "get_bind", lambda: connection)
     for operation in (
@@ -84,7 +68,7 @@ def test_system_role_downgrade_removes_every_seeded_role(
 def test_system_role_downgrade_settles_pending_user_constraint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    migration = _load_migration("0002_system_roles.py")
+    migration = load_migration("0002_system_roles.py")
     connection = Mock(spec=Connection)
     statements: list[str] = []
 

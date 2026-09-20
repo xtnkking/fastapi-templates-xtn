@@ -40,16 +40,13 @@ class AbuseDefenseService:
         self,
         *,
         client_ip: str,
-        normalized_identifier: str,
     ) -> None:
-        # The identifier is needed by the credential callback, never by the quota.
         await self._check(self._policies.login, "ip", canonical_client_ip(client_ip))
 
     async def check_registration_attempt(
         self,
         *,
         client_ip: str,
-        normalized_identifier: str,
     ) -> None:
         await self._check(
             self._policies.registration,

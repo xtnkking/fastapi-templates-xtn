@@ -1,14 +1,13 @@
-from collections.abc import Awaitable, Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import event
 
-from app.database import SessionFactory, engine
+from app.database import SessionFactory
 from app.rbac.domain import PermissionKey
 from app.rbac.models import Role, RolePermission, User, UserRole
 from tests.integration.conftest import World
+from tests.integration.query_capture import capture_selects
 
 pytestmark = pytest.mark.postgresql
 type AccessToken = Callable[[User], Awaitable[str]]
@@ -21,31 +20,13 @@ async def _headers(
     return {"Authorization": f"Bearer {await access_token(user)}"}
 
 
-@contextmanager
-def _capture_selects() -> Iterator[list[str]]:
-    statements: list[str] = []
-
-    def capture(*args: object) -> None:
-        statement = args[2]
-        if isinstance(statement, str) and statement.lstrip().upper().startswith(
-            "SELECT"
-        ):
-            statements.append(statement)
-
-    event.listen(engine.sync_engine, "before_cursor_execute", capture)
-    try:
-        yield statements
-    finally:
-        event.remove(engine.sync_engine, "before_cursor_execute", capture)
-
-
 async def _request_select_count(
     client: AsyncClient,
     *,
     path: str,
     headers: dict[str, str],
 ) -> int:
-    with _capture_selects() as statements:
+    with capture_selects() as statements:
         response = await client.get(path, headers=headers)
     assert response.status_code == 200, response.text
     return len(statements)

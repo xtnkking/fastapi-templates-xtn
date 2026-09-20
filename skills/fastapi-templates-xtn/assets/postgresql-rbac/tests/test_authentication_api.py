@@ -480,7 +480,6 @@ async def test_registration_http_flow_admits_before_captcha_and_write(
 
         return await abuse_flow.register(
             client_ip=str(kwargs["client_ip"]),
-            normalized_identifier=str(kwargs["user_name"]),
             registration_action=write_user,
         )
 
@@ -580,7 +579,6 @@ async def test_login_http_flow_admits_before_captcha_credentials_and_token(
 
         return await abuse_flow.authenticate(
             client_ip=str(kwargs["client_ip"]),
-            normalized_identifier=str(kwargs["user_name"]),
             verify_real_or_dummy_credentials=verify_credentials,
         )
 

@@ -38,32 +38,31 @@ class IdentityAbuseFlow:
         self,
         *,
         client_ip: str,
-        normalized_identifier: str,
         verify_real_or_dummy_credentials: Callable[[], Awaitable[_ResultT | None]],
     ) -> _ResultT:
         """The callback does real-or-dummy work and never issues a token."""
 
         await self._abuse_defense.check_login_attempt(
             client_ip=client_ip,
-            normalized_identifier=normalized_identifier,
         )
-        await self._check_admitted_request()
-        result = await verify_real_or_dummy_credentials()
-        if result is None:
-            raise InvalidLoginCredentialsError()
-        return result
+        return await self._verify_admitted_credentials(verify_real_or_dummy_credentials)
 
     async def complete_temporary_password_reset(
         self,
         *,
         client_ip: str,
-        normalized_identifier: str,
         verify_real_or_dummy_credentials: Callable[[], Awaitable[_ResultT | None]],
     ) -> _ResultT:
         """Use a separate anonymous quota for completing temporary credentials."""
         await self._abuse_defense.check_temporary_password_completion(
             client_ip=client_ip
         )
+        return await self._verify_admitted_credentials(verify_real_or_dummy_credentials)
+
+    async def _verify_admitted_credentials(
+        self,
+        verify_real_or_dummy_credentials: Callable[[], Awaitable[_ResultT | None]],
+    ) -> _ResultT:
         await self._check_admitted_request()
         result = await verify_real_or_dummy_credentials()
         if result is None:
@@ -74,14 +73,12 @@ class IdentityAbuseFlow:
         self,
         *,
         client_ip: str,
-        normalized_identifier: str,
         registration_action: Callable[[], Awaitable[_ResultT]],
     ) -> _ResultT:
         """Run product registration only after the named IP quota allows it."""
 
         await self._abuse_defense.check_registration_attempt(
             client_ip=client_ip,
-            normalized_identifier=normalized_identifier,
         )
         await self._check_admitted_request()
         return await registration_action()

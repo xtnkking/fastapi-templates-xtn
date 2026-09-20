@@ -85,6 +85,7 @@ REQUIRED_SKILL_FILES = (
     "references/proxy-availability-frontend.md",
     "references/proxy-availability-testing.md",
     "references/rate-limiting.md",
+    "references/reuse-and-abstraction.md",
     "references/verification-and-abuse-defense.md",
     "scripts/test_validate_country_csv.py",
     "scripts/validate_country_csv.py",
@@ -1689,7 +1690,7 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
             "test_admin_password_reset_defaults_to_direct_and_accepts_temporary",
         ),
         "abuse-defense tests": (
-            "test_anonymous_quota_does_not_use_user_supplied_account",
+            "test_anonymous_quota_uses_only_named_business_and_trusted_ip",
             "test_missing_trusted_ip_never_enters_a_shared_bucket",
             "test_captcha_scene_is_independent_and_private_subject_is_actor",
         ),
@@ -1815,8 +1816,8 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
     login_check_body = text["abuse defense"][login_check_start:registration_check_start]
     if "self._policies.login" not in login_check_body:
         fail(errors, "login admission must use its single per-IP business quota")
-    if "normalized_identifier)" in login_check_body:
-        fail(errors, "login quota must not key on a submitted username")
+    # Subject selection is verified by the abuse-defense behavior tests;
+    # matching an old parameter spelling cannot prove which Redis key is used.
 
     flow_source = text["identity abuse flow"]
     flow_order = (
@@ -2291,7 +2292,7 @@ def validate_administrative_read_visibility(errors: list[str]) -> None:
         ),
         "user-role batch gate": (
             "async def change_user_roles(",
-            "async def assign_role(",
+            "async def create_role(",
             (
                 "grants_by_role_id = await load_role_grants_for_roles(",
                 "not is_administrative_role_visible(actor=actor, role=grant)",

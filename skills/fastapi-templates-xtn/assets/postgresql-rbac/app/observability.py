@@ -154,12 +154,8 @@ def request_log_level(status_code: int) -> int:
     return logging.INFO
 
 
-def _normalized_field_name(name: str) -> str:
-    return name.casefold().replace("-", "_")
-
-
 def _is_sensitive_field(name: str) -> bool:
-    normalized = _normalized_field_name(name)
+    normalized = name.casefold().replace("-", "_")
     return any(fragment in normalized for fragment in _SENSITIVE_FIELD_NAMES)
 
 

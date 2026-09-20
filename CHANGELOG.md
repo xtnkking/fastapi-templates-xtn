@@ -4,6 +4,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.2] - 2026-09-21
+
+- Added task-routed reuse and abstraction guidance: share rules that must change
+  together, keep simple one-use code inline, and retain meaningful security,
+  transaction, cleanup, and framework boundaries.
+- Consolidated repeated RBAC response projections and user-administration policy,
+  and removed redundant forwarding functions and unused admission parameters.
+  Public route contracts and the database schema remain unchanged.
+- Shared admitted credential verification and repeated test setup while keeping
+  per-business admission, fresh test identities/modules, and listener cleanup.
+- Fixed embedded migration logging ownership so a combined integration/unit run
+  neither disables application logs nor re-enables suppressed dependency logs.
+- Clarified in the Chinese overview that public CAPTCHA challenges do not bind
+  to IP; trusted IP still selects their issuance rate-limit subject.
+
 ## [0.6.1] - 2026-09-20
 
 - Kept anonymous login and registration CAPTCHA challenges deliberately

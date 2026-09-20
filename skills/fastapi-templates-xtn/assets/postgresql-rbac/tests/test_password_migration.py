@@ -1,26 +1,9 @@
-import importlib.util
-from pathlib import Path
-from types import ModuleType
-
 from app.rbac.domain import PERMISSION_CATALOG, PermissionKey
-
-VERSIONS = Path(__file__).resolve().parents[1] / "alembic" / "versions"
-
-
-def _load_migration(filename: str) -> ModuleType:
-    migration_path = VERSIONS / filename
-    spec = importlib.util.spec_from_file_location(
-        f"test_{migration_path.stem}",
-        migration_path,
-    )
-    assert spec is not None and spec.loader is not None
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
-    return migration
+from tests.migration_helpers import MIGRATION_VERSIONS, load_migration
 
 
 def test_password_migration_extends_the_linear_chain() -> None:
-    migration = _load_migration("0004_password_auth.py")
+    migration = load_migration("0004_password_auth.py")
 
     assert migration.revision == "0004_password_auth"
     assert migration.down_revision == "0003_business_audit"
@@ -33,7 +16,7 @@ def test_password_migration_extends_the_linear_chain() -> None:
 
 
 def test_password_migration_contains_database_security_guards() -> None:
-    source = (VERSIONS / "0004_password_auth.py").read_text(encoding="utf-8")
+    source = (MIGRATION_VERSIONS / "0004_password_auth.py").read_text(encoding="utf-8")
 
     for field in ("password_hash", "must_change_password", "password_changed_at"):
         assert f'"users", sa.Column("{field}"' in source or (

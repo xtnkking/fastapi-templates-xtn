@@ -20,7 +20,9 @@ class MigrationSettings(BaseSettings):
 
 
 config = context.config
-if config.config_file_name is not None:
+if config.config_file_name is not None and config.attributes.get(
+    "configure_logger", True
+):
     fileConfig(config.config_file_name)
 
 migration_settings = MigrationSettings()  # type: ignore[call-arg]

@@ -31,6 +31,12 @@ through settings, models, migrations, services, routes, and tests as applicable;
 never copy a route without its authorization, transaction, audit, and negative
 test boundaries.
 
+Before adding a function, search for an existing owner of the same behavior.
+Share logic that must change together using a small, meaningful parameter set;
+keep simple one-use code inline unless a clear boundary justifies extraction.
+For new abstractions or repeated flows, read
+[Reuse and abstraction](references/reuse-and-abstraction.md).
+
 Treat [the PostgreSQL asset](assets/postgresql-rbac/) as output source, not as
 instructions to load wholesale. Copy it as one directory for a matching
 greenfield service. When adapting it, inspect only the target symbol, direct
@@ -42,6 +48,7 @@ dependencies, and matching tests with `rg`.
 | --- | --- |
 | Chinese maintainer/download-user overview | [Chinese architecture overview](references/architecture-overview.zh-CN.md) |
 | FastAPI, Pydantic, SQLAlchemy, settings, lifecycle | [Modern stack](references/modern-fastapi-stack.md) |
+| Similar functions, shared helpers, service/repository layers, refactoring | [Reuse and abstraction](references/reuse-and-abstraction.md) |
 | JSON envelopes, business codes, request IDs, pagination | [API response](references/api-response-standard.md) |
 | Runtime API messages, `Accept-Language`, validation text, new locale | [API internationalization](references/api-internationalization.md) |
 | Runtime/access logs and safe exception telemetry | [Operational logging](references/operational-logging.md) |

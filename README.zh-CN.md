@@ -8,7 +8,7 @@
 
 ## 当前状态
 
-`v0.6.1` 是最新正式标签；唯一权威版本值位于
+`v0.6.2` 是最新正式标签；唯一权威版本值位于
 [`skills/fastapi-templates-xtn/VERSION`](skills/fastapi-templates-xtn/VERSION)。
 需要当前不可变基线时应安装此标签。
 
@@ -115,7 +115,7 @@
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.1/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.2/skills/fastapi-templates-xtn
 ```
 
 安装器不会覆盖已经安装的 Skill，不能把它描述成更新工具。已有安装请按照
@@ -129,6 +129,10 @@ FastAPI PostgreSQL 权限项目可以显式使用 `$fastapi-templates-xtn`；不
 FastAPI 请求不会自动选中它。维护者和下载使用者可以先看
 [中文架构总览](skills/fastapi-templates-xtn/references/architecture-overview.zh-CN.md)，
 了解模块边界、请求流程、数据表和接口；Skill 执行时仍按任务需要读取各份英文详细规范。
+
+新增或整理代码时，遵循[复用与抽象规范](skills/fastapi-templates-xtn/references/reuse-and-abstraction.md)：
+同一条规则通过有意义的参数共用实现；简单的单次操作保持内联；安全、事务、资源清理
+和框架适配需要的独立函数仍然保留，避免重复代码和无意义封装。
 
 官方验证环境固定为 Python 3.12、PostgreSQL 17、Redis 7。具体项目可以自行验证
 其他版本，但本仓库不会把未测试的组合写成已经验证。`GET /health/live` 只表示程序

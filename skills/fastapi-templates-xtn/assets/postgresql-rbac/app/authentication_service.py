@@ -223,7 +223,6 @@ class LocalAuthenticationService:
             return await registration_action()
         return await abuse_flow.register(
             client_ip=client_ip,
-            normalized_identifier=user_name,
             registration_action=registration_action,
         )
 
@@ -308,7 +307,6 @@ class LocalAuthenticationService:
             return result
         return await abuse_flow.authenticate(
             client_ip=client_ip,
-            normalized_identifier=user_name,
             verify_real_or_dummy_credentials=verify_credentials,
         )
 
@@ -489,7 +487,6 @@ class LocalAuthenticationService:
         else:
             snapshot = await abuse_flow.complete_temporary_password_reset(
                 client_ip=client_ip,
-                normalized_identifier=user_name,
                 verify_real_or_dummy_credentials=verify_temporary,
             )
 

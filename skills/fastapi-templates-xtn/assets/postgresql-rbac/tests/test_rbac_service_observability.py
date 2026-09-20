@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.rbac import service as service_module
-from app.rbac.domain import AuthoritySnapshot, AuthorizationContext, Principal
+from app.rbac.domain import AuthorizationContext
 from app.rbac.errors import RbacError, conflict, forbidden, not_found
 from app.rbac.service import RbacService
 
@@ -39,29 +39,6 @@ class _SessionFactory:
         return _AsyncContextManager(_Session())
 
 
-def _context() -> AuthorizationContext:
-    principal = Principal(
-        user_id=uuid.uuid4(),
-        token_version=1,
-        token_id=uuid.uuid4(),
-        issued_at=1,
-        expires_at=2,
-    )
-    return AuthorizationContext(
-        principal=principal,
-        authorization_epoch=0,
-        authority=AuthoritySnapshot.build(
-            user_id=principal.user_id,
-            user_is_active=True,
-            user_is_protected=False,
-            token_version=principal.token_version,
-            authz_version=0,
-            roles=(),
-        ),
-        request_id=str(uuid.uuid4()),
-    )
-
-
 @pytest.mark.parametrize(
     ("error_factory", "expected_status"),
     ((forbidden, 403), (not_found, 404), (conflict, 409)),
@@ -69,6 +46,7 @@ def _context() -> AuthorizationContext:
 )
 async def test_denied_audit_failure_preserves_original_rbac_error(
     monkeypatch: pytest.MonkeyPatch,
+    unprivileged_authorization_context: AuthorizationContext,
     error_factory: Callable[[str], RbacError],
     expected_status: int,
 ) -> None:
@@ -95,7 +73,7 @@ async def test_denied_audit_failure_preserves_original_rbac_error(
 
     with pytest.raises(RbacError) as caught:
         await service._run_audited(
-            context=_context(),
+            context=unprivileged_authorization_context,
             action="role.update",
             target_user_id=None,
             target_role_id=uuid.uuid4(),

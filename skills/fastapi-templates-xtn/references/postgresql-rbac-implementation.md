@@ -91,7 +91,12 @@ weaken authentication, authorization, idempotency, or concurrency requirements.
 - [`app/rbac/queries.py`](../assets/postgresql-rbac/app/rbac/queries.py) resolves
   effective permissions and implements canonical locking queries.
 - [`app/rbac/policy.py`](../assets/postgresql-rbac/app/rbac/policy.py) contains
-  strict manageability, system-role, and anti-self-elevation decisions.
+  strict manageability, system-role, and anti-self-elevation decisions. Each
+  user-administration entry point fixes its capability before calling the shared
+  decision.
+- [`app/rbac/projections.py`](../assets/postgresql-rbac/app/rbac/projections.py)
+  builds shared read/write response snapshots from already-authorized data
+  without querying or changing visibility.
 - [`app/rbac/dependencies.py`](../assets/postgresql-rbac/app/rbac/dependencies.py)
   validates bearer claims, requires the Redis active-JTI record, loads current
   PostgreSQL user and RBAC authority, compares `users.token_version`, removes an

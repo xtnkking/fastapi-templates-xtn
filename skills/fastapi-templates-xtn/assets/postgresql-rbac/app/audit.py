@@ -73,12 +73,8 @@ _SENSITIVE_SUFFIXES: Final = (
 )
 
 
-def _normalized_key(key: str) -> str:
-    return key.casefold().replace("-", "_")
-
-
 def _require_safe_key(key: str) -> None:
-    normalized = _normalized_key(key)
+    normalized = key.casefold().replace("-", "_")
     if normalized in _SENSITIVE_KEYS or normalized.endswith(_SENSITIVE_SUFFIXES):
         raise ValueError(f"audit state contains forbidden sensitive field: {key}")
     if not key or len(key) > 120:

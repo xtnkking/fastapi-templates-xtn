@@ -9,7 +9,7 @@ structured logging, and separate durable audits.
 
 ## Status
 
-`v0.6.1` is the latest published tag; the authoritative version value is in
+`v0.6.2` is the latest published tag; the authoritative version value is in
 [`skills/fastapi-templates-xtn/VERSION`](skills/fastapi-templates-xtn/VERSION).
 Install this immutable tag for the current baseline.
 
@@ -141,7 +141,7 @@ Install the immutable latest published release for a new destination:
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.1/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.2/skills/fastapi-templates-xtn
 ```
 
 The installer does not overwrite an installed Skill and must not be described as
@@ -159,6 +159,10 @@ Start with the [Chinese architecture overview](skills/fastapi-templates-xtn/refe
 for the module boundaries, request flow, tables, and API inventory. Detailed
 English references remain the executable specification loaded by the Skill on
 demand.
+
+For code changes, the [reuse and abstraction rules](skills/fastapi-templates-xtn/references/reuse-and-abstraction.md)
+explain when to share a parameterized implementation, keep simple code inline,
+or retain a function that owns a security, transaction, or framework boundary.
 
 The official verification environment is Python 3.12, PostgreSQL 17, and
 Redis 7. A generated project may support other versions only after that project

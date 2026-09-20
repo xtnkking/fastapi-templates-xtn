@@ -1,6 +1,10 @@
 import os
+import uuid
 
+import pytest
 from sqlalchemy.engine import make_url
+
+from app.rbac.domain import AuthoritySnapshot, AuthorizationContext, Principal
 
 test_database_url = os.environ.get(
     "TEST_DATABASE_URL",
@@ -41,3 +45,28 @@ os.environ["RATE_LIMIT_ENABLED"] = "false"
 os.environ.pop("JWT_ISSUER", None)
 os.environ.pop("JWT_AUDIENCE", None)
 os.environ["JWT_ACCESS_TOKEN_TTL_SECONDS"] = "86400"
+
+
+@pytest.fixture
+def unprivileged_authorization_context() -> AuthorizationContext:
+    """Give each service-boundary test its own live identity without role grants."""
+    principal = Principal(
+        user_id=uuid.uuid4(),
+        token_version=1,
+        token_id=uuid.uuid4(),
+        issued_at=1,
+        expires_at=2,
+    )
+    return AuthorizationContext(
+        principal=principal,
+        authorization_epoch=0,
+        authority=AuthoritySnapshot.build(
+            user_id=principal.user_id,
+            user_is_active=True,
+            user_is_protected=False,
+            token_version=principal.token_version,
+            authz_version=0,
+            roles=(),
+        ),
+        request_id=str(uuid.uuid4()),
+    )

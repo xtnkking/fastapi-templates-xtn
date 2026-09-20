@@ -1,6 +1,5 @@
 import uuid
-from collections.abc import Iterable
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BeforeValidator
@@ -26,10 +25,10 @@ from app.rbac.dependencies import (
 )
 from app.rbac.domain import AuthorizationContext, PermissionKey
 from app.rbac.errors import not_found
-from app.rbac.models import Permission, Role, User
+from app.rbac.models import Permission
+from app.rbac.projections import role_response, user_response
 from app.rbac.provisioning import normalize_identity
 from app.rbac.queries import (
-    UserAccessView,
     list_visible_roles_page,
     list_visible_users_page,
     load_role_grant,
@@ -76,53 +75,6 @@ def _normalize_user_name_query(value: object) -> str | None:
     if not isinstance(value, str):
         raise ValueError("user_name must be a string")
     return normalize_identity(value, field="user_name")
-
-
-def _role_response(
-    role: Role,
-    permissions: Iterable[str],
-) -> RoleResponse:
-    return RoleResponse(
-        id=role.id,
-        key=role.key,
-        name=role.name,
-        description=role.description,
-        management_tier=role.management_tier,
-        is_active=role.is_active,
-        is_system=role.is_system,
-        is_protected=role.is_protected,
-        permissions=tuple(sorted(permissions)),
-        version=role.version,
-        deleted_at=role.deleted_at,
-    )
-
-
-def _user_response(access: UserAccessView) -> UserResponse:
-    authority = access.authority
-    return UserResponse(
-        id=authority.user_id,
-        user_name=access.user_name,
-        is_active=authority.user_is_active,
-        assigned_role_ids=access.assigned_role_ids,
-        effective_role_ids=tuple(role.role_id for role in authority.roles),
-        effective_management_tier=authority.management_tier,
-        effective_permissions=tuple(sorted(authority.permissions)),
-        authz_version=authority.authz_version,
-    )
-
-
-async def _load_user_response(
-    session: SessionDependency,
-    *,
-    user: User,
-    actor: AuthorizationContext,
-) -> UserResponse:
-    access_by_user_id = await load_user_access_views(
-        session,
-        users=(user,),
-        actor=actor.authority,
-    )
-    return _user_response(access_by_user_id[user.id])
 
 
 @router.post(
@@ -294,7 +246,7 @@ async def list_roles(
     )
     grants = await load_role_grants_for_roles(session, roles=roles)
     responses = [
-        _role_response(
+        role_response(
             role,
             grants[role.id].permissions,
         )
@@ -344,7 +296,7 @@ async def get_role(
         request,
         code=BusinessCode.OK,
         message_key=MessageKey.COMMON_QUERY_SUCCESS,
-        data=_role_response(role, grant.permissions),
+        data=role_response(role, grant.permissions),
     )
 
 
@@ -403,22 +355,6 @@ async def update_role(
     )
 
 
-async def _set_role_active(
-    *,
-    role_id: uuid.UUID,
-    is_active: bool,
-    expected_version: int,
-    context: AuthorizationContext,
-    service: RbacService,
-) -> RoleMutationResponse:
-    return await service.set_role_active(
-        context=context,
-        role_id=role_id,
-        is_active=is_active,
-        expected_version=expected_version,
-    )
-
-
 @router.post(
     "/roles/{role_id}/disable",
     response_model=ApiResponse[RoleMutationResponse],
@@ -435,12 +371,11 @@ async def disable_role(
     ],
     service: RbacServiceDependency,
 ) -> ApiResponse[RoleMutationResponse]:
-    result = await _set_role_active(
+    result = await service.set_role_active(
         role_id=role_id,
         is_active=False,
         expected_version=body.expected_version,
         context=context,
-        service=service,
     )
     return api_response(
         request,
@@ -466,12 +401,11 @@ async def enable_role(
     ],
     service: RbacServiceDependency,
 ) -> ApiResponse[RoleMutationResponse]:
-    result = await _set_role_active(
+    result = await service.set_role_active(
         role_id=role_id,
         is_active=True,
         expected_version=body.expected_version,
         context=context,
-        service=service,
     )
     return api_response(
         request,
@@ -510,23 +444,6 @@ async def delete_role(
     )
 
 
-async def _change_role_permissions(
-    *,
-    role_id: uuid.UUID,
-    body: PermissionIdsRequest,
-    operation: Literal["bind", "unbind"],
-    context: AuthorizationContext,
-    service: RbacService,
-) -> RoleMutationResponse:
-    return await service.change_role_permissions(
-        context=context,
-        role_id=role_id,
-        permission_ids=body.permission_ids,
-        operation=operation,
-        expected_version=body.expected_version,
-    )
-
-
 @router.post(
     "/roles/{role_id}/permissions/bind",
     response_model=ApiResponse[RoleMutationResponse],
@@ -543,12 +460,12 @@ async def bind_role_permissions(
     ],
     service: RbacServiceDependency,
 ) -> ApiResponse[RoleMutationResponse]:
-    result = await _change_role_permissions(
+    result = await service.change_role_permissions(
         role_id=role_id,
-        body=body,
+        permission_ids=body.permission_ids,
         operation="bind",
         context=context,
-        service=service,
+        expected_version=body.expected_version,
     )
     return api_response(
         request,
@@ -574,12 +491,12 @@ async def unbind_role_permissions(
     ],
     service: RbacServiceDependency,
 ) -> ApiResponse[RoleMutationResponse]:
-    result = await _change_role_permissions(
+    result = await service.change_role_permissions(
         role_id=role_id,
-        body=body,
+        permission_ids=body.permission_ids,
         operation="unbind",
         context=context,
-        service=service,
+        expected_version=body.expected_version,
     )
     return api_response(
         request,
@@ -622,7 +539,7 @@ async def list_users(
         users=users,
         actor=context.authority,
     )
-    items = [_user_response(access_by_user_id[user.id]) for user in users]
+    items = [user_response(access_by_user_id[user.id]) for user in users]
     return api_response(
         request,
         code=BusinessCode.OK,
@@ -658,27 +575,16 @@ async def get_user(
     )
     if user is None:
         raise not_found("user_not_found")
+    access_by_user_id = await load_user_access_views(
+        session,
+        users=(user,),
+        actor=context.authority,
+    )
     return api_response(
         request,
         code=BusinessCode.OK,
         message_key=MessageKey.COMMON_QUERY_SUCCESS,
-        data=await _load_user_response(session, user=user, actor=context),
-    )
-
-
-async def _change_user_roles(
-    *,
-    user_id: uuid.UUID,
-    body: RoleIdsRequest,
-    operation: Literal["bind", "unbind"],
-    context: AuthorizationContext,
-    service: RbacService,
-) -> UserRoleMutationResponse:
-    return await service.change_user_roles(
-        context=context,
-        target_user_id=user_id,
-        role_ids=body.role_ids,
-        operation=operation,
+        data=user_response(access_by_user_id[user.id]),
     )
 
 
@@ -698,12 +604,11 @@ async def bind_user_roles(
     ],
     service: RbacServiceDependency,
 ) -> ApiResponse[UserRoleMutationResponse]:
-    result = await _change_user_roles(
-        user_id=user_id,
-        body=body,
+    result = await service.change_user_roles(
+        target_user_id=user_id,
+        role_ids=body.role_ids,
         operation="bind",
         context=context,
-        service=service,
     )
     return api_response(
         request,
@@ -729,32 +634,17 @@ async def unbind_user_roles(
     ],
     service: RbacServiceDependency,
 ) -> ApiResponse[UserRoleMutationResponse]:
-    result = await _change_user_roles(
-        user_id=user_id,
-        body=body,
+    result = await service.change_user_roles(
+        target_user_id=user_id,
+        role_ids=body.role_ids,
         operation="unbind",
         context=context,
-        service=service,
     )
     return api_response(
         request,
         code=BusinessCode.OK,
         message_key=MessageKey.COMMON_OPERATION_SUCCESS,
         data=result,
-    )
-
-
-async def _set_user_active(
-    *,
-    user_id: uuid.UUID,
-    is_active: bool,
-    context: AuthorizationContext,
-    service: RbacService,
-) -> UserResponse:
-    return await service.update_user_status(
-        context=context,
-        target_user_id=user_id,
-        request=UserStatusUpdateRequest(is_active=is_active),
     )
 
 
@@ -773,11 +663,10 @@ async def disable_user(
     ],
     service: RbacServiceDependency,
 ) -> ApiResponse[UserResponse]:
-    result = await _set_user_active(
-        user_id=user_id,
-        is_active=False,
+    result = await service.update_user_status(
+        target_user_id=user_id,
+        request=UserStatusUpdateRequest(is_active=False),
         context=context,
-        service=service,
     )
     return api_response(
         request,
@@ -802,11 +691,10 @@ async def enable_user(
     ],
     service: RbacServiceDependency,
 ) -> ApiResponse[UserResponse]:
-    result = await _set_user_active(
-        user_id=user_id,
-        is_active=True,
+    result = await service.update_user_status(
+        target_user_id=user_id,
+        request=UserStatusUpdateRequest(is_active=True),
         context=context,
-        service=service,
     )
     return api_response(
         request,

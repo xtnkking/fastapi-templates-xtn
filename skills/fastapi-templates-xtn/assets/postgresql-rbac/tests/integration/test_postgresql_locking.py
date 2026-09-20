@@ -1,13 +1,11 @@
 import asyncio
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import event, select, text, update
+from sqlalchemy import select, text, update
 
-from app.database import SessionFactory, engine
+from app.database import SessionFactory
 from app.rbac.domain import AuthorizationContext, PermissionKey, Principal
 from app.rbac.errors import RbacError
 from app.rbac.models import (
@@ -26,26 +24,9 @@ from app.rbac.queries import (
 )
 from app.rbac.service import RbacService
 from tests.integration.conftest import World
+from tests.integration.query_capture import capture_selects
 
 pytestmark = pytest.mark.postgresql
-
-
-@contextmanager
-def _capture_selects() -> Iterator[list[str]]:
-    statements: list[str] = []
-
-    def capture(*args: object) -> None:
-        statement = args[2]
-        if isinstance(statement, str) and statement.lstrip().upper().startswith(
-            "SELECT"
-        ):
-            statements.append(statement)
-
-    event.listen(engine.sync_engine, "before_cursor_execute", capture)
-    try:
-        yield statements
-    finally:
-        event.remove(engine.sync_engine, "before_cursor_execute", capture)
 
 
 async def context_for(
@@ -146,10 +127,11 @@ async def test_actor_role_revocation_commits_before_waiting_mutation(
             state.epoch += 1
 
             waiting_mutation = asyncio.create_task(
-                service.assign_role(
+                service.change_user_roles(
                     context=context,
                     target_user_id=world.users["blank"].id,
-                    role_id=world.roles["viewer"].id,
+                    role_ids=(world.roles["viewer"].id,),
+                    operation="bind",
                 )
             )
             with pytest.raises(TimeoutError):
@@ -284,7 +266,7 @@ async def test_shared_role_lock_select_count_does_not_grow_with_holders(
     service = RbacService(SessionFactory)
 
     async def lock_select_count() -> int:
-        with _capture_selects() as statements:
+        with capture_selects() as statements:
             async with SessionFactory() as session:
                 async with session.begin():
                     await service._lock_shared_role_change(

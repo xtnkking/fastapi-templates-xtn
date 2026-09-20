@@ -15,7 +15,8 @@ existing repository when they are supported and intentional.
 - Prefer an application factory when tests or deployment require multiple app
   configurations. Otherwise a clear module-level app is acceptable.
 - Add repository and service layers only where they own meaningful query or
-  business behavior.
+  business behavior. For shared functions, repeated flows, or new layers, follow
+  [Reuse and abstraction](reuse-and-abstraction.md).
 
 ## Settings
 

@@ -42,13 +42,9 @@ async def test_login_uses_only_per_business_ip_key() -> None:
         key_secret=settings.rate_limit_hmac_key.get_secret_value().encode(),
     )
     try:
-        await service.check_login_attempt(
-            client_ip="203.0.113.9", normalized_identifier="alice"
-        )
+        await service.check_login_attempt(client_ip="203.0.113.9")
         with pytest.raises(RateLimitExceeded):
-            await service.check_login_attempt(
-                client_ip="203.0.113.9", normalized_identifier="bob"
-            )
+            await service.check_login_attempt(client_ip="203.0.113.9")
         assert int(await redis.get(key)) == 2
         assert 0 < await redis.ttl(key) <= 300
     finally:

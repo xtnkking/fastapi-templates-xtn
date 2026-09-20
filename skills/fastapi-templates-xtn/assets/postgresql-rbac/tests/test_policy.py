@@ -1,4 +1,8 @@
 import uuid
+from collections.abc import Callable
+from dataclasses import replace
+
+import pytest
 
 from app.rbac.domain import (
     ADMIN_PERMISSION_KEYS,
@@ -9,6 +13,7 @@ from app.rbac.domain import (
     SystemRoleKey,
 )
 from app.rbac.policy import (
+    PolicyDecision,
     decide_role_administration,
     decide_role_change,
     decide_role_create,
@@ -353,58 +358,98 @@ def test_registration_switch_capability_is_reserved_for_the_system_role() -> Non
     assert decision.reason_code == "system_only_permission"
 
 
-def test_admin_can_change_status_only_for_a_strictly_lower_user() -> None:
-    actor = authority(10, ADMIN)
-    lower = authority(11, USER)
-    peer = authority(12, USER, ADMIN)
-
-    assert decide_user_status_change(
-        actor=actor,
-        target_before=lower,
-        proposed_is_active=False,
-    ).allowed
-    assert not decide_user_status_change(
-        actor=actor,
-        target_before=peer,
-        proposed_is_active=False,
-    ).allowed
-
-
-def test_password_reset_requires_capability_and_strictly_lower_target() -> None:
-    admin = authority(10, ADMIN)
-    lower = authority(11, USER)
-    peer = authority(12, USER, ADMIN)
-
-    assert decide_user_password_reset(actor=admin, target_before=lower).allowed
-    assert not decide_user_password_reset(actor=admin, target_before=admin).allowed
-    assert not decide_user_password_reset(actor=admin, target_before=peer).allowed
-    assert not decide_user_password_reset(
-        actor=authority(13, USER),
-        target_before=lower,
-    ).allowed
-
-
-def test_super_admin_cannot_reset_own_password_through_management_api() -> None:
-    super_admin = authority(10, SUPER_ADMIN)
-
-    decision = decide_user_password_reset(
-        actor=super_admin,
-        target_before=super_admin,
+@pytest.mark.parametrize(
+    ("policy", "required_permission"),
+    [
+        (decide_user_status_change, PermissionKey.USERS_STATUS_UPDATE),
+        (decide_user_password_reset, PermissionKey.USERS_PASSWORD_RESET),
+        (decide_user_sessions_revoke, PermissionKey.USERS_SESSIONS_REVOKE),
+    ],
+)
+def test_user_administration_keeps_each_operations_exact_capability(
+    policy: Callable[..., PolicyDecision],
+    required_permission: PermissionKey,
+) -> None:
+    actor = authority(
+        10,
+        role(
+            20,
+            key="operator",
+            tier=500,
+            permissions=frozenset({required_permission.value}),
+        ),
     )
+    for active in (True, False):
+        assert policy(
+            actor=actor, target_before=authority(11, USER, active=active)
+        ).allowed
+
+    wrong_capability_actor = authority(
+        10,
+        replace(ADMIN, permissions=ADMIN.permissions - {required_permission.value}),
+    )
+    for target in (authority(11, USER), wrong_capability_actor):
+        decision = policy(actor=wrong_capability_actor, target_before=target)
+        assert not decision.allowed
+        assert decision.reason_code == "missing_operation_permission"
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        decide_user_status_change,
+        decide_user_password_reset,
+        decide_user_sessions_revoke,
+    ],
+)
+@pytest.mark.parametrize(
+    ("actor", "target", "reason"),
+    [
+        (authority(10, ADMIN, active=False), authority(11, USER), "actor_inactive"),
+        (authority(10, ADMIN), authority(10, ADMIN), "self_management_forbidden"),
+        (
+            authority(10, SUPER_ADMIN),
+            authority(10, SUPER_ADMIN),
+            "self_management_forbidden",
+        ),
+        (
+            authority(10, ADMIN),
+            authority(11, USER, protected=True),
+            "protected_subject",
+        ),
+        (
+            authority(10, ADMIN),
+            authority(11, USER, VIEWER, ADMIN),
+            "target_not_strictly_lower",
+        ),
+        (
+            authority(10, ADMIN),
+            authority(11, USER, role(20, key="higher", tier=700)),
+            "target_not_strictly_lower",
+        ),
+        (
+            authority(
+                10, replace(ADMIN, permissions=ADMIN.permissions - VIEWER.permissions)
+            ),
+            authority(11, USER, VIEWER),
+            "permission_ceiling_exceeded",
+        ),
+        (
+            authority(
+                10, replace(ADMIN, permissions=ADMIN.permissions | {"private:read"})
+            ),
+            authority(11, replace(VIEWER, permissions=frozenset({"private:read"}))),
+            "permission_ceiling_exceeded",
+        ),
+    ],
+)
+def test_user_administration_preserves_complete_target_security_boundary(
+    policy: Callable[..., PolicyDecision],
+    actor: AuthoritySnapshot,
+    target: AuthoritySnapshot,
+    reason: str,
+) -> None:
+    decision = policy(actor=actor, target_before=target)
 
     assert not decision.allowed
-    assert decision.reason_code == "self_management_forbidden"
-
-
-def test_admin_revokes_only_strictly_lower_users_sessions() -> None:
-    admin = authority(10, ADMIN)
-    assert decide_user_sessions_revoke(
-        actor=admin, target_before=authority(11, USER)
-    ).allowed
-    assert not decide_user_sessions_revoke(actor=admin, target_before=admin).allowed
-    assert not decide_user_sessions_revoke(
-        actor=admin, target_before=authority(12, ADMIN)
-    ).allowed
-    assert not decide_user_sessions_revoke(
-        actor=authority(13, USER), target_before=authority(11, USER)
-    ).allowed
+    assert decision.reason_code == reason
