@@ -6,26 +6,31 @@ Use this checklist for the first public preview and subsequent releases.
 
 ## Prepare v0.6.2
 
-Release readiness: `DRAFT`
+Release readiness: `READY`
 
 Keep `DRAFT` until the pre-tag evidence is verified. Record the reviewed
 candidate CI before committing this checklist as `READY`, then require the
 final commit's branch CI and tag CI to pass before publishing. A metadata-only
 readiness commit does not exempt the final source from those checks.
 
+Reviewed candidate: `4a040a4`,
+[successful branch CI](https://github.com/xtnkking/fastapi-templates-xtn/actions/runs/35524548211).
+The final readiness commit changes only these two checklists; verify its branch
+and tag CI before publishing.
+
 ### Pre-tag evidence
 
-- [ ] Version metadata, bilingual documentation and release notes consistently
+- [x] Version metadata, bilingual documentation and release notes consistently
   identify `0.6.2`; published migration revisions remain byte-for-byte unchanged.
-- [ ] Skill/release validators, updater and country-validator tests, Ruff,
+- [x] Skill/release validators, updater and country-validator tests, Ruff,
   strict mypy and all 762 tests pass, including disposable PostgreSQL 17 and
   Redis 7 integration and the embedded-migration logging regression.
-- [ ] Python 3.12/Linux CI validates the exact dependency closure and passes
+- [x] Python 3.12/Linux CI validates the exact dependency closure and passes
   `pip check` and `pip-audit`, with no unrecorded vulnerability exception.
-- [ ] The wheel contains both locale catalogs and all three legal notices.
-- [ ] Updater tests cover staging, backup, replacement and rollback; a dry run
+- [x] The wheel contains both locale catalogs and all three legal notices.
+- [x] Updater tests cover staging, backup, replacement and rollback; a dry run
   resolves the intended installed Skill without changing it.
-- [ ] The release diff, attribution and bilingual instructions are reviewed
+- [x] The release diff, attribution and bilingual instructions are reviewed
   under XTN's publication authorization, and the candidate branch CI is green.
 
 ### Post-release verification
