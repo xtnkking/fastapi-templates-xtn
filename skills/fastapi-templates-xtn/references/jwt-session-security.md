@@ -16,7 +16,7 @@ payload deliberately small:
 | `sub` | Canonical string of immutable `users.id` under the selected identifier policy; required and the only user identity claim |
 | `jti` | New random UUIDv4 for every Access Token; required and never reused |
 | `iat` | Integer NumericDate issuance time; required |
-| `exp` | Integer NumericDate expiry; required and 3600 seconds after `iat` by default |
+| `exp` | Integer NumericDate expiry; required and 86,400 seconds after `iat` by default |
 | `token_type` | Literal `access`; required |
 | `iss` | Optional only together with `aud`, after explicit user agreement; exact configured issuer when enabled |
 | `aud` | Optional only together with `iss`, after explicit user agreement; exact API audience when enabled |
@@ -30,13 +30,16 @@ An unrelated approval is not consent. Enable or omit the two claims as a pair;
 never configure only one. If an existing project already has both
 configured, preserve it by default unless the user requests removal or migration.
 
-The one-hour lifetime is a starting default, not a universal security answer.
+The 24-hour lifetime is a starting default, not a universal security answer.
 Expose it as typed configuration and explicitly tell the user to adjust it for
 the product's risk, reauthentication cost, and expected user experience. A
-high-risk administration surface may need a much shorter lifetime. Never extend
-the lifetime silently merely to reduce login frequency.
+stolen Token whose JTI remains active can be replayed until expiry or explicit
+revocation, so high-risk administration surfaces usually need a much shorter
+lifetime. Redis active-JTI validation enables early revocation but cannot stop
+replay while that JTI is still active. Never extend the lifetime silently merely
+to reduce login frequency.
 This required notice is not another blocking question in the initial product
-decision batch. Use 3600 seconds unless the owner asks for a different value.
+decision batch. Use 86,400 seconds unless the owner asks for a different value.
 
 `sub` is the only required user data. The other four baseline claims are security
 protocol metadata. The approved `iss`/`aud` pair is optional protocol scoping,
@@ -259,7 +262,7 @@ The active-JTI gate materially limits, but does not erase, signing-key risk:
   non-canonical, wrong-prefix, wrong-length, or otherwise invalid `sub`,
   non-canonical or non-v4 `jti`, invalid time type, overlong lifetime, future
   `iat`, expiry, and every unexpected extra claim.
-- Assert the configured default is 3600 seconds, alternate business-approved
+- Assert the configured default is 86,400 seconds, alternate business-approved
   values work, and project documentation tells users to review the value.
 - Prove every issuance has a distinct JTI, duplicate `SET NX` fails, no Token is
   returned before successful Redis registration, Redis expiry equals `exp`, and
@@ -286,7 +289,7 @@ The active-JTI gate materially limits, but does not erase, signing-key risk:
 
 The bundled asset implements the complete local-password login and Redis
 active-JTI path:
-minimal claims without `ver`, configurable one-hour default, registration before
+minimal claims without `ver`, configurable 24-hour default, registration before
 return after successful username/password verification, Redis-first validation,
 current PostgreSQL user/RBAC reload, user-version comparison, confirmed
 current-Token logout, and administrator-only lower-target account-wide

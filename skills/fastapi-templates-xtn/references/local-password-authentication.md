@@ -36,13 +36,20 @@ delivery provider. Before implementation, ask in one batch:
    enroll them? Reuse the selected administrator-reset mode unless the owner
    explicitly chooses a different controlled enrollment; never use a shared
    initial password.
+6. Will a professional operations team manage production database identities?
+   If yes, separate the schema-owning migration role from the restricted runtime
+   application role and verify deployed grants. For a small or learning project,
+   do not block delivery or force that topology: explain that application soft
+   deletion cannot stop a database owner running direct SQL, keep soft deletion
+   in every route/service, and record least privilege as later production
+   hardening. See [Identity lifecycle](identity-soft-delete.md#direct-sql-and-deployment-choice).
 
 Show quota defaults together and allow the user to accept them or name changes.
 Do not ask repeatedly about already decided product facts. `iss`/`aud` require
 their own explicit consent as described in [JWT security](jwt-session-security.md).
-Tell the owner separately that Access Tokens default to 3600 seconds and point
-to the setting; this is a required notice, not another blocking choice unless
-the owner asks to change it.
+Tell the owner separately that Access Tokens default to 86,400 seconds (24
+hours) and point to the setting; this is a required notice, not another blocking
+choice unless the owner asks to change it.
 
 ## Username And Password Policy
 

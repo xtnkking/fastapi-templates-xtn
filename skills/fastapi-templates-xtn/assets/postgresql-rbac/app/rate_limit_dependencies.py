@@ -2,13 +2,15 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal, NoReturn
 
 from fastapi import Request
 
+from app.captcha_request import parse_captcha_create_request
 from app.observability import safe_exception_metadata, safe_log
 from app.rate_limit import RateLimitPolicy, RateLimitResult, RateLimitUnavailable
 from app.rate_limit import check_rate_limit as check_bucket
+from app.rate_limit import inspect_rate_limit as inspect_bucket
 from app.rbac.domain import Principal
 from app.rbac.errors import unavailable
 from app.redis_client import get_rate_limit_redis
@@ -63,6 +65,7 @@ AUTHENTICATED_RATE_LIMIT_EXEMPT_OPERATIONS: Mapping[str, Literal["POST"]] = (
         }
     )
 )
+_PRIVATE_CAPTCHA_SCENES = frozenset({"admin_create", "admin_reset", "self_change"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +108,88 @@ def actor_policy_for(request: Request, settings: Settings) -> RateLimitPolicy:
         ) from exc
 
 
+def _rate_limit_policy_for(
+    request: Request,
+    settings: Settings,
+) -> RateLimitPolicy | None:
+    operation_id = _operation_id(request)
+    exempt_method = AUTHENTICATED_RATE_LIMIT_EXEMPT_OPERATIONS.get(operation_id)
+    if exempt_method is not None:
+        if request.method != exempt_method:
+            raise RateLimitUnavailable(
+                "protected operation method does not match policy"
+            )
+        return None
+    return actor_policy_for(request, settings)
+
+
+def _raise_rate_limit_unavailable(exc: RateLimitUnavailable) -> NoReturn:
+    safe_log(
+        logger,
+        logging.ERROR,
+        "dependency.rate_limit.unavailable",
+        extra={
+            "dependency": "rate_limit_redis",
+            "dependency_operation": "authenticated_admission",
+            **safe_exception_metadata(exc),
+        },
+    )
+    raise unavailable("rate_limit_registry_unavailable") from exc
+
+
+async def _inspection_policy_for(
+    request: Request,
+    settings: Settings,
+) -> RateLimitPolicy | None:
+    operation_id = _operation_id(request)
+    if operation_id != "create_authenticated_captcha":
+        return _rate_limit_policy_for(request, settings)
+    if request.method != "POST":
+        raise RateLimitUnavailable("protected operation method does not match policy")
+
+    body = await parse_captcha_create_request(request)
+    if body is None:
+        policy_name = "captcha_rejected_scene"
+    else:
+        policy_name = (
+            f"captcha_create_{body.scene}"
+            if body.scene in _PRIVATE_CAPTCHA_SCENES
+            else "captcha_rejected_scene"
+        )
+    quota = SecurityPolicies.from_settings(settings).captcha_create
+    return RateLimitPolicy(
+        name=policy_name,
+        limit=quota.limit,
+        window_seconds=quota.window_seconds,
+    )
+
+
+async def precheck_principal_rate_limit(
+    request: Request,
+    principal: Principal,
+    settings: Settings,
+) -> None:
+    """Reject an already exhausted actor window before querying PostgreSQL."""
+    if not settings.rate_limit_enabled:
+        return
+    try:
+        policy = await _inspection_policy_for(request, settings)
+        if policy is None:
+            return
+        result = await inspect_bucket(
+            get_rate_limit_redis(request),
+            namespace=settings.rate_limit_namespace,
+            policy=policy,
+            subject_type="actor",
+            subject=str(principal.user_id),
+            key_secret=settings.rate_limit_hmac_key.get_secret_value().encode("utf-8"),
+        )
+    except RateLimitUnavailable as exc:
+        _raise_rate_limit_unavailable(exc)
+    if not result.allowed:
+        raise RateLimitExceeded(policy_name=policy.name, result=result)
+
+
 async def enforce_principal_rate_limit(
     request: Request,
     principal: Principal,
@@ -112,16 +197,12 @@ async def enforce_principal_rate_limit(
 ) -> None:
     if not settings.rate_limit_enabled:
         return
-    # Each CAPTCHA scene has its own 10/5-minute quota in check_captcha_create.
-    # A generic bucket here would combine unrelated private scenes.
-    operation_id = _operation_id(request)
-    exempt_method = AUTHENTICATED_RATE_LIMIT_EXEMPT_OPERATIONS.get(operation_id)
-    if exempt_method is not None:
-        if request.method != exempt_method:
-            raise unavailable("rate_limit_policy_unavailable")
-        return
     try:
-        policy = actor_policy_for(request, settings)
+        # Each CAPTCHA scene has its own quota in check_captcha_create. A generic
+        # bucket here would combine unrelated private scenes.
+        policy = _rate_limit_policy_for(request, settings)
+        if policy is None:
+            return
         result = await check_bucket(
             get_rate_limit_redis(request),
             namespace=settings.rate_limit_namespace,
@@ -131,17 +212,7 @@ async def enforce_principal_rate_limit(
             key_secret=settings.rate_limit_hmac_key.get_secret_value().encode("utf-8"),
         )
     except RateLimitUnavailable as exc:
-        safe_log(
-            logger,
-            logging.ERROR,
-            "dependency.rate_limit.unavailable",
-            extra={
-                "dependency": "rate_limit_redis",
-                "dependency_operation": "authenticated_admission",
-                **safe_exception_metadata(exc),
-            },
-        )
-        raise unavailable("rate_limit_registry_unavailable") from exc
+        _raise_rate_limit_unavailable(exc)
     if result.allowed:
         request.state.actor_rate_limit_result = result
         return

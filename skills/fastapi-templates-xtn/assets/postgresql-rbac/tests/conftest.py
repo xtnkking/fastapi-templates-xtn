@@ -40,4 +40,4 @@ os.environ.pop("VERIFICATION_ENABLED_CHANNELS", None)
 os.environ["RATE_LIMIT_ENABLED"] = "false"
 os.environ.pop("JWT_ISSUER", None)
 os.environ.pop("JWT_AUDIENCE", None)
-os.environ["JWT_ACCESS_TOKEN_TTL_SECONDS"] = "3600"
+os.environ["JWT_ACCESS_TOKEN_TTL_SECONDS"] = "86400"

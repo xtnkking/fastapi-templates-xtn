@@ -28,7 +28,7 @@ The example deliberately resolves choices that commonly produce security gaps:
 | Hierarchy | Larger tier is higher; ordinary management requires strict `>` |
 | Protected authority | The `super_admin` identity is outside ordinary administration |
 | Production token target | Exact default `sub`/`jti`/`iat`/`exp`/`token_type`; consented optional `iss`/`aud` pair; no profile or authorization data |
-| Bundled token adapter | Default five-claim or explicitly approved seven-claim profile, configurable 3600-second default, required Redis active-JTI validation and project-chosen simultaneous-login maximum; no individual PostgreSQL Token table |
+| Bundled token adapter | Default five-claim or explicitly approved seven-claim profile, configurable 86,400-second (24-hour) default, required Redis active-JTI validation and project-chosen simultaneous-login maximum; no individual PostgreSQL Token table |
 | Permission cache | None; versions remain available for a later versioned cache |
 | Authorization writes | Global guard first, canonical row locks, reload, policy decision, mutation, version bump, audit |
 | Public API | Neutral `/api/v1` GET/POST routes with the standard numeric-code envelope |
@@ -70,6 +70,21 @@ weaken authentication, authorization, idempotency, or concurrency requirements.
   defensive redaction.
 - [`app/audit.py`](../assets/postgresql-rbac/app/audit.py) validates stable audit
   labels and converts bounded allowlisted before/after state to safe JSON.
+- [`app/i18n.py`](../assets/postgresql-rbac/app/i18n.py) defines the closed
+  runtime `MessageKey` catalog, bounded `Accept-Language` selection, validation
+  message mapping, translation lookup, and language response headers.
+- [`app/locales/zh-CN.json`](../assets/postgresql-rbac/app/locales/zh-CN.json) and
+  [`app/locales/en.json`](../assets/postgresql-rbac/app/locales/en.json) provide
+  complete, equal-key Simplified Chinese and English runtime message catalogs.
+  [`app/main.py`](../assets/postgresql-rbac/app/main.py) resolves a request-local
+  language and localizes framework errors, while
+  [`app/api_contract.py`](../assets/postgresql-rbac/app/api_contract.py) renders
+  route, service, and error `MessageKey` values into the standard envelope.
+- [`tests/test_i18n.py`](../assets/postgresql-rbac/tests/test_i18n.py) verifies
+  catalog parity, language negotiation, localized success/error/validation
+  responses, headers, hostile input, and concurrent request isolation. The
+  complete call flow and extension rules are in
+  [API internationalization](api-internationalization.md).
 - [`app/rbac/domain.py`](../assets/postgresql-rbac/app/rbac/domain.py) defines
   immutable principals, the permission catalog, system-role specifications, and
   complete multi-role authority snapshots.
@@ -79,8 +94,11 @@ weaken authentication, authorization, idempotency, or concurrency requirements.
   strict manageability, system-role, and anti-self-elevation decisions.
 - [`app/rbac/dependencies.py`](../assets/postgresql-rbac/app/rbac/dependencies.py)
   validates bearer claims, requires the Redis active-JTI record, loads current
-  PostgreSQL user and RBAC authority, compares `users.token_version`, and
-  centralizes exact permission checks.
+  PostgreSQL user and RBAC authority, compares `users.token_version`, removes an
+  exact JTI rejected by current database state on a best-effort basis, rejects
+  an already exhausted per-operation actor window before PostgreSQL without
+  incrementing it, charges the quota only for a live identity, and centralizes
+  exact permission checks.
 - [`app/rbac/service.py`](../assets/postgresql-rbac/app/rbac/service.py) implements
   user status changes, custom-role lifecycle, role creation and update,
   permission and role bind/unbind commands, administrator session revocation,
@@ -562,8 +580,10 @@ is the database backstop for the service check and the concurrent tenth-slot rac
 
 The asset is a source template. Preserve its `LICENSE`, `NOTICE`, and
 `THIRD_PARTY_NOTICES.md` when adapting or redistributing it. Copy the environment
-file, generate a fresh JWT secret, and set it as `JWT_SECRET` before startup.
-Never reuse example, test, or documentation secrets.
+file and generate two independent random secrets before startup: `JWT_SECRET`
+signs Tokens, while `RATE_LIMIT_HMAC_KEY` protects identities embedded in Redis
+rate-limit keys. Both are mandatory, must be different, and must never reuse
+example, test, or documentation values.
 
 The official verification profile is Python 3.12, PostgreSQL 17, and Redis 7.
 Other versions require project-owned validation and must not be described as
@@ -635,7 +655,7 @@ The main product-specific decisions are:
    user gives explicit consent after a plain-language explanation of their
    cross-service scoping benefit and configuration cost; no reply is not consent.
    Preserve an existing configured pair by default. Explicitly tell the user that
-   the one-hour default must be reviewed for business risk and login experience.
+   the 24-hour default must be reviewed and shortened for high-risk surfaces.
 4. Add business-resource queries and compose ownership or row policy after the
    capability decision.
 5. If the product exposes user deletion/restoration, mutable permission-catalog

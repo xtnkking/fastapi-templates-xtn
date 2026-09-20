@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     admin_password_reset_mode: Literal["direct", "temporary"] = "direct"
     jwt_issuer: str | None = None
     jwt_audience: str | None = None
-    jwt_access_token_ttl_seconds: int = Field(default=3600, ge=1)
+    jwt_access_token_ttl_seconds: int = Field(default=86_400, ge=1)
     rate_limit_enabled: bool = True
     rate_limit_redis_url: str | None = None
     rate_limit_namespace: str = Field(

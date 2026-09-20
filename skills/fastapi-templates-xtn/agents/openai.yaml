@@ -1,4 +1,4 @@
 interface:
   display_name: "FastAPI Templates XTN"
-  short_description: "FastAPI RBAC, local auth, localized API messages, and audits"
-  default_prompt: "Use $fastapi-templates-xtn to build a single-project PostgreSQL FastAPI service with strict RBAC, Argon2id username/password authentication, all five required graphical CAPTCHA flows, Redis-gated Access Tokens, per-business rate limits, zh-CN/en API messages selected by Accept-Language, project-selected administrator password reset (direct by default or temporary), offline sole-super-admin recovery, and durable audits; do not implement anonymous password recovery, add email/SMS verification or MFA only when explicitly requested, and add more languages only when the product requires them."
+  short_description: "Opinionated PostgreSQL/Redis FastAPI auth baseline"
+  default_prompt: "Use $fastapi-templates-xtn to build or harden a single-project service that explicitly adopts its PostgreSQL, Redis, local-password, fixed-hierarchy RBAC, all five required graphical CAPTCHA flows, bilingual API-message, and audit baseline; do not implement anonymous password recovery, and consider email/SMS verification or MFA only when explicitly requested as separate project-specific designs because the bundled asset does not implement them."

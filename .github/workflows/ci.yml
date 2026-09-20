@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: ["**"]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -23,8 +24,15 @@ jobs:
           python-version: "3.12"
       - name: Test optional country CSV validator
         run: python -B skills/fastapi-templates-xtn/scripts/test_validate_country_csv.py
+      - name: Test safe Skill updater
+        run: python -B scripts/test_update_installed_skill.py
+      - name: Test CI dependency validator
+        run: python -B scripts/test_validate_ci_environment.py
       - name: Validate release package
         run: python -B scripts/validate_release.py
+      - name: Require recorded pre-tag evidence for release tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python -B scripts/validate_release.py --release-ready
 
   asset:
     runs-on: ubuntu-latest
@@ -33,6 +41,8 @@ jobs:
       run:
         working-directory: skills/fastapi-templates-xtn/assets/postgresql-rbac
     env:
+      PIP_CONSTRAINT: constraints-ci-py312.txt
+      PIP_BUILD_CONSTRAINT: constraints-ci-py312.txt
       TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/rbac_example_test
       TEST_DISPOSABLE_DATABASE: rbac_example_test
       TEST_REDIS_URL: redis://127.0.0.1:6379/15
@@ -77,11 +87,19 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: skills/fastapi-templates-xtn/assets/postgresql-rbac/pyproject.toml
+          cache-dependency-path: |
+            skills/fastapi-templates-xtn/assets/postgresql-rbac/pyproject.toml
+            skills/fastapi-templates-xtn/assets/postgresql-rbac/constraints-ci-py312.txt
       - name: Upgrade packaging tools
-        run: python -B -m pip install --upgrade "pip>=26.2"
+        run: python -B -m pip install --upgrade "pip==26.2.1" "setuptools==84.0.0"
       - name: Install asset and test dependencies
-        run: python -B -m pip install -e ".[test]"
+        run: python -B -m pip install -c constraints-ci-py312.txt -e ".[test]"
+      - name: Verify installed dependency closure
+        run: |
+          python -B -m pip check
+          python -B ../../../../scripts/validate_ci_environment.py
+      - name: Validate wheel contents
+        run: python -B ../../../../scripts/validate_asset_wheel.py . ../../VERSION
       - name: Format check
         run: ruff format --check --no-cache .
       - name: Lint

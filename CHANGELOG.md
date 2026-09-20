@@ -4,7 +4,43 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.6.1] - Unreleased
+
+- Kept anonymous login and registration CAPTCHA challenges deliberately
+  independent of the issuing IP so VPN and mobile-network changes do not make
+  a displayed challenge unusable. Each challenge remains scene-bound,
+  five-minute, and single-use; issuance and submission keep their independent
+  trusted-IP rate limits.
+- Authenticated routes now validate the JWT and Redis active JTI, then inspect
+  an existing operation-and-user window without incrementing it. An exhausted
+  window returns `429` before PostgreSQL; open windows are charged only after
+  the current PostgreSQL identity and Token version are confirmed. Stale
+  identities therefore do not consume the legitimate user's quota, while an
+  active stolen Token cannot keep reaching PostgreSQL after exhaustion. A
+  database-rejected stale JTI is removed on a best-effort basis; current-Token
+  logout remains Redis-only.
+- Limited OpenAPI `429` responses to routes that actually enforce a quota, and
+  added ordering, stale-Token cleanup, cross-IP CAPTCHA, and contract tests.
+- Reduced the always-loaded `SKILL.md` entrypoint and moved detailed rules to
+  task-specific references. Automatic discovery now targets projects that
+  explicitly adopt this PostgreSQL/Redis/local-password authorization baseline;
+  i18n implementation files and tests are linked directly from the references.
+- Added an installed-Skill `VERSION` source, a staged and rollback-capable
+  update tool, reproducible Python 3.12/Linux CI constraints, and wheel-content
+  validation. Release readiness now distinguishes unchecked plans from recorded
+  evidence instead of treating a heading as proof that a release was completed.
+- CI now recursively checks the complete dependency closure selected by the
+  project and test roots on CPython 3.12/Linux, including `uvloop` selected by
+  `uvicorn[standard]`; any selected dependency without an exact pin fails.
+- Documented the mandatory independent `JWT_SECRET` and
+  `RATE_LIMIT_HMAC_KEY`; packaged third-party notices are now verified in the
+  built wheel.
+- Changed the configurable Access Token default from 3,600 seconds to 86,400
+  seconds (24 hours). This improves ordinary login continuity but lengthens the
+  replay window for a stolen Token whose JTI remains active, so adopters must
+  shorten it for high-risk or administrative surfaces; Redis JTI revocation,
+  logout, password rotation, disablement, and administrator revocation remain
+  available to invalidate it early.
 
 ## [0.6.0] - 2026-09-20
 

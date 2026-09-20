@@ -1,3 +1,4 @@
+import json
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -16,6 +17,7 @@ from app.rate_limit_dependencies import (
     RateLimitExceeded,
     actor_policy_for,
     enforce_principal_rate_limit,
+    precheck_principal_rate_limit,
 )
 from app.rbac.api import router as access_router
 from app.rbac.domain import Principal
@@ -52,6 +54,35 @@ def request_for(
             "app": app,
             "route": SimpleNamespace(operation_id=operation_id),
         }
+    )
+
+
+def json_request_for(
+    *,
+    operation_id: str,
+    payload: object,
+    content_type: str = "application/json",
+) -> Request:
+    body = json.dumps(payload).encode("utf-8")
+    sent = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal sent
+        if sent:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    app = SimpleNamespace(state=SimpleNamespace(rate_limit_redis=object()))
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "headers": [(b"content-type", content_type.encode("ascii"))],
+            "app": app,
+            "route": SimpleNamespace(operation_id=operation_id),
+        },
+        receive,
     )
 
 
@@ -180,6 +211,130 @@ async def test_denied_actor_check_raises_rate_limit_exceeded(
         await enforce_principal_rate_limit(request, principal(), enabled_settings())
     assert caught.value.policy_name == "bind_role_permissions"
     assert caught.value.result is denied
+
+
+@pytest.mark.asyncio
+async def test_exhausted_precheck_does_not_increment_the_actor_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    denied = RateLimitResult(False, 60, 0, 750, 750)
+    inspect = AsyncMock(return_value=denied)
+    increment = AsyncMock()
+    monkeypatch.setattr(dependency_module, "inspect_bucket", inspect)
+    monkeypatch.setattr(dependency_module, "check_bucket", increment)
+    request = request_for(
+        method="POST",
+        operation_id="bind_role_permissions",
+        rate_limit_redis=object(),
+    )
+
+    with pytest.raises(RateLimitExceeded) as caught:
+        await precheck_principal_rate_limit(request, principal(), enabled_settings())
+
+    assert caught.value.result is denied
+    inspect.assert_awaited_once()
+    increment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_open_precheck_does_not_charge_the_actor_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    allowed = RateLimitResult(True, 60, 60, 0, 0)
+    inspect = AsyncMock(return_value=allowed)
+    increment = AsyncMock()
+    monkeypatch.setattr(dependency_module, "inspect_bucket", inspect)
+    monkeypatch.setattr(dependency_module, "check_bucket", increment)
+    request = request_for(
+        method="POST",
+        operation_id="bind_role_permissions",
+        rate_limit_redis=object(),
+    )
+
+    await precheck_principal_rate_limit(request, principal(), enabled_settings())
+
+    inspect.assert_awaited_once()
+    increment.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_policy"),
+    [
+        ({"scene": "admin_create"}, "captcha_create_admin_create"),
+        ({"scene": "admin_reset"}, "captcha_create_admin_reset"),
+        ({"scene": "self_change"}, "captcha_create_self_change"),
+        ({"scene": "login"}, "captcha_rejected_scene"),
+        ({"scene": "register"}, "captcha_rejected_scene"),
+        ({"scene": "unknown"}, "captcha_rejected_scene"),
+        ({}, "captcha_rejected_scene"),
+        (
+            {"scene": "admin_reset", "previous_captcha_id": "not-a-uuid"},
+            "captcha_rejected_scene",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_authenticated_captcha_precheck_inspects_its_exact_window(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: object,
+    expected_policy: str,
+) -> None:
+    inspect = AsyncMock(return_value=RateLimitResult(True, 10, 10, 0, 0))
+    increment = AsyncMock()
+    monkeypatch.setattr(dependency_module, "inspect_bucket", inspect)
+    monkeypatch.setattr(dependency_module, "check_bucket", increment)
+    request = json_request_for(
+        operation_id="create_authenticated_captcha",
+        payload=payload,
+    )
+
+    await precheck_principal_rate_limit(request, principal(), enabled_settings())
+
+    inspect_call = inspect.await_args
+    assert inspect_call is not None
+    policy = inspect_call.kwargs["policy"]
+    assert policy.name == expected_policy
+    assert policy.limit == 10
+    assert policy.window_seconds == 300
+    increment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_captcha_precheck_rejects_json_body_sent_as_text_plain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inspect = AsyncMock(return_value=RateLimitResult(True, 10, 10, 0, 0))
+    monkeypatch.setattr(dependency_module, "inspect_bucket", inspect)
+    request = json_request_for(
+        operation_id="create_authenticated_captcha",
+        payload={"scene": "admin_reset"},
+        content_type="text/plain",
+    )
+
+    await precheck_principal_rate_limit(request, principal(), enabled_settings())
+
+    inspect_call = inspect.await_args
+    assert inspect_call is not None
+    assert inspect_call.kwargs["policy"].name == "captcha_rejected_scene"
+
+
+@pytest.mark.asyncio
+async def test_authenticated_captcha_precheck_accepts_vendor_json_media_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inspect = AsyncMock(return_value=RateLimitResult(True, 10, 10, 0, 0))
+    monkeypatch.setattr(dependency_module, "inspect_bucket", inspect)
+    request = json_request_for(
+        operation_id="create_authenticated_captcha",
+        payload={"scene": "admin_reset"},
+        content_type="application/vnd.xtn+json; charset=utf-8",
+    )
+
+    await precheck_principal_rate_limit(request, principal(), enabled_settings())
+
+    inspect_call = inspect.await_args
+    assert inspect_call is not None
+    assert inspect_call.kwargs["policy"].name == "captcha_create_admin_reset"
 
 
 @pytest.mark.asyncio

@@ -25,7 +25,7 @@ The included PostgreSQL asset uses this linear migration chain:
    evidence, and the `users:password:reset` permission/grants.
 
 These four revisions shipped with `v0.5.0` and are immutable migration history.
-`v0.6.0` changes no database shape and needs no new Alembic revision. Every
+`v0.6.1` changes no database shape and needs no new Alembic revision. Every
 later schema or seed change must use a new forward revision; never edit, replace,
 or reorder `0001` through `0004` after publication.
 

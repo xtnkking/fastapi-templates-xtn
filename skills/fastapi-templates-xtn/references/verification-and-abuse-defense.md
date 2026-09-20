@@ -32,11 +32,26 @@ and reset do not ask for the actor's password a second time.
 Use `POST /api/v1/auth/captcha` for the first two scenes and authenticated
 `POST /api/v1/me/captcha` for the other three. For authenticated scenes,
 derive the owner user ID from full server-side authentication; never accept an
-owner or target ID in the CAPTCHA issue request. Every issuance/refresh spends
+owner or target ID in the CAPTCHA issue request. Public `login` and `register`
+challenges are deliberately **not** bound to the issuing IP: a legitimate user
+whose VPN or mobile-network exit changes can still submit the displayed image.
+They remain bound to their fixed scene, five-minute expiry, and one-use atomic
+consumption. Possession of both the challenge ID and answer is therefore
+transferable; this is an explicit availability tradeoff, and CAPTCHA is not
+account-ownership proof. Issuance and the later login/register submission are
+still independently limited by the trusted IP observed for that request.
+Every issuance/refresh spends
 one scene-specific quota (10 per five minutes by default), separate from the
 quota for the protected action. Never add a shared all-scene/all-IP/global
 bucket or a username-keyed limit. On a rejected refresh, leave the old image
 unchanged and usable until expiry or consumption.
+
+For the authenticated issue route, the active JTI is followed by a non-mutating
+inspection of the exact private-scene actor window before PostgreSQL account
+loading. An already exhausted scene therefore returns `429001` without another
+database read. Invalid bodies and public scenes inspect the separate
+`captcha_rejected_scene` window instead. Only after current-account validation
+does the normal issue/rejection path increment the same selected window.
 
 A valid scene sent to the wrong issue endpoint, or a parsed CAPTCHA request
 with invalid fields, is rejected without issuing or refreshing an image. Count
@@ -58,7 +73,8 @@ before authentication dependencies run.
   the answer's verifier, fixed scene, optional authenticated owner, and expiry
   in Redis with a five-minute TTL. Do not store a plaintext answer.
 - Submit once. A single atomic Redis Lua operation checks challenge ID,
-  expected scene, owner binding, and answer, then deletes its challenge/pointer
+  expected scene, optional authenticated-owner binding, and answer, then
+  deletes its challenge/pointer
   keys even when the answer or binding is wrong. A missing, expired, consumed,
   or mismatched challenge yields one generic invalid-or-expired error. If Redis
   cannot confirm consumption, fail closed (`503001`) and do not run the action.
@@ -106,7 +122,8 @@ mandatory.
 ## Verification
 
 Run real-Redis concurrency and TTL tests for issue, refresh, wrong-answer
-consumption, wrong-scene/owner consumption, one-winner success, and Redis
+consumption, wrong-scene/private-owner consumption, anonymous use after a
+client-IP change, one-winner success, and Redis
 outages. Route tests prove each of the five endpoints requires the correct
 scene, submission limits are independent of issuance quotas, invalid CAPTCHA
 skips the protected work, wrong-endpoint and parsed invalid requests have the separate per-subject

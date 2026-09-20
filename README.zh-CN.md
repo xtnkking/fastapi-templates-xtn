@@ -8,7 +8,14 @@
 
 ## 当前状态
 
-`v0.6.0` 是最近一次正式发布的标签。需要可复现安装时使用该标签。
+仓库工作区正在准备 `v0.6.1`；唯一权威版本值位于
+[`skills/fastapi-templates-xtn/VERSION`](skills/fastapi-templates-xtn/VERSION)。
+在真正创建 `v0.6.1` Release 之前，最新正式标签仍是 `v0.6.0`。需要不可变基线时
+应安装已经发布的标签。
+
+本次修复范围和逐项验收状态记录在
+[`V0.6.1_OPTIMIZATION_PLAN.zh-CN.md`](V0.6.1_OPTIMIZATION_PLAN.zh-CN.md)；
+发布前仍以 `RELEASE_CHECKLIST.zh-CN.md` 的 `DRAFT` 门槛为准。
 
 `v0.6.0` 增加了项目级“管理员重置密码模式”。默认 `direct`：管理员设置的
 新密码立即成为正式密码，用户拿到后可以直接登录；可选 `temporary`：用户必须先
@@ -35,7 +42,7 @@
 与上游项目不存在从属或背书关系；再分发时须保留 [NOTICE](NOTICE) 和
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-## v0.6.0 的基础规范
+## 当前基础规范
 
 - 新项目只用 `user_name` 和密码，不默认提供邮箱登录或“忘记密码”自助接口。用户名
   去首尾空白，限制为 3～32 位 ASCII 英文字母、数字、下划线；12 个完整敏感名称禁止
@@ -67,10 +74,11 @@
   有一位超级管理员。`admin`、`user` 固定系统角色、每人最多十个活跃角色、只能
   管理严格低于自己等级的对象、不能自行提权、软删除以及数据库写入和审计同事务
   都保留。授予者只能授予自己已拥有的权限；不另设 `can_delegate` 管理子系统。
-- JWT 默认一小时，只包含 `sub`、`jti`、`iat`、`exp` 和 `token_type`；其中 `sub`
+- JWT 默认 24 小时，只包含 `sub`、`jti`、`iat`、`exp` 和 `token_type`；其中 `sub`
   是不可变、非自增的用户 ID。只有向实际项目使用者解释并获得明确同意后，才
   成对增加 `iss` 和 `aud`。每次使用 Token 都查 Redis 活跃 JTI，并读取当前的
-  PostgreSQL 用户与权限。不提供第二种续签凭证或逐 Token 数据库表。
+  PostgreSQL 用户与权限。被盗 Token 在 JTI 仍活跃时仍可重放，所以高风险或管理
+  后台应缩短 24 小时默认值。不提供第二种续签凭证或逐 Token 数据库表。
 - Redis 限流使用简单固定窗口；每个接口／业务独立计数。未登录的认证入口按
   可信 IP，登录后的接口按操作者用户 ID；**没有全站总额度、跨业务共享额度、
   匿名用户名额度或覆盖整个 `/api/` 的 IP 总桶**。真实超限返回 `429001` 和
@@ -104,15 +112,17 @@
 
 ## 安装
 
-安装目前正式发布的不变标签：
+首次安装到不存在的目标目录时，使用目前正式发布的不变标签：
 
 ```text
 Use $skill-installer to install the skill from
 https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.0/skills/fastapi-templates-xtn
 ```
 
-安装器不会覆盖已经安装的 Skill；替换前先备份本地修改。仓库级安装也可将
-`skills/fastapi-templates-xtn` 放入目标仓库的 `.agents/skills/fastapi-templates-xtn`。
+安装器不会覆盖已经安装的 Skill，不能把它描述成更新工具。已有安装请按照
+[安装与更新](INSTALL.zh-CN.md)使用先暂存、逐文件哈希核对、失败可回滚的脚本；脚本
+会把完整旧目录保留为带时间戳的备份。仓库级安装也使用同一脚本，准确目标为
+`.agents/skills/fastapi-templates-xtn`。
 
 ## 使用和验证
 
@@ -134,20 +144,23 @@ Compose 与独立测试数据库检查用于集成验证。复制使用前请先
 在仓库根目录运行：
 
 ```powershell
-python -B -m pip install --upgrade "pip>=26.2"
-python -B -m pip install "skills/fastapi-templates-xtn/assets/postgresql-rbac[test]"
+python -B -m pip install --upgrade "pip==26.2.1" "setuptools==84.0.0"
+python -B -m pip install -c skills/fastapi-templates-xtn/assets/postgresql-rbac/constraints-ci-py312.txt "skills/fastapi-templates-xtn/assets/postgresql-rbac[test]"
 ruff format --check --no-cache skills/fastapi-templates-xtn/assets/postgresql-rbac
 ruff check --no-cache skills/fastapi-templates-xtn/assets/postgresql-rbac
 mypy --no-incremental --cache-dir "$env:TEMP\fastapi-templates-xtn-mypy-cache" --config-file skills/fastapi-templates-xtn/assets/postgresql-rbac/pyproject.toml skills/fastapi-templates-xtn/assets/postgresql-rbac/app skills/fastapi-templates-xtn/assets/postgresql-rbac/tests
 python -B -m pytest -p no:cacheprovider -m "not postgresql" skills/fastapi-templates-xtn/assets/postgresql-rbac/tests
 pip-audit --local --skip-editable --progress-spinner off
 python -B skills/fastapi-templates-xtn/scripts/test_validate_country_csv.py
+python -B scripts/test_update_installed_skill.py
+python -B scripts/test_validate_ci_environment.py
+python -B scripts/validate_asset_wheel.py skills/fastapi-templates-xtn/assets/postgresql-rbac skills/fastapi-templates-xtn/VERSION
 python -B scripts/validate_release.py
 ```
 
-`v0.6.0` 的测试基线要求 `pytest>=9.0.3,<10` 与兼容的
-`pytest-asyncio>=1.4,<2`；如果要降低这些范围或 `pip>=26.2` 的审计基线，必须
-重新运行依赖漏洞扫描，不能直接改回旧版本。
+项目元数据继续保留有上下界的依赖范围，方便使用者适配项目。官方 Python 3.12/Linux
+验证额外使用 `constraints-ci-py312.txt`，避免同一仓库提交日后自动解析到另一组依赖。
+这些精确版本只能有意重新生成；修改后必须重新运行依赖漏洞扫描和完整测试。
 
 只可对**全新且确认可丢弃**的 PostgreSQL/Redis 测试目标运行迁移及并发测试，
 绝不能用装着实际业务数据的库。生成的项目要在目标部署环境完成检查，才能称为

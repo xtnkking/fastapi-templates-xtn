@@ -196,11 +196,12 @@ def test_invalid_access_token_claims_fail_closed(
 
 
 def test_decoder_rejects_lifetime_longer_than_configured() -> None:
-    payload = valid_payload()
-    payload["exp"] = payload["iat"] + 3601
+    settings = get_settings()
+    payload = valid_payload(settings)
+    payload["exp"] = payload["iat"] + settings.jwt_access_token_ttl_seconds + 1
 
     with pytest.raises(RbacError) as caught:
-        decode_access_token(encode(payload), get_settings())
+        decode_access_token(encode(payload, settings=settings), settings)
 
     assert caught.value.status_code == 401
 
@@ -230,7 +231,11 @@ async def test_issuer_registers_exact_minimal_token_before_returning() -> None:
     )
 
     assert set(payload) == REQUIRED_ACCESS_CLAIMS
-    assert payload["exp"] - payload["iat"] == 3600
+    assert (
+        payload["exp"] - payload["iat"]
+        == settings.jwt_access_token_ttl_seconds
+        == 86_400
+    )
     assert payload["sub"] == str(user_id)
     mock.eval.assert_awaited_once()
     (
@@ -263,6 +268,22 @@ async def test_issuer_registers_exact_minimal_token_before_returning() -> None:
     assert version == "7"
     assert maximum == str(settings.max_active_sessions_per_user)
     assert mock.eval.await_args.kwargs == {}
+
+
+async def test_issuer_uses_configured_access_token_lifetime() -> None:
+    redis, mock = redis_mock()
+    mock.eval.return_value = 1
+    settings = get_settings().model_copy(update={"jwt_access_token_ttl_seconds": 900})
+
+    token = await issue_access_token(
+        redis,
+        user_id=uuid.uuid4(),
+        user_token_version=0,
+        settings=settings,
+    )
+    claims = decode_access_token(token, settings)
+
+    assert claims.expires_at - claims.issued_at == 900
 
 
 def test_active_jti_key_does_not_depend_on_optional_issuer_or_audience() -> None:

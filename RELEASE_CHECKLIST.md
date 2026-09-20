@@ -4,17 +4,64 @@
 
 Use this checklist for the first public preview and subsequent releases.
 
-## Local package
+## Prepare v0.6.1
+
+Release readiness: `DRAFT`
+
+Keep this status as `DRAFT` while any pre-tag item is unchecked. Change it to
+`READY` only after personally verifying every item against the exact commit that
+will be tagged. Ordinary `validate_release.py` runs report unfinished work but
+still validate development branches; `validate_release.py --release-ready`
+rejects `DRAFT` or an unchecked pre-tag item. Tag CI repeats every automatable
+check. A checked box is a maintainer attestation, not evidence created by this
+validator.
+
+### Pre-tag evidence
+
+- [ ] `VERSION`, asset package metadata, current migration/architecture notes,
+  and both changelogs consistently identify `0.6.1`; the configurable Access
+  Token default is 86,400 seconds (24 hours), and published migrations remain
+  unchanged.
+- [ ] The Skill quick validator, release validator, updater tests, country-data
+  validator tests, Ruff, mypy, dependency audit, unit tests, and disposable
+  PostgreSQL 17/Redis 7 integration tests all pass on the exact release commit.
+- [ ] CI installs the Python 3.12/Linux dependency resolution through
+  `constraints-ci-py312.txt`; recursive closure validation confirms every
+  package selected by the project and test roots, including `uvloop`, has an
+  exact pin; `pip check` passes; and the reviewed versions have no unrecorded
+  vulnerability exception.
+- [ ] Wheel validation proves that both locale catalogs plus `LICENSE`, `NOTICE`,
+  and `THIRD_PARTY_NOTICES.md` are present in the built artifact.
+- [ ] A dry run resolves the intended installed Skill target, and an isolated
+  update test proves exact staged copying, complete backup, successful
+  replacement, and rollback behavior without deleting the retained backup.
+- [ ] The final diff, English/Chinese install instructions, release notes,
+  attribution, and limitations have been reviewed by XTN; the exact branch CI
+  run for this commit is green.
+
+### Post-release verification
+
+- [ ] Create immutable tag `v0.6.1` on the verified commit and wait for tag CI.
+- [ ] Publish a non-draft, non-prerelease GitHub Release for `v0.6.1`.
+- [ ] Verify the public source archive, tagged first-install URL, `VERSION`, and
+  one safe update from the checked-out tag. Record failures in an Issue rather
+  than moving or replacing the tag.
+
+Sections for older versions below are historical planning records. Their
+unchecked boxes are not evidence that an old release did or did not run a check.
+Only the current `Prepare v0.6.1` block participates in automated readiness.
+
+## Reusable Local Review Inventory
 
 - [ ] The bundled Skill passes the current `skill-creator` quick validator.
 - [ ] The optional country CSV validator's focused unit tests pass without
   modifying or bundling a source dataset.
 - [ ] Ruff format and lint, strict mypy, `pip-audit`, and non-PostgreSQL tests
   pass.
-- [ ] Test dependencies retain `pytest>=9.0.3,<10` and
-  `pytest-asyncio>=1.4,<2`, and CI upgrades to `pip>=26.2` before installation
-  and audit. Any lower baseline has a new clean dependency-audit result or an
-  explicit temporary exception in both Security documents and CI.
+- [ ] Project dependency ranges remain bounded, while CI installs the exact
+  reviewed Python 3.12/Linux resolution from `constraints-ci-py312.txt` after
+  installing `pip==26.2.1` and `setuptools==84.0.0`. Any pin change has a new clean dependency-audit
+  result or an explicit temporary exception in both Security documents and CI.
 - [ ] PostgreSQL-marked tests pass against PostgreSQL 17.
 - [ ] Redis-backed authentication tests pass against Redis 7 for active JTI, and
   rate-limit, login/registration defense, and required graphical-CAPTCHA tests

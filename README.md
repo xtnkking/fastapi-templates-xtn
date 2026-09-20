@@ -9,8 +9,14 @@ structured logging, and separate durable audits.
 
 ## Status
 
-`v0.6.0` is the latest published tag. Install the tagged release for a
-reproducible baseline.
+The repository worktree is preparing `v0.6.1`; the authoritative value is
+[`skills/fastapi-templates-xtn/VERSION`](skills/fastapi-templates-xtn/VERSION).
+`v0.6.0` remains the latest published tag until the `v0.6.1` release is
+actually created. Install a published tag for an immutable baseline.
+
+The current repair scope and item-by-item status are recorded in the Chinese
+[`v0.6.1 optimization plan`](V0.6.1_OPTIMIZATION_PLAN.zh-CN.md). The `DRAFT`
+gate in `RELEASE_CHECKLIST.md` remains authoritative for publication.
 
 `v0.6.0` adds a project-wide administrator password-reset choice. The
 default `direct` mode makes the administrator-supplied value the permanent
@@ -42,7 +48,7 @@ Copyright (c) 2024 Seth Hobson under MIT. XTN's additions are independently
 maintained and are not affiliated with or endorsed by upstream. Preserve
 [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-## Baseline In v0.6.0
+## Current Baseline
 
 - Greenfield services use only `user_name` and password, not email login or
   self-service forgot-password. Usernames trim edge whitespace, require 3..32
@@ -85,12 +91,14 @@ maintained and are not affiliated with or endorsed by upstream. Preserve
   soft deletion, and PostgreSQL transaction/audit coupling remain enforced.
   A grantor can grant only permissions it currently holds; there is no separate
   `can_delegate` switch or delegation-management API.
-- JWT defaults to one configurable hour and only `sub`, `jti`, `iat`, `exp`, and
+- JWT defaults to a configurable 24 hours and only `sub`, `jti`, `iat`, `exp`, and
   `token_type`. `sub` is a non-sequential immutable user ID. `iss`/`aud` may be
   added together only after explicit project-owner consent. Redis must contain
   the active JTI for every accepted Token; PostgreSQL still supplies current
-  user status and authority. There is no second token-issuance flow or
-  per-Token PostgreSQL table.
+  user status and authority. A stolen Token can still be replayed while its JTI
+  remains active, so high-risk or administrative surfaces should shorten the
+  24-hour default. There is no second token-issuance flow or per-Token
+  PostgreSQL table.
 - Redis fixed-window quotas are independent for each operation and subject:
   anonymous authentication uses trusted IP, authenticated operations use the
   actor's immutable user ID. There are **no global or cross-business quotas**,
@@ -130,16 +138,19 @@ and neither creates a global API quota. The country dataset is not bundled.
 
 ## Install
 
-Install the immutable latest published release:
+Install the immutable latest published release for a new destination:
 
 ```text
 Use $skill-installer to install the skill from
 https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.0/skills/fastapi-templates-xtn
 ```
 
-The installer does not overwrite an installed Skill. Back up local changes
-before replacing it. A repository-scoped installation can copy
-`skills/fastapi-templates-xtn` into `.agents/skills/fastapi-templates-xtn`.
+The installer does not overwrite an installed Skill and must not be described as
+an updater. For an existing installation, use the staged, hash-checked,
+rollback-capable procedure in [Install And Update](INSTALL.md). It preserves the
+complete old directory as a timestamped backup. A repository-scoped installation
+uses the same updater with the exact target
+`.agents/skills/fastapi-templates-xtn`.
 
 ## Use And Verify
 
@@ -169,20 +180,25 @@ before adapting or running the copied service.
 From this repository root:
 
 ```powershell
-python -B -m pip install --upgrade "pip>=26.2"
-python -B -m pip install "skills/fastapi-templates-xtn/assets/postgresql-rbac[test]"
+python -B -m pip install --upgrade "pip==26.2.1" "setuptools==84.0.0"
+python -B -m pip install -c skills/fastapi-templates-xtn/assets/postgresql-rbac/constraints-ci-py312.txt "skills/fastapi-templates-xtn/assets/postgresql-rbac[test]"
 ruff format --check --no-cache skills/fastapi-templates-xtn/assets/postgresql-rbac
 ruff check --no-cache skills/fastapi-templates-xtn/assets/postgresql-rbac
 mypy --no-incremental --cache-dir "$env:TEMP\fastapi-templates-xtn-mypy-cache" --config-file skills/fastapi-templates-xtn/assets/postgresql-rbac/pyproject.toml skills/fastapi-templates-xtn/assets/postgresql-rbac/app skills/fastapi-templates-xtn/assets/postgresql-rbac/tests
 python -B -m pytest -p no:cacheprovider -m "not postgresql" skills/fastapi-templates-xtn/assets/postgresql-rbac/tests
 pip-audit --local --skip-editable --progress-spinner off
 python -B skills/fastapi-templates-xtn/scripts/test_validate_country_csv.py
+python -B scripts/test_update_installed_skill.py
+python -B scripts/test_validate_ci_environment.py
+python -B scripts/validate_asset_wheel.py skills/fastapi-templates-xtn/assets/postgresql-rbac skills/fastapi-templates-xtn/VERSION
 python -B scripts/validate_release.py
 ```
 
-The `v0.6.0` test baseline requires `pytest>=9.0.3,<10` together with
-`pytest-asyncio>=1.4,<2`; do not lower those ranges or the `pip>=26.2` audit
-baseline without rerunning the dependency audit.
+The project metadata intentionally keeps bounded dependency ranges for adapted
+projects. Official Python 3.12/Linux verification additionally uses
+`constraints-ci-py312.txt`, so rerunning the same repository revision does not
+silently select newer dependencies. Regenerate those exact pins deliberately;
+do not change them without rerunning the dependency audit and full suite.
 
 Run PostgreSQL/Redis migration, concurrency, authentication, CAPTCHA, and
 quota tests against **fresh disposable targets only**. Never aim the test suite

@@ -4,11 +4,11 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response, status
-from pydantic import ValidationError
 
 from app.abuse_defense import AbuseDefenseService
 from app.abuse_flow import IdentityAbuseFlow, build_identity_abuse_flow
 from app.api_contract import (
+    RATE_LIMIT_ERROR_RESPONSES,
     STANDARD_ERROR_RESPONSES,
     ApiResponse,
     BusinessCode,
@@ -37,10 +37,10 @@ from app.authentication_service import (
     get_local_authentication_service,
 )
 from app.captcha import CaptchaService
+from app.captcha_request import parse_captcha_create_request
 from app.i18n import MessageKey
 from app.rate_limit_middleware import trusted_client_ip
 from app.rbac.dependencies import (
-    PrincipalDependency,
     SettingsDependency,
     get_authorization_context,
     require_permissions,
@@ -52,7 +52,7 @@ from app.redis_client import get_rate_limit_redis, get_redis
 
 router = APIRouter(
     prefix="/api/v1",
-    responses=STANDARD_ERROR_RESPONSES,
+    responses={**STANDARD_ERROR_RESPONSES, **RATE_LIMIT_ERROR_RESPONSES},
     route_class=RequestIdRoute,
 )
 registration_router = APIRouter(
@@ -152,18 +152,8 @@ async def _precheck_captcha_body(
     *,
     owner_id: uuid.UUID | None,
 ) -> None:
-    media_type = (
-        request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    )
-    if media_type == "application/json" or (
-        media_type.startswith("application/") and media_type.endswith("+json")
-    ):
-        try:
-            CaptchaCreateRequest.model_validate(await request.json())
-        except ValidationError:
-            pass
-        else:
-            return
+    if await parse_captcha_create_request(request) is not None:
+        return
     await _admit_rejected_captcha_scene(request, settings, owner_id=owner_id)
 
 
@@ -176,9 +166,13 @@ async def _precheck_public_captcha_body(
 async def _precheck_authenticated_captcha_body(
     request: Request,
     settings: SettingsDependency,
-    principal: PrincipalDependency,
+    context: Annotated[AuthorizationContext, Depends(get_authorization_context)],
 ) -> None:
-    await _precheck_captcha_body(request, settings, owner_id=principal.user_id)
+    await _precheck_captcha_body(
+        request,
+        settings,
+        owner_id=context.principal.user_id,
+    )
 
 
 @registration_router.post(
@@ -187,6 +181,7 @@ async def _precheck_authenticated_captcha_body(
     tags=[AUTHENTICATION_TAG],
     operation_id="create_public_captcha",
     dependencies=[Depends(_precheck_public_captcha_body)],
+    responses=RATE_LIMIT_ERROR_RESPONSES,
 )
 async def create_public_captcha(
     body: CaptchaCreateRequest,
@@ -282,6 +277,7 @@ async def update_registration_status(
     response_model=ApiResponse[RegistrationData],
     tags=[AUTHENTICATION_TAG],
     operation_id="register_local_account",
+    responses=RATE_LIMIT_ERROR_RESPONSES,
 )
 async def register_local_account(
     body: RegistrationRequest,
@@ -328,6 +324,7 @@ async def register_local_account(
     response_model=ApiResponse[AccessTokenData],
     tags=[AUTHENTICATION_TAG],
     operation_id="login_with_local_password",
+    responses=RATE_LIMIT_ERROR_RESPONSES,
 )
 async def login_with_local_password(
     body: LoginRequest,
@@ -539,6 +536,7 @@ async def create_user_with_temporary_password(
     response_model=ApiResponse[PasswordMutationData],
     tags=[AUTHENTICATION_TAG],
     operation_id="complete_temporary_password_reset",
+    responses=RATE_LIMIT_ERROR_RESPONSES,
 )
 async def complete_temporary_password_reset(
     body: PasswordResetCompletionRequest,

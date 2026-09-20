@@ -7,6 +7,7 @@ from pydantic import BeforeValidator
 from sqlalchemy import func, select
 
 from app.api_contract import (
+    RATE_LIMIT_ERROR_RESPONSES,
     STANDARD_ERROR_RESPONSES,
     ApiResponse,
     BusinessCode,
@@ -15,6 +16,7 @@ from app.api_contract import (
     api_response,
 )
 from app.i18n import MessageKey
+from app.rate_limit_dependencies import enforce_principal_rate_limit
 from app.rbac.dependencies import (
     PrincipalDependency,
     SessionDependency,
@@ -57,7 +59,7 @@ from app.redis_client import get_redis
 
 router = APIRouter(
     prefix="/api/v1",
-    responses=STANDARD_ERROR_RESPONSES,
+    responses={**STANDARD_ERROR_RESPONSES, **RATE_LIMIT_ERROR_RESPONSES},
     route_class=RequestIdRoute,
 )
 RbacServiceDependency = Annotated[RbacService, Depends(get_rbac_service)]
@@ -134,6 +136,7 @@ async def logout_current_access_token(
     principal: PrincipalDependency,
     settings: SettingsDependency,
 ) -> ApiResponse[OperationResponse]:
+    await enforce_principal_rate_limit(request, principal, settings)
     await revoke_active_jti(
         get_redis(request),
         claims=AccessTokenClaims(

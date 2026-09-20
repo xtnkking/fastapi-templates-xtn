@@ -70,6 +70,10 @@ REQUEST_ID_OPENAPI_HEADER: dict[str, Any] = {
     "description": "Server-generated request correlation ID",
     "schema": {"type": "string", "format": "uuid"},
 }
+NO_STORE_OPENAPI_HEADER: dict[str, Any] = {
+    "description": "Prevents storage of security-sensitive error responses",
+    "schema": {"type": "string", "enum": ["no-store"]},
+}
 
 RATE_LIMIT_OPENAPI_HEADERS: dict[str, dict[str, Any]] = {
     "Retry-After": {
@@ -95,7 +99,10 @@ STANDARD_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     status_code: {
         "model": ApiResponse[Any],
         "description": description,
-        "headers": {"X-Request-ID": REQUEST_ID_OPENAPI_HEADER},
+        "headers": {
+            "X-Request-ID": REQUEST_ID_OPENAPI_HEADER,
+            "Cache-Control": NO_STORE_OPENAPI_HEADER,
+        },
     }
     for status_code, description in {
         400: "Invalid request",
@@ -105,12 +112,25 @@ STANDARD_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
         405: "Method not allowed",
         409: "Resource state conflict",
         422: "Request validation failed",
-        429: "Request rate limited",
         500: "Unexpected internal failure",
         503: "Required dependency unavailable",
     }.items()
 }
-STANDARD_ERROR_RESPONSES[429]["headers"].update(RATE_LIMIT_OPENAPI_HEADERS)
+
+RATE_LIMIT_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    429: {
+        "model": ApiResponse[Any],
+        "description": "Request rate limited",
+        "headers": {
+            "X-Request-ID": dict(REQUEST_ID_OPENAPI_HEADER),
+            "Cache-Control": dict(NO_STORE_OPENAPI_HEADER),
+            **{
+                name: dict(definition)
+                for name, definition in RATE_LIMIT_OPENAPI_HEADERS.items()
+            },
+        },
+    }
+}
 
 
 class RequestIdRoute(APIRoute):

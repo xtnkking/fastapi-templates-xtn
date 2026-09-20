@@ -53,6 +53,7 @@ from app.rbac.schemas import (
     UserRoleMutationResponse,
 )
 from app.rbac.service import get_rbac_service
+from app.settings import get_settings
 
 REQUIRED_ROUTES = {
     ("POST", "/api/v1/auth/logout"),
@@ -374,20 +375,76 @@ def test_openapi_declares_request_id_on_every_public_response() -> None:
             if operation is None:
                 continue
             assert not {"413", "415"} & operation["responses"].keys()
-            rate_limited = operation["responses"]["429"]
-            assert {
-                "X-Request-ID",
-                "Retry-After",
-                "RateLimit-Limit",
-                "RateLimit-Remaining",
-                "RateLimit-Reset",
-            } <= rate_limited["headers"].keys()
-            for response in operation["responses"].values():
+            if operation["operationId"] == "read_registration_status":
+                assert "429" not in operation["responses"]
+            else:
+                rate_limited = operation["responses"]["429"]
+                assert {
+                    "X-Request-ID",
+                    "Cache-Control",
+                    "Retry-After",
+                    "RateLimit-Limit",
+                    "RateLimit-Remaining",
+                    "RateLimit-Reset",
+                } <= rate_limited["headers"].keys()
+                assert rate_limited["headers"]["Cache-Control"]["schema"] == {
+                    "type": "string",
+                    "enum": ["no-store"],
+                }
+            for response_status, response in operation["responses"].items():
                 request_id = response["headers"]["X-Request-ID"]
                 assert request_id["schema"] == {
                     "type": "string",
                     "format": "uuid",
                 }
+                if response_status.startswith(("4", "5")):
+                    assert response["headers"]["Cache-Control"]["schema"] == {
+                        "type": "string",
+                        "enum": ["no-store"],
+                    }
+
+
+async def test_current_token_logout_limits_then_revokes_without_database_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    current_principal = Principal(
+        user_id=uuid.uuid4(),
+        token_version=4,
+        token_id=uuid.uuid4(),
+        issued_at=1,
+        expires_at=2,
+    )
+
+    async def actor_limit(*_args: object, **_kwargs: object) -> None:
+        events.append("actor_limit")
+
+    async def revoke(*_args: object, **_kwargs: object) -> None:
+        events.append("revoke_jti")
+
+    monkeypatch.setattr(
+        rbac_api_module,
+        "enforce_principal_rate_limit",
+        actor_limit,
+    )
+    monkeypatch.setattr(rbac_api_module, "revoke_active_jti", revoke)
+    monkeypatch.setattr(rbac_api_module, "get_redis", lambda _request: object())
+
+    response = await rbac_api_module.logout_current_access_token(
+        Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/v1/auth/logout",
+                "headers": [],
+            }
+        ),
+        current_principal,
+        get_settings(),
+    )
+
+    assert response.data is not None and response.data.changed is True
+    assert events == ["actor_limit", "revoke_jti"]
 
 
 def test_response_models_reject_coercion_and_extra_fields() -> None:

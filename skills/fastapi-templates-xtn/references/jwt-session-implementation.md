@@ -27,7 +27,7 @@ from typing import Any
 
 import jwt
 
-DEFAULT_ACCESS_TTL_SECONDS = 3600
+DEFAULT_ACCESS_TTL_SECONDS = 86_400
 CLOCK_LEEWAY_SECONDS = 30
 REQUIRED_ACCESS_CLAIMS = frozenset({"sub", "jti", "iat", "exp", "token_type"})
 OPTIONAL_ACCESS_SCOPE_CLAIMS = frozenset({"iss", "aud"})
@@ -430,7 +430,7 @@ The bundled asset implements the adapter described here using its established
 UUIDv4 entity-ID profile and wires it into the local username/password login
 path:
 the default exact five-claim profile, the optional consented `iss`/`aud` pair,
-the configurable 3600-second default, Redis lifespan ownership,
+the configurable 86,400-second default, Redis lifespan ownership,
 atomic Redis 5.0+ `SET NX EX` / `PEXPIREAT` registration before return,
 Redis-first request validation,
 PostgreSQL user-version comparison, and logout. It adds no individual PostgreSQL
@@ -444,8 +444,9 @@ Before adapting or shipping the asset:
    `issue_access_token`. If another identity provider replaces local passwords,
    connect it at that same boundary. Never activate a Redis miss from a bearer
    request.
-2. Explicitly tell the user that the one-hour default must be adjusted when the
-   product's risk and login experience require a different lifetime.
+2. Explicitly tell the user that the 24-hour default must be shortened when the
+   product's risk, especially an administrative surface, requires a shorter
+   replay window, or adjusted when login experience requires a different lifetime.
 3. Leave `iss` and `aud` absent by default. Before adding the pair, explain its
    cross-service Token-scoping benefit and coordination cost in plain language,
    then wait for the user's explicit consent. No reply is not consent. Preserve

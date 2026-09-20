@@ -211,7 +211,10 @@ def test_jwt_secret_rejects_unicode_control_characters(
     assert secret not in str(caught.value)
 
 
-def test_access_token_lifetime_defaults_to_one_hour_and_is_configurable() -> None:
+def test_access_token_lifetime_defaults_to_twenty_four_hours_and_is_configurable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("JWT_ACCESS_TOKEN_TTL_SECONDS", raising=False)
     default_settings = settings_with_secret(VALID_TEST_SECRET)
     custom_settings = settings_for_test(
         database_url="postgresql+asyncpg://postgres:postgres@localhost/example",
@@ -220,7 +223,7 @@ def test_access_token_lifetime_defaults_to_one_hour_and_is_configurable() -> Non
         jwt_access_token_ttl_seconds=900,
     )
 
-    assert default_settings.jwt_access_token_ttl_seconds == 3600
+    assert default_settings.jwt_access_token_ttl_seconds == 86_400
     assert custom_settings.jwt_access_token_ttl_seconds == 900
 
 

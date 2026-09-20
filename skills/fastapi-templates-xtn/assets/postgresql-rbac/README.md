@@ -8,8 +8,12 @@ in the generated project's own environment before claiming support.
 
 ## Configure And Run
 
-From this folder, first run `python -B -m pip install --upgrade "pip>=26.2"`,
-then install with `python -B -m pip install -e ".[test]"`. Copy
+From this folder, first run
+`python -B -m pip install --upgrade "pip==26.2.1" "setuptools==84.0.0"`,
+then reproduce the official Python 3.12/Linux verification environment with
+`python -B -m pip install -c constraints-ci-py312.txt -e ".[test]"`. The
+project dependency ranges remain the adaptation contract; the constraints file
+pins only the repository's verified CI resolution. Copy
 `.env.example` to an untracked `.env` and replace every example credential and
 endpoint. Set `DATABASE_URL` for PostgreSQL/asyncpg, `REDIS_URL` for active JWT
 JTI and CAPTCHA state, and preferably a distinct `RATE_LIMIT_REDIS_URL` for
@@ -25,8 +29,9 @@ cannot choose it. `direct` is simpler but the administrator knows and privately
 delivers the final password; `temporary` adds a step but lets the user choose
 the final password. Administrator-created new users still start with a temporary
 password in either mode.
-The Access Token lasts 3600 seconds by default; choose a lifetime appropriate
-for this product. Leave `JWT_ISSUER` and `JWT_AUDIENCE` both unset unless the
+The Access Token lasts 86,400 seconds (24 hours) by default. Shorten it for
+high-risk or administrative surfaces, and choose a lifetime appropriate for
+this product. Leave `JWT_ISSUER` and `JWT_AUDIENCE` both unset unless the
 owner has explicitly accepted the extra issuer/audience restriction.
 
 With your own local database ready, run `alembic upgrade head`, then

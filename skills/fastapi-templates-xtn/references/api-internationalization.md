@@ -5,6 +5,45 @@ supports Simplified Chinese (`zh-CN`) and English (`en`) without a database
 locale column, Cookie, query parameter, or third-party translation framework.
 Additional languages are an explicit project extension.
 
+## Bundled Files And Call Flow
+
+The feature is implemented in the bundled asset, not only described here:
+
+- [`app/i18n.py`](../assets/postgresql-rbac/app/i18n.py) defines `MessageKey`,
+  validates both catalogs at import time, selects a bounded request locale,
+  translates message keys, maps validation error types, and applies language
+  response headers.
+- [`app/locales/zh-CN.json`](../assets/postgresql-rbac/app/locales/zh-CN.json)
+  contains the Simplified Chinese runtime messages.
+- [`app/locales/en.json`](../assets/postgresql-rbac/app/locales/en.json) contains
+  the English runtime messages. Both JSON files must have exactly the same keys
+  as `MessageKey`.
+- [`app/api_contract.py`](../assets/postgresql-rbac/app/api_contract.py) translates
+  stable keys while building success and error envelopes.
+- [`app/main.py`](../assets/postgresql-rbac/app/main.py) resolves the request
+  locale, localizes framework and unexpected errors, and attaches
+  `Content-Language` plus `Vary` to every HTTP response.
+- [`tests/test_i18n.py`](../assets/postgresql-rbac/tests/test_i18n.py) covers
+  catalog parity, negotiation, success/error/validation messages, headers,
+  unsafe input, and concurrent Chinese/English requests.
+
+The runtime call flow is:
+
+```text
+Accept-Language
+-> RequestObservabilityMiddleware calls locale_for_request()
+-> canonical locale is stored on request.state
+-> route/service or exception selects a stable MessageKey
+-> api_response(), error_content(), or validation_message() calls translate()
+-> response contains localized message plus Content-Language and
+   Vary: Accept-Language
+```
+
+When adding client-visible text, add a `MessageKey`, add the same key to both
+catalogs, use that key at the response boundary, and extend `test_i18n.py`.
+Rendered Chinese or English literals in routes and services bypass this flow and
+are not allowed.
+
 ## Runtime Contract
 
 The client may send the standard `Accept-Language` request header. Missing,

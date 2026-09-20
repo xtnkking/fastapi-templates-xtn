@@ -17,7 +17,7 @@ from app.captcha import CaptchaService
 from app.main import app
 from app.rate_limit import RateLimitResult
 from app.rate_limit_dependencies import RateLimitExceeded
-from app.rbac.dependencies import get_authorization_context, get_current_principal
+from app.rbac.dependencies import get_authorization_context
 from app.rbac.domain import (
     AuthoritySnapshot,
     AuthorizationContext,
@@ -138,6 +138,72 @@ async def test_registration_status_public_read_exposes_only_boolean() -> None:
     assert result.headers["Cache-Control"] == "no-store"
 
 
+async def test_public_captcha_is_scene_bound_but_not_bound_to_issuing_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captcha_id = uuid.uuid4()
+    service = AsyncMock()
+    service.authenticate.return_value = AuthenticatedPasswordUser(
+        user_id=uuid.uuid4(),
+        token_version=1,
+        must_change_password=False,
+    )
+    issue = AsyncMock(return_value=(captcha_id, "data:image/png;base64,AA=="))
+    consume = AsyncMock()
+    monkeypatch.setattr(authentication_api, "get_redis", lambda _request: object())
+    monkeypatch.setattr(CaptchaService, "issue", issue)
+    monkeypatch.setattr(authentication_api, "_consume_captcha", consume)
+    monkeypatch.setattr(
+        authentication_api,
+        "issue_access_token",
+        AsyncMock(return_value="signed-access-token"),
+    )
+    app.dependency_overrides[get_local_authentication_service] = lambda: service
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app, client=("198.51.100.10", 40100)),
+            base_url="http://test",
+        ) as issuer:
+            challenge = await issuer.post(
+                "/api/v1/auth/captcha",
+                json={"scene": "login"},
+            )
+        async with AsyncClient(
+            transport=ASGITransport(app=app, client=("198.51.100.11", 40101)),
+            base_url="http://test",
+        ) as submitter:
+            login = await submitter.post(
+                "/api/v1/auth/login",
+                json={
+                    "user_name": "Alice",
+                    "password": VALID_PASSWORD,
+                    "captcha_id": str(captcha_id),
+                    "captcha_answer": "AB234",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert challenge.status_code == 200, challenge.text
+    assert login.status_code == 200, login.text
+    issue.assert_awaited_once()
+    issue_call = issue.await_args
+    assert issue_call is not None
+    assert issue_call.kwargs["scene"] == "login"
+    assert issue_call.kwargs["owner_id"] is None
+    consume.assert_awaited_once()
+    consume_call = consume.await_args
+    assert consume_call is not None
+    assert consume_call.kwargs == {
+        "captcha_id": captcha_id,
+        "answer": "AB234",
+        "scene": "login",
+    }
+    authenticate_call = service.authenticate.await_args
+    assert authenticate_call is not None
+    assert authenticate_call.kwargs["client_ip"] == "198.51.100.11"
+
+
 async def test_three_authenticated_captcha_scenes_are_separately_admitted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -155,7 +221,6 @@ async def test_three_authenticated_captcha_scenes_are_separately_admitted(
         return context
 
     app.dependency_overrides[get_authorization_context] = current_context
-    app.dependency_overrides[get_current_principal] = lambda: context.principal
     app.dependency_overrides[get_settings] = lambda: get_settings().model_copy(
         update={"rate_limit_enabled": True}
     )
@@ -195,7 +260,6 @@ async def test_wrong_captcha_endpoint_is_metered_without_creating_an_image(
     monkeypatch.setattr(AbuseDefenseService, "check_rejected_captcha_scene", check)
     monkeypatch.setattr(CaptchaService, "issue", issue)
     app.dependency_overrides[get_authorization_context] = lambda: context
-    app.dependency_overrides[get_current_principal] = lambda: context.principal
     app.dependency_overrides[get_settings] = lambda: get_settings().model_copy(
         update={"rate_limit_enabled": True}
     )
@@ -246,7 +310,6 @@ async def test_invalid_private_captcha_body_is_metered_and_then_checks_authority
     monkeypatch.setattr(authentication_api, "get_rate_limit_redis", lambda _: object())
     monkeypatch.setattr(AbuseDefenseService, "check_rejected_captcha_scene", check)
     monkeypatch.setattr(CaptchaService, "issue", issue)
-    app.dependency_overrides[get_current_principal] = lambda: context.principal
     app.dependency_overrides[get_authorization_context] = current_context
     app.dependency_overrides[get_settings] = lambda: get_settings().model_copy(
         update={"rate_limit_enabled": True}
@@ -268,23 +331,29 @@ async def test_invalid_private_captcha_body_is_metered_and_then_checks_authority
     issue.assert_not_awaited()
 
 
-async def test_invalid_private_captcha_body_over_quota_returns_429_before_authority(
+async def test_invalid_private_captcha_body_checks_authority_before_user_quota(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = _context()
+    events: list[str] = []
     denied = RateLimitExceeded(
         "captcha_rejected_scene", RateLimitResult(False, 10, 0, 2100, 2100)
     )
-    check = AsyncMock(side_effect=denied)
-    authority_lookup = AsyncMock(side_effect=AssertionError("authority was loaded"))
+
+    async def reject_quota(*_args: object, **_kwargs: object) -> None:
+        events.append("quota")
+        raise denied
+
+    check = AsyncMock(side_effect=reject_quota)
+    authority_lookup = AsyncMock()
 
     async def current_context() -> AuthorizationContext:
         await authority_lookup()
+        events.append("authority")
         return context
 
     monkeypatch.setattr(authentication_api, "get_rate_limit_redis", lambda _: object())
     monkeypatch.setattr(AbuseDefenseService, "check_rejected_captcha_scene", check)
-    app.dependency_overrides[get_current_principal] = lambda: context.principal
     app.dependency_overrides[get_authorization_context] = current_context
     app.dependency_overrides[get_settings] = lambda: get_settings().model_copy(
         update={"rate_limit_enabled": True}
@@ -300,7 +369,8 @@ async def test_invalid_private_captcha_body_over_quota_returns_429_before_author
     assert response.json()["code"] == int(BusinessCode.RATE_LIMITED)
     assert response.headers["Retry-After"] == "3"
     check.assert_awaited_once()
-    authority_lookup.assert_not_awaited()
+    authority_lookup.assert_awaited_once()
+    assert events == ["authority", "quota"]
 
 
 async def test_invalid_public_captcha_body_is_metered_by_trusted_ip(
@@ -475,7 +545,7 @@ async def test_login_issues_access_token_only_after_password_authentication(
     assert body["data"] == {
         "access_token": "signed-access-token",
         "token_type": "bearer",
-        "expires_in": 3600,
+        "expires_in": 86_400,
         "password_change_required": False,
     }
     assert response.headers["Cache-Control"] == "no-store"

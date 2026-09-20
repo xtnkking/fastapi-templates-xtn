@@ -82,6 +82,8 @@ async def test_principal_only_path_does_not_mark_authenticated_actor(
     )
     monkeypatch.setattr(dependencies, "get_redis", Mock(return_value=AsyncMock()))
     monkeypatch.setattr(dependencies, "require_active_jti", AsyncMock(return_value=3))
+    actor_limit = AsyncMock()
+    monkeypatch.setattr(dependencies, "enforce_principal_rate_limit", actor_limit)
 
     result = await dependencies.get_current_principal(
         current_request,
@@ -91,6 +93,7 @@ async def test_principal_only_path_does_not_mark_authenticated_actor(
 
     assert result.user_id == current_claims.user_id
     assert not hasattr(current_request.state, "actor_user_id")
+    actor_limit.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -115,16 +118,27 @@ async def test_rejected_postgresql_identity_does_not_mark_actor(
             )
         ),
     )
+    revoke = AsyncMock()
+    actor_limit = AsyncMock()
+    monkeypatch.setattr(
+        dependencies,
+        "_best_effort_revoke_invalid_principal",
+        revoke,
+    )
+    monkeypatch.setattr(dependencies, "enforce_principal_rate_limit", actor_limit)
 
     with pytest.raises(RbacError) as caught:
         await dependencies.get_authorization_context(
             current_request,
             current_principal,
             cast(AsyncSession, session_with_state()),
+            get_settings(),
         )
 
     assert caught.value.status_code == 401
     assert not hasattr(current_request.state, "actor_user_id")
+    revoke.assert_awaited_once()
+    actor_limit.assert_not_awaited()
 
 
 async def test_database_failure_logs_once_without_marking_actor(
@@ -153,6 +167,7 @@ async def test_database_failure_logs_once_without_marking_actor(
             current_request,
             current_principal,
             cast(AsyncSession, session),
+            get_settings(),
         )
 
     assert caught.value.status_code == 503
@@ -175,20 +190,36 @@ async def test_successful_authorization_context_marks_actor(
 ) -> None:
     current_request = request()
     current_principal = principal()
+    events: list[str] = []
+
+    async def load_current_authority(
+        *_args: object,
+        **_kwargs: object,
+    ) -> AuthoritySnapshot:
+        events.append("database")
+        return authority(current_principal)
+
     monkeypatch.setattr(
         dependencies,
         "load_authority_snapshot",
-        AsyncMock(return_value=authority(current_principal)),
+        load_current_authority,
     )
+
+    async def actor_limit(*_args: object, **_kwargs: object) -> None:
+        events.append("actor_limit")
+
+    monkeypatch.setattr(dependencies, "enforce_principal_rate_limit", actor_limit)
 
     context = await dependencies.get_authorization_context(
         current_request,
         current_principal,
         cast(AsyncSession, session_with_state()),
+        get_settings(),
     )
 
     assert context.principal == current_principal
     assert current_request.state.actor_user_id == str(current_principal.user_id)
+    assert events == ["database", "actor_limit"]
 
 
 async def test_audit_log_failure_does_not_replace_permission_denial(

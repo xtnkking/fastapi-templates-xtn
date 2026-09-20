@@ -171,12 +171,12 @@ slot behavior, or concurrency.
 | Fixed-window core | One per-business key, atomic first `INCR`/`EXPIRE`/remaining PTTL, finite TTL, full quota restored at expiry |
 | Concurrency | No more than the configured number of calls are admitted inside one window; no global or cross-business bucket exists |
 | Key privacy | Raw IP, account, user, target, HMAC digest, and complete key never reach logs or responses |
-| API composition | Each protected operation invokes its own named per-actor dependency; no coarse all-API middleware runs |
+| API composition | After JWT and active-JTI validation, an exhausted named actor window is rejected by a non-mutating inspection before PostgreSQL; an open window is incremented only after current-account validation. Invalid/inactive identities spend no actor bucket, and no coarse all-API middleware runs |
 | Login defense | Trusted IP for that business is the only quota subject; no account-only, pair, global, or login-failure risk counter exists |
 | Login orchestration | `IdentityAbuseFlow.authenticate` admits first, invokes one real-or-dummy credential callback, maps `None` to generic denial, and the Token issuer runs only afterward |
 | Registration | One per-IP registration check runs before product side effects |
 | Registration orchestration | `IdentityAbuseFlow.register` never invokes `registration_action` after a denial or unavailable Redis decision |
-| Graphical CAPTCHA | Fixed scenes `login`, `register`, `admin_create`, `admin_reset`, `self_change`; public `/api/v1/auth/captcha` versus authenticated `/api/v1/me/captcha`; per-scene issuance quota, expiry, wrong-answer consume, owner binding, atomic one-winner refresh/submit, safe image response |
+| Graphical CAPTCHA | Fixed scenes `login`, `register`, `admin_create`, `admin_reset`, `self_change`; public `/api/v1/auth/captcha` versus authenticated `/api/v1/me/captcha`; per-scene issuance quota, expiry, wrong-answer consume, private owner binding, public challenge acceptance after an issuing-IP change, atomic one-winner refresh/submit, safe image response |
 | Rejected CAPTCHA scene | Valid scene at the wrong issue endpoint or parsed invalid CAPTCHA body: one independent 10-per-five-minute rejection quota keyed on trusted IP or authenticated actor, no image or normal-scene quota consumed, `429001` on excess and `503001` for unavailable limiter authority; admitted private invalid bodies still complete normal identity validation before `422`, while invalid JSON syntax fails before authentication dependencies; no global bucket |
 | Optional delivery extensions | Email/SMS/MFA are not bundled and need a future product decision and tests |
 
@@ -372,7 +372,7 @@ Also test:
 - the default exact `sub`/`jti`/`iat`/`exp`/`token_type` profile, the
   explicitly consented profile adding both `iss` and `aud`, rejection of a
   partial pair or profile mismatch, preservation of an existing configured pair,
-  configurable one-hour default, canonical selected-policy subject and UUIDv4
+  configurable 24-hour default, canonical selected-policy subject and UUIDv4
   JTI, startup rejection of weak/example secrets, 4096-byte input and output
   limits, registration-before-return without a Redis record on oversized output,
   exact Redis record, outage, confirmed current-Token logout, account-wide logout

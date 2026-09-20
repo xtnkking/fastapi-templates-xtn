@@ -50,6 +50,11 @@ operation exists.
   by submitted username, target account, email, challenge ID, or user-supplied
   forwarding header. A `GET` registration-state endpoint may be public but must
   return only `registration_enabled`, never business data.
+- The trusted IP selects the public CAPTCHA issuance and login/registration
+  rate-limit buckets; it is not stored as challenge ownership. A public
+  challenge remains usable if a VPN or mobile-network exit changes between
+  issue and submit. Scene, five-minute TTL, and atomic one-use consumption still
+  apply.
 - For authenticated routes, key on the fixed operation name and the canonical
   user ID loaded by authentication. Administrative operations use the actor ID,
   not the target ID. A separate key per operation prevents activity in one
@@ -86,12 +91,50 @@ end
 return {count, redis.call('PTTL', KEYS[1])}
 ```
 
-Validate the script result strictly and reject a missing/invalid PTTL. A request
-is admitted only when `count <= limit`. Calls over the limit still increment
-until the window expires; this is a simple fixed window, not a Token Bucket.
+Validate the script result strictly and reject a missing/invalid PTTL. At the
+authoritative admission step, a request is admitted only when `count <= limit`;
+calls that reach this step after the limit still increment until the window
+expires. The authenticated read-only precheck below is the deliberate exception:
+once it observes an exhausted window, it rejects without another increment or
+database read. This remains a simple fixed window, not a Token Bucket.
 Do not silently treat zero or negative limits/windows as disabling protection.
-Run Redis admission before opening PostgreSQL authorization locks. A limiter
-outage is not permission to proceed.
+For anonymous login/registration, run the trusted-IP Redis admission before
+password work or PostgreSQL writes. For authenticated business routes other
+than current-Token logout, first validate JWT shape/signature/time and the Redis
+active JTI. Before PostgreSQL, atomically inspect the existing named
+operation-and-actor window without creating or incrementing it. If its current
+count already equals or exceeds the limit, return `429001` immediately; this
+keeps a still-active stolen Token from repeatedly reaching PostgreSQL after the
+user's business window is exhausted. A missing or open window continues to
+PostgreSQL. Only after the database snapshot confirms the account is active and
+its token version is current does the normal atomic `INCR` charge the quota,
+before business mutation locks. Concurrent requests may all observe the last
+open slot, but the authoritative increment still admits no more than the
+configured count; only that bounded race can perform extra account reads.
+
+A forged or already revoked Token therefore does not reach PostgreSQL, while a
+disabled/stale identity does not newly consume the legitimate user's business
+bucket. Best-effort compare-and-delete the exact JTI rejected by PostgreSQL so
+its next use stops at Redis. One explicit tradeoff remains: if an exact JTI is
+still present in Redis while its database identity has become stale and the
+same operation window is already exhausted, the non-mutating precheck returns
+`429001` until the window expires instead of doing another database read to
+rediscover `401001`. It neither creates nor increments the user's bucket.
+Avoiding that temporary status precedence would require reservation and
+rollback logic outside this simple fixed-window baseline. Current-Token logout
+is the narrow Redis-only exception: after its named actor quota admits the
+still-active JTI, immediately compare-and-delete that exact JTI without a
+PostgreSQL authorization read. Limiter outage is not permission to proceed.
+
+The authenticated CAPTCHA route keeps its three scene quotas separate. After
+active-JTI validation and before PostgreSQL, parse the closed request schema and
+inspect `captcha_create_admin_create`, `captcha_create_admin_reset`, or
+`captcha_create_self_change` for a valid private scene. A malformed body or a
+public scene sent to that endpoint inspects the independent
+`captcha_rejected_scene` actor window. These inspections never increment. After
+current-account validation, the existing route path performs the authoritative
+increment for the same selected window. Do not replace this with one generic
+authenticated-CAPTCHA bucket that would make the scenes consume one another.
 
 Keep Redis keys private:
 `rl:v2:{<static_namespace>}:<business>:<subject_type>:<hmac_sha256>`.
@@ -133,5 +176,11 @@ uses its separate per-subject quota, never creates an image, cannot consume a
 valid scene's quota, and fails closed when Redis is unavailable. Also prove that
 parsed invalid fields consume this rejection quota, while a private admitted
 invalid request still completes normal identity validation before its `422`.
-Tests for local
+For authenticated routes, prove the read-only precheck never creates or
+increments a bucket, an exhausted bucket avoids PostgreSQL, an open bucket is
+charged only after current-account validation, and concurrent last-slot
+requests still admit no more than the configured total. Prove all three private
+CAPTCHA scenes inspect their own exact windows, while invalid/wrong-endpoint
+requests inspect the rejection window; none may hit PostgreSQL after its
+selected window is exhausted. Tests for local
 quota denial cannot substitute for PostgreSQL RBAC/transaction tests.

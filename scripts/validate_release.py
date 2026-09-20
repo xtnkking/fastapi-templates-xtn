@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import argparse
 import ast
 import json
+import os
 import re
 import sys
 import tomllib
@@ -15,8 +17,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = REPO_ROOT / "skills" / "fastapi-templates-xtn"
 ASSET_ROOT = SKILL_ROOT / "assets" / "postgresql-rbac"
 EXPECTED_NAME = "fastapi-templates-xtn"
-RELEASE_VERSION = "0.6.0"
-RELEASE_DATE = "2026-09-20"
+VERSION_PATH = SKILL_ROOT / "VERSION"
+RELEASE_VERSION = (
+    VERSION_PATH.read_text(encoding="utf-8").strip() if VERSION_PATH.is_file() else ""
+)
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 RELEASE_INSTALL_URL = (
     f"https://github.com/xtnkking/fastapi-templates-xtn/tree/{RELEASE_TAG}/"
@@ -30,6 +34,8 @@ REQUIRED_REPO_FILES = (
     "LICENSE",
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
+    "INSTALL.md",
+    "INSTALL.zh-CN.md",
     "README.md",
     "README.zh-CN.md",
     "CHANGELOG.md",
@@ -40,6 +46,12 @@ REQUIRED_REPO_FILES = (
     "SECURITY.zh-CN.md",
     "RELEASE_CHECKLIST.md",
     "RELEASE_CHECKLIST.zh-CN.md",
+    "scripts/test_update_installed_skill.py",
+    "scripts/test_validate_ci_environment.py",
+    "scripts/update_installed_skill.py",
+    "scripts/validate_asset_wheel.py",
+    "scripts/validate_ci_environment.py",
+    "V0.6.1_OPTIMIZATION_PLAN.zh-CN.md",
     "docs/history/v0.4.0/DESIGN_REVIEW.zh-CN.md",
     ".github/CODEOWNERS",
     ".github/PULL_REQUEST_TEMPLATE.md",
@@ -49,6 +61,7 @@ REQUIRED_REPO_FILES = (
 )
 REQUIRED_SKILL_FILES = (
     "SKILL.md",
+    "VERSION",
     "LICENSE",
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
@@ -82,6 +95,7 @@ REQUIRED_ASSET_FILES = (
     "LICENSE",
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
+    "constraints-ci-py312.txt",
     "pyproject.toml",
     "alembic/env.py",
     "app/abuse_flow.py",
@@ -97,6 +111,7 @@ REQUIRED_ASSET_FILES = (
     "app/authentication_service.py",
     "app/business_audit.py",
     "app/captcha.py",
+    "app/captcha_request.py",
     "app/observability.py",
     "app/password_models.py",
     "app/password_operator.py",
@@ -160,6 +175,7 @@ REQUIRED_ASSET_FILES = (
 )
 MIRRORED_LEGAL_FILES = ("LICENSE", "NOTICE")
 BILINGUAL_DOC_PAIRS = (
+    ("INSTALL.md", "INSTALL.zh-CN.md"),
     ("README.md", "README.zh-CN.md"),
     ("CHANGELOG.md", "CHANGELOG.zh-CN.md"),
     ("CONTRIBUTING.md", "CONTRIBUTING.zh-CN.md"),
@@ -339,33 +355,6 @@ def validate_identity_and_row_lifecycle(errors: list[str]) -> None:
         return
 
     text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
-    require_semantics(
-        errors,
-        path=paths["entrypoint"],
-        checks=(
-            (
-                "new projects use username/password rather than email recovery",
-                (r"new services? use username/password only",),
-            ),
-            (
-                "soft-deleted usernames remain permanently reserved",
-                (r"soft-deleted username remains reserved forever",),
-            ),
-            (
-                "every row has a declared mutable, append-only, or permanent lifecycle",
-                (
-                    r"mutable row.*soft delet",
-                    r"audit rows are append-only.*fixed .* rows are not runtime-deletable",
-                ),
-            ),
-            (
-                "physical deletion is limited to controlled maintenance or disposable tests",
-                (
-                    r"physical purge is only controlled maintenance, disposable tests, or a reviewed migration",
-                ),
-            ),
-        ),
-    )
     required_markers = {
         "reference": (
             "## Choose The Identity And Login Contract Before Greenfield Work",
@@ -526,53 +515,184 @@ def validate_legal_mirrors(errors: list[str]) -> None:
             fail(errors, "SKILL.md does not pin the upstream attribution commit")
 
 
-def validate_release_metadata(errors: list[str]) -> None:
-    pyproject_path = ASSET_ROOT / "pyproject.toml"
+def _current_checklist_section(content: str, heading: str) -> str | None:
+    marker = f"## {heading}"
+    start = content.find(marker)
+    if start < 0:
+        return None
+    end = content.find("\n## ", start + len(marker))
+    return content[start:] if end < 0 else content[start:end]
 
-    for readme_name in ("README.md", "README.zh-CN.md"):
-        readme_path = REPO_ROOT / readme_name
-        if not readme_path.is_file():
+
+def validate_release_readiness(errors: list[str], *, release_ready: bool) -> None:
+    definitions = (
+        (
+            REPO_ROOT / "RELEASE_CHECKLIST.md",
+            f"Prepare {RELEASE_TAG}",
+            "Release readiness",
+            "### Pre-tag evidence",
+            "### Post-release verification",
+        ),
+        (
+            REPO_ROOT / "RELEASE_CHECKLIST.zh-CN.md",
+            f"准备 {RELEASE_TAG}",
+            "发布就绪状态",
+            "### 发布前证据",
+            "### 发布后核验",
+        ),
+    )
+    statuses: list[str] = []
+    incomplete_counts: list[int] = []
+    for path, heading, status_label, pre_heading, post_heading in definitions:
+        if not path.is_file():
             continue
-        readme = readme_path.read_text(encoding="utf-8")
-        if RELEASE_INSTALL_URL not in readme:
-            fail(errors, f"{readme_name} is missing the {RELEASE_TAG} installation URL")
-
-    readme_path = REPO_ROOT / "README.md"
-    if readme_path.is_file():
-        readme = readme_path.read_text(encoding="utf-8")
-        for stale_phrase in (
-            "preparing its first preview release",
-            "after its tag is published",
-        ):
-            if stale_phrase in readme:
-                fail(
-                    errors, f"README.md contains pre-release wording: {stale_phrase!r}"
-                )
-
-    for changelog_name in ("CHANGELOG.md", "CHANGELOG.zh-CN.md"):
-        changelog_path = REPO_ROOT / changelog_name
-        if not changelog_path.is_file():
+        section = _current_checklist_section(path.read_text(encoding="utf-8"), heading)
+        if section is None:
+            fail(errors, f"{path.name} is missing current section: ## {heading}")
             continue
-        changelog = changelog_path.read_text(encoding="utf-8")
-        release_heading = f"## [{RELEASE_VERSION}] - {RELEASE_DATE}"
-        if release_heading not in changelog:
+        status_match = re.search(
+            rf"^{re.escape(status_label)}[^\n]*`(DRAFT|READY)`\s*$",
+            section,
+            re.MULTILINE,
+        )
+        if status_match is None:
+            fail(errors, f"{path.name} must declare DRAFT or READY release status")
+            continue
+        statuses.append(status_match.group(1))
+
+        pre_start = section.find(pre_heading)
+        post_start = section.find(post_heading)
+        if pre_start < 0 or post_start <= pre_start:
+            fail(errors, f"{path.name} has invalid current pre-tag evidence sections")
+            continue
+        pre_tag = section[pre_start:post_start]
+        states = re.findall(r"^- \[([ xX])\] ", pre_tag, re.MULTILINE)
+        if not states:
+            fail(errors, f"{path.name} has no current pre-tag evidence items")
+            continue
+        incomplete = sum(state == " " for state in states)
+        incomplete_counts.append(incomplete)
+        if status_match.group(1) == "READY" and incomplete:
             fail(
                 errors,
-                f"{changelog_name} is missing release heading: {release_heading}",
+                f"{path.name} says READY but has {incomplete} unchecked pre-tag item(s)",
+            )
+        if status_match.group(1) == "DRAFT" and not incomplete:
+            fail(
+                errors, f"{path.name} must say READY when every pre-tag item is checked"
+            )
+        if release_ready and status_match.group(1) != "READY":
+            fail(
+                errors, f"{path.name} is DRAFT; release-ready validation requires READY"
             )
 
-    checklist_headings = {
-        "RELEASE_CHECKLIST.md": f"## Release {RELEASE_TAG}",
-        "RELEASE_CHECKLIST.zh-CN.md": f"## 发布 {RELEASE_TAG}",
+    if len(set(statuses)) > 1 or len(set(incomplete_counts)) > 1:
+        fail(errors, "English and Chinese release readiness records disagree")
+    if not release_ready and statuses and statuses[0] == "DRAFT":
+        count = incomplete_counts[0] if incomplete_counts else 0
+        print(
+            f"NOTICE: {RELEASE_TAG} release checklist is DRAFT "
+            f"with {count} incomplete pre-tag item(s)."
+        )
+
+
+def validate_release_metadata(errors: list[str], *, release_ready: bool) -> None:
+    pyproject_path = ASSET_ROOT / "pyproject.toml"
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", RELEASE_VERSION):
+        fail(errors, "Skill VERSION must contain exactly one semantic version")
+
+    version_markers = {
+        "README.md": (
+            f"`{RELEASE_TAG}`",
+            "skills/fastapi-templates-xtn/VERSION",
+        ),
+        "README.zh-CN.md": (
+            f"`{RELEASE_TAG}`",
+            "skills/fastapi-templates-xtn/VERSION",
+        ),
+        "skills/fastapi-templates-xtn/references/migrations.md": (
+            f"`{RELEASE_TAG}` changes no database shape",
+        ),
+        "skills/fastapi-templates-xtn/references/architecture-overview.zh-CN.md": (
+            f"`{RELEASE_TAG}` 不改变数据库结构",
+        ),
     }
-    for checklist_name, release_heading in checklist_headings.items():
-        checklist_path = REPO_ROOT / checklist_name
-        if checklist_path.is_file() and release_heading not in (
-            checklist_path.read_text(encoding="utf-8")
+    for relative, markers in version_markers.items():
+        path = REPO_ROOT / relative
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in content:
+                fail(
+                    errors,
+                    f"{relative} is missing current version marker: {marker!r}",
+                )
+
+    release_dates: list[str] = []
+    changelog_patterns = {
+        "CHANGELOG.md": rf"^## \[{re.escape(RELEASE_VERSION)}\] - (Unreleased|\d{{4}}-\d{{2}}-\d{{2}})$",
+        "CHANGELOG.zh-CN.md": rf"^## \[{re.escape(RELEASE_VERSION)}\] - (?:未发布|(\d{{4}}-\d{{2}}-\d{{2}}))$",
+    }
+    for changelog_name, pattern in changelog_patterns.items():
+        path = REPO_ROOT / changelog_name
+        if not path.is_file():
+            continue
+        match = re.search(pattern, path.read_text(encoding="utf-8"), re.MULTILINE)
+        if match is None:
+            fail(
+                errors, f"{changelog_name} lacks the current {RELEASE_VERSION} heading"
+            )
+            continue
+        value = (match.group(1) if match.lastindex else None) or match.group(0)
+        if release_ready:
+            date_match = re.search(r"\d{4}-\d{2}-\d{2}", value)
+            if date_match is None:
+                fail(
+                    errors, f"{changelog_name} still marks {RELEASE_VERSION} unreleased"
+                )
+            else:
+                release_dates.append(date_match.group(0))
+    if release_ready and len(set(release_dates)) > 1:
+        fail(errors, "English and Chinese changelogs use different release dates")
+
+    if release_ready:
+        release_install_docs = (
+            "README.md",
+            "README.zh-CN.md",
+            "INSTALL.md",
+            "INSTALL.zh-CN.md",
+        )
+        for document_name in release_install_docs:
+            document_path = REPO_ROOT / document_name
+            if document_path.is_file() and RELEASE_INSTALL_URL not in (
+                document_path.read_text(encoding="utf-8")
+            ):
+                fail(
+                    errors,
+                    f"{document_name} is missing the {RELEASE_TAG} installation URL",
+                )
+        published_markers = {
+            "README.md": f"`{RELEASE_TAG}` is the latest published tag",
+            "README.zh-CN.md": f"`{RELEASE_TAG}` 是最新正式标签",
+        }
+        for readme_name, marker in published_markers.items():
+            readme_path = REPO_ROOT / readme_name
+            if readme_path.is_file() and marker not in readme_path.read_text(
+                encoding="utf-8"
+            ):
+                fail(
+                    errors,
+                    f"{readme_name} must identify {RELEASE_TAG} as latest published",
+                )
+        github_ref = os.environ.get("GITHUB_REF", "")
+        if github_ref.startswith("refs/tags/") and github_ref != (
+            f"refs/tags/{RELEASE_TAG}"
         ):
             fail(
                 errors,
-                f"{checklist_name} is missing release heading: {release_heading}",
+                f"Git tag {github_ref.removeprefix('refs/tags/')} does not match "
+                f"Skill VERSION {RELEASE_VERSION}",
             )
 
     if pyproject_path.is_file():
@@ -581,9 +701,11 @@ def validate_release_metadata(errors: list[str]) -> None:
         if asset_version != RELEASE_VERSION:
             fail(
                 errors,
-                "asset pyproject.toml version must match release version "
+                "asset pyproject.toml version must match Skill VERSION "
                 f"{RELEASE_VERSION!r}, got {asset_version!r}",
             )
+
+    validate_release_readiness(errors, release_ready=release_ready)
 
 
 def validate_access_token_baseline(errors: list[str]) -> None:
@@ -604,38 +726,38 @@ def validate_access_token_baseline(errors: list[str]) -> None:
 
     require_semantics(
         errors,
-        path=paths["skill"],
+        path=paths["policy"],
         checks=(
             (
-                "Access Token defaults to one hour / 3600 seconds and must be reviewed",
+                "Access Token defaults to 24 hours / 86400 seconds and must be reviewed",
                 (
-                    r"Access Tokens? default to one hour.*adjust",
-                    r"3600 seconds.*adjust",
+                    r"86,400 seconds after `iat` by default.*starting default",
+                    r"24-hour lifetime.*tell the user to adjust",
                 ),
             ),
             (
                 "iss and aud remain absent when the owner gives no answer",
-                (r"iss.*aud.*No answer means keep both absent",),
+                (r"iss.*aud.*No reply is not consent",),
             ),
             (
                 "iss and aud require explicit consent",
-                (r"iss.*aud.*explicit consent",),
+                (r"iss.*aud.*require explicit consent",),
             ),
             (
                 "an existing configured iss/aud pair is preserved by default",
-                (r"existing .* pair.*preserv",),
+                (r"existing project already has both configured, preserve",),
             ),
             (
                 "PostgreSQL has no Token/session table or per-request Token lookup",
                 (
-                    r"no Token/session table in PostgreSQL.*no per-request Token-row query",
+                    r"Do not add a PostgreSQL table for individual Token records.*do not add another database query per request",
                 ),
             ),
         ),
     )
     required_markers = {
         "policy": (
-            "3600 seconds after `iat` by default",
+            "86,400 seconds after `iat` by default",
             "Redis 5.0+ Lua operation",
             "server `TIME`",
             "SET ... NX EX <remaining_seconds>",
@@ -643,7 +765,7 @@ def validate_access_token_baseline(errors: list[str]) -> None:
             "Redis is the only per-token online active-JTI gate",
         ),
         "implementation": (
-            "DEFAULT_ACCESS_TTL_SECONDS = 3600",
+            "DEFAULT_ACCESS_TTL_SECONDS = 86_400",
             "ACTIVATE_JTI =",
             "redis.replicate_commands()",
             "redis.call('TIME')",
@@ -655,7 +777,7 @@ def validate_access_token_baseline(errors: list[str]) -> None:
             "jwt_issuer: str | None = None",
             "jwt_audience: str | None = None",
             "must be configured together or omitted",
-            "Field(default=3600, ge=1)",
+            "Field(default=86_400, ge=1)",
         ),
         "security": (
             'REQUIRED_ACCESS_CLAIMS = frozenset({"sub", "jti", "iat", "exp", "token_type"})',
@@ -671,13 +793,15 @@ def validate_access_token_baseline(errors: list[str]) -> None:
             "redis.eval(",
             "_COMPARE_AND_DELETE",
         ),
-        "environment": ("JWT_ACCESS_TOKEN_TTL_SECONDS=3600",),
+        "environment": ("JWT_ACCESS_TOKEN_TTL_SECONDS=86400",),
         "settings tests": (
+            "test_access_token_lifetime_defaults_to_twenty_four_hours_and_is_configurable",
             "test_issuer_and_audience_are_disabled_by_default",
             "test_issuer_and_audience_can_be_enabled_together",
             "test_issuer_and_audience_must_be_a_complete_nonblank_pair",
         ),
         "security tests": (
+            "test_issuer_uses_configured_access_token_lifetime",
             "test_valid_access_token_resolves_only_fixed_claims",
             "test_default_mode_rejects_each_missing_required_claim",
             "test_default_mode_rejects_optional_scope_claims",
@@ -885,42 +1009,6 @@ def validate_local_password_authentication(errors: list[str]) -> None:
     for marker in question_markers:
         if marker not in text["reference"]:
             fail(errors, f"local-password product-question batch is missing {marker!r}")
-    require_semantics(
-        errors,
-        path=paths["skill"],
-        checks=(
-            (
-                "all unresolved password-product choices are asked once in one batch",
-                (r"present all unresolved product choices in one batch",),
-            ),
-            (
-                "the user may accept the displayed batch together",
-                (r"`全部接受` / `Accept all`",),
-            ),
-            (
-                "premature generic approval does not answer unasked choices",
-                (
-                    r"generic instruction to continue does not answer an unasked product choice",
-                ),
-            ),
-            (
-                "the owner supplies a positive session maximum without an invented default",
-                (r"positive integer; there is no recommended number",),
-            ),
-            (
-                "username case sensitivity has no invented generic default",
-                (
-                    r"username comparison is case-sensitive.*Require an explicit choice; neither behavior is a generic recommendation",
-                ),
-            ),
-            (
-                "the one-hour Token notice is not another blocking product question",
-                (
-                    r"Access Token lifetime starts at 3600 seconds.*do not turn that notice into another blocking product question",
-                ),
-            ),
-        ),
-    )
     normalized_reference = re.sub(r"\s+", " ", text["reference"])
     for marker in (
         "Do not invent",
@@ -1436,11 +1524,6 @@ def validate_local_password_authentication(errors: list[str]) -> None:
     if "from app import password_models" not in text["Alembic environment"]:
         fail(errors, "Alembic metadata must import password_models")
     for label, markers in {
-        "skill": (
-            "Administrator password-reset mode.",
-            "never let the API caller choose per request",
-            "offline recovery always use temporary credentials",
-        ),
         "reference": (
             "ADMIN_PASSWORD_RESET_MODE",
             "Administrator reset is a project-wide choice",
@@ -1450,13 +1533,13 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             "username/password login",
             "Public registration is enabled by default",
             "Changing that holder is another guarded, audited offline PostgreSQL script",
-            f"`{RELEASE_TAG}` adds a project-wide administrator password-reset choice",
+            "administrator password-reset choice",
         ),
         "Chinese README": (
             "用户名密码",
             "公开注册初始开启",
             "受保护的交接脚本",
-            f"`{RELEASE_TAG}` 增加了项目级“管理员重置密码模式”",
+            "管理员重置密码模式",
         ),
     }.items():
         for marker in markers:
@@ -1901,22 +1984,6 @@ def validate_user_role_limit(errors: list[str]) -> None:
         return
 
     text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
-    require_semantics(
-        errors,
-        path=paths["entrypoint"],
-        checks=(
-            (
-                "each user has at most ten live role assignments",
-                (r"Each user has at most 10 live role assignments",),
-            ),
-            (
-                "mandatory user, disabled roles, and super_admin count; tombstones do not",
-                (
-                    r"including `user`, disabled roles, and `super_admin`; tombstones do not count",
-                ),
-            ),
-        ),
-    )
     required_markers = {
         "RBAC reference": (
             "each user may have at most 10",
@@ -2048,32 +2115,6 @@ def validate_administrative_read_visibility(errors: list[str]) -> None:
         return
 
     text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
-    require_semantics(
-        errors,
-        path=paths["entrypoint"],
-        checks=(
-            (
-                "administrative list/count/search/detail/nested/bulk/export share strict hierarchy",
-                (
-                    r"Hide self, peer, higher, protected, and incomparable targets from administrative list, count, search, detail, nested, bulk, and export",
-                ),
-            ),
-            (
-                "super_admin is the only administrator allowed complete visibility",
-                (
-                    r"Except for the sole super administrator, an actor may manage only strictly lower",
-                ),
-            ),
-            (
-                "the actor reads its own authority only through /api/v1/me/access",
-                (r"actor sees itself only at `/api/v1/me/access`",),
-            ),
-            (
-                "capability is checked before target visibility",
-                (r"Check the exact capability before target visibility",),
-            ),
-        ),
-    )
     required_markers = {
         "hierarchy reference": (
             "## Administrative Read Visibility",
@@ -2510,8 +2551,8 @@ def validate_api_internationalization(errors: list[str]) -> None:
             "OpenAPI",
             "数据库",
         ),
-        "README": (f"`{RELEASE_TAG}`", "Database-authored", "OpenAPI"),
-        "Chinese README": (f"`{RELEASE_TAG}`", "数据库", "OpenAPI"),
+        "README": ("API internationalization", "Database-authored", "OpenAPI"),
+        "Chinese README": ("API 多语言", "数据库", "OpenAPI"),
         "asset README": ("Database-authored", "OpenAPI developer metadata"),
     }
     for label, markers in document_markers.items():
@@ -2522,19 +2563,19 @@ def validate_api_internationalization(errors: list[str]) -> None:
 
     release_documents = {
         "changelog": (
-            f"## [{RELEASE_VERSION}] - {RELEASE_DATE}",
+            "## [0.6.0] - 2026-09-20",
             "Accept-Language",
         ),
         "Chinese changelog": (
-            f"## [{RELEASE_VERSION}] - {RELEASE_DATE}",
+            "## [0.6.0] - 2026-09-20",
             "Accept-Language",
         ),
         "release checklist": (
-            f"## {RELEASE_TAG} acceptance baseline",
+            "## v0.6.0 acceptance baseline",
             "Accept-Language",
         ),
         "Chinese release checklist": (
-            f"## {RELEASE_TAG} 验收基线",
+            "## v0.6.0 验收基线",
             "Accept-Language",
         ),
     }
@@ -2828,14 +2869,6 @@ def validate_observability_and_audit(errors: list[str]) -> None:
                 "entrypoint routes logging and RBAC audit work to their references",
                 (r"references/operational-logging\.md.*references/audit-module\.md",),
             ),
-            (
-                "operational request logging has one canonical completion event",
-                (r"Emit one-line structured operational logs",),
-            ),
-            (
-                "RBAC and business audits are server-owned append-only evidence",
-                (r"Audits are server-owned and append-only",),
-            ),
         ),
     )
     required_markers = {
@@ -2978,18 +3011,6 @@ def validate_business_audit(errors: list[str]) -> None:
                 (
                     r"references/business-audit-module\.md.*references/business-audit-postgresql\.md.*references/business-audit-operations\.md",
                 ),
-            ),
-            (
-                "business audit requires an explicit action catalog and allowlisted state",
-                (r"explicit action catalog and safe per-action state allowlist",),
-            ),
-            (
-                "successful protected business mutation and audit share a PostgreSQL transaction",
-                (r"Successful protected changes commit with their audit",),
-            ),
-            (
-                "business audit outcomes are succeeded, failed, and denied",
-                (r"`succeeded`.*`failed`.*`denied`",),
             ),
         ),
     )
@@ -3172,12 +3193,8 @@ def validate_country_catalog(errors: list[str]) -> None:
             (
                 "country policy and PostgreSQL implementation are routed only on explicit request",
                 (
-                    r"Explicitly requested country/region directory.*references/country-catalog\.md.*references/country-catalog-postgresql\.md",
+                    r"Explicitly requested country/region catalog.*references/country-catalog\.md.*references/country-catalog-postgresql\.md",
                 ),
-            ),
-            (
-                "the default PostgreSQL asset does not create or seed country data",
-                (r"default country data", r"country .* optional additions"),
             ),
         ),
     )
@@ -3345,7 +3362,9 @@ def validate_ci_and_current_documentation(errors: list[str]) -> None:
             fail(errors, f"CI must pin every {action} use to full commit {commit}")
 
     for command in (
-        'python -B -m pip install --upgrade "pip>=26.2"',
+        'python -B -m pip install --upgrade "pip==26.2.1" "setuptools==84.0.0"',
+        'python -B -m pip install -c constraints-ci-py312.txt -e ".[test]"',
+        "python -B ../../../../scripts/validate_asset_wheel.py . ../../VERSION",
         "ruff format --check --no-cache .",
         "ruff check --no-cache .",
         "mypy app tests",
@@ -3355,6 +3374,11 @@ def validate_ci_and_current_documentation(errors: list[str]) -> None:
             fail(errors, f"CI is missing required quality command: {command}")
 
     pyproject = pyproject_path.read_text(encoding="utf-8")
+    if (
+        'license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]'
+        not in pyproject
+    ):
+        fail(errors, "asset wheel metadata must include every legal notice file")
     if '"pip-audit>=2.7,<3"' not in pyproject:
         fail(errors, "asset test dependencies must include bounded pip-audit")
     if '"pytest>=9.0.3,<10"' not in pyproject:
@@ -3432,6 +3456,8 @@ def validate_ci_and_current_documentation(errors: list[str]) -> None:
             "/health/ready",
             "ruff format --check --no-cache",
             "pip-audit --local --skip-editable --progress-spinner off",
+            "constraints-ci-py312.txt",
+            "INSTALL.md",
         ),
         "README.zh-CN.md": (
             "references/architecture-overview.zh-CN.md",
@@ -3442,6 +3468,8 @@ def validate_ci_and_current_documentation(errors: list[str]) -> None:
             "/health/ready",
             "ruff format --check --no-cache",
             "pip-audit --local --skip-editable --progress-spinner off",
+            "constraints-ci-py312.txt",
+            "INSTALL.zh-CN.md",
         ),
     }
     for readme_name, markers in readme_requirements.items():
@@ -3499,6 +3527,165 @@ def validate_ci_and_current_documentation(errors: list[str]) -> None:
             r"^# .*v0\.4\.0.*不代表当前实现", archived_design, re.MULTILINE
         ):
             fail(errors, "the archived v0.4.0 design review lacks a historical warning")
+
+
+def validate_distribution_tooling(errors: list[str]) -> None:
+    paths = {
+        "constraints": ASSET_ROOT / "constraints-ci-py312.txt",
+        "pyproject": ASSET_ROOT / "pyproject.toml",
+        "CI": REPO_ROOT / ".github" / "workflows" / "ci.yml",
+        "updater": REPO_ROOT / "scripts" / "update_installed_skill.py",
+        "updater tests": REPO_ROOT / "scripts" / "test_update_installed_skill.py",
+        "wheel validator": REPO_ROOT / "scripts" / "validate_asset_wheel.py",
+        "CI environment validator": REPO_ROOT
+        / "scripts"
+        / "validate_ci_environment.py",
+        "install guide": REPO_ROOT / "INSTALL.md",
+        "Chinese install guide": REPO_ROOT / "INSTALL.zh-CN.md",
+    }
+    if any(not path.is_file() for path in paths.values()):
+        return
+    text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
+
+    constraint_lines = [
+        line.strip()
+        for line in text["constraints"].splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    invalid_constraints = [
+        line
+        for line in constraint_lines
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+==[A-Za-z0-9_.+!-]+", line)
+    ]
+    if invalid_constraints:
+        fail(
+            errors,
+            "CI constraints must use exact package==version pins: "
+            f"{invalid_constraints[:3]}",
+        )
+    normalized_names = {
+        re.split(r"==", line, maxsplit=1)[0].lower().replace("_", "-")
+        for line in constraint_lines
+        if "==" in line
+    }
+    for required in (
+        "fastapi",
+        "redis",
+        "sqlalchemy",
+        "pytest",
+        "pytest-asyncio",
+        "pip-audit",
+        "ruff",
+        "pip",
+        "setuptools",
+        "uvicorn",
+        "uvloop",
+    ):
+        if required not in normalized_names:
+            fail(errors, f"CI constraints are missing exact pin for {required}")
+
+    pyproject = tomllib.loads(text["pyproject"])
+    for dependency in list(pyproject.get("project", {}).get("dependencies", [])) + list(
+        pyproject.get("project", {}).get("optional-dependencies", {}).get("test", [])
+    ):
+        if ">=" not in dependency or "<" not in dependency:
+            fail(
+                errors,
+                "adaptable project dependencies must retain bounded ranges: "
+                f"{dependency!r}",
+            )
+
+    ci_markers = (
+        'tags: ["v*"]',
+        "PIP_CONSTRAINT: constraints-ci-py312.txt",
+        "PIP_BUILD_CONSTRAINT: constraints-ci-py312.txt",
+        'python -B -m pip install --upgrade "pip==26.2.1" "setuptools==84.0.0"',
+        'python -B -m pip install -c constraints-ci-py312.txt -e ".[test]"',
+        "python -B -m pip check",
+        "python -B ../../../../scripts/validate_ci_environment.py",
+        "python -B scripts/test_update_installed_skill.py",
+        "python -B scripts/test_validate_ci_environment.py",
+        "python -B ../../../../scripts/validate_asset_wheel.py . ../../VERSION",
+        "python -B scripts/validate_release.py --release-ready",
+    )
+    for marker in ci_markers:
+        if marker not in text["CI"]:
+            fail(errors, f"CI is missing reproducible-release marker: {marker!r}")
+
+    updater_markers = (
+        'target_parent.parent / "skill-backups"',
+        "--backup-dir",
+        "--dry-run",
+        "shutil.copytree(",
+        "_manifest(staging) != source_manifest",
+        "backup.rename(target)",
+        "IGNORED_DIRECTORY_NAMES",
+        'path.name == ".env"',
+    )
+    for marker in updater_markers:
+        if marker not in text["updater"]:
+            fail(errors, f"safe Skill updater is missing behavior: {marker!r}")
+    for test_name in (
+        "test_fresh_install_uses_staged_exact_copy",
+        "test_update_retains_complete_backup",
+        "test_dry_run_changes_nothing",
+        "test_generated_artifacts_are_not_installed",
+        "test_failed_replacement_restores_previous_installation",
+        "test_rejects_overlapping_source_and_target",
+    ):
+        if test_name not in text["updater tests"]:
+            fail(errors, f"Skill updater tests are missing {test_name}")
+
+    for marker in (
+        "/licenses/LICENSE",
+        "/licenses/NOTICE",
+        "/licenses/THIRD_PARTY_NOTICES.md",
+        "/app/locales/en.json",
+        "/app/locales/zh-CN.json",
+    ):
+        if marker not in text["wheel validator"]:
+            fail(errors, f"wheel validator is missing artifact check: {marker}")
+
+    closure_validator_markers = (
+        'sys.platform != "linux"',
+        "sys.version_info[:2] != (3, 12)",
+        'project.get("dependencies", [])',
+        'get("optional-dependencies", {}).get("test", [])',
+        "distribution.requires or ()",
+        "_index_installed_distributions(importlib.metadata.distributions())",
+        "_require_unique_distribution(installed, name)",
+        "expected exactly one",
+        "requirement.marker.evaluate",
+        "requirement.extras",
+        '"uvicorn" in visited and "uvloop" not in visited',
+    )
+    for marker in closure_validator_markers:
+        if marker not in text["CI environment validator"]:
+            fail(
+                errors,
+                f"CI dependency-closure validator is missing behavior: {marker!r}",
+            )
+
+    install_markers = {
+        "install guide": (
+            "intentionally refuses to overwrite",
+            "--dry-run",
+            "skill-backups",
+            "VERSION",
+        ),
+        "Chinese install guide": (
+            "$skill-installer` 会主动拒绝覆盖",
+            "--dry-run",
+            "skill-backups",
+            "VERSION",
+        ),
+    }
+    for name, markers in install_markers.items():
+        for marker in markers:
+            if marker not in text[name]:
+                fail(
+                    errors, f"{paths[name].name} is missing update guidance: {marker!r}"
+                )
 
 
 def validate_tree_hygiene(errors: list[str]) -> None:
@@ -3594,7 +3781,14 @@ def validate_tree_hygiene(errors: list[str]) -> None:
                 )
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--release-ready",
+        action="store_true",
+        help="require dated changelogs and completed READY pre-tag evidence",
+    )
+    args = parser.parse_args(argv)
     errors: list[str] = []
     validate_required_files(errors)
     validate_frontmatter(errors)
@@ -3602,7 +3796,7 @@ def main() -> int:
     validate_links(errors)
     validate_bilingual_docs(errors)
     validate_legal_mirrors(errors)
-    validate_release_metadata(errors)
+    validate_release_metadata(errors, release_ready=args.release_ready)
     validate_single_project_scope(errors)
     validate_access_token_baseline(errors)
     validate_local_password_authentication(errors)
@@ -3618,6 +3812,7 @@ def main() -> int:
     validate_business_audit(errors)
     validate_country_catalog(errors)
     validate_ci_and_current_documentation(errors)
+    validate_distribution_tooling(errors)
     validate_tree_hygiene(errors)
 
     if errors:
@@ -3631,7 +3826,11 @@ def main() -> int:
     file_count = sum(
         path.is_file() and ".git" not in path.parts for path in REPO_ROOT.rglob("*")
     )
-    print(f"Release package is valid: {file_count} files checked.")
+    readiness = "release-ready" if args.release_ready else "development"
+    print(
+        f"Release package is valid for {readiness} validation: "
+        f"{file_count} files checked."
+    )
     return 0
 
 

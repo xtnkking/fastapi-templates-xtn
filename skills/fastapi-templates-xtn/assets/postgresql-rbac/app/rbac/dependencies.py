@@ -16,15 +16,20 @@ from app.observability import (
     safe_exception_metadata,
     safe_log,
 )
-from app.rate_limit_dependencies import enforce_principal_rate_limit
+from app.rate_limit_dependencies import (
+    enforce_principal_rate_limit,
+    precheck_principal_rate_limit,
+)
 from app.rbac.domain import AuthorizationContext, PermissionKey, Principal
 from app.rbac.errors import RbacError, forbidden, unauthenticated, unavailable
 from app.rbac.models import RbacAuditEvent, RbacState
 from app.rbac.queries import load_authority_snapshot
 from app.rbac.security import (
     MAX_BEARER_TOKEN_BYTES,
+    AccessTokenClaims,
     decode_access_token,
     require_active_jti,
+    revoke_active_jti,
 )
 from app.redis_client import get_redis
 from app.settings import Settings, get_settings
@@ -58,6 +63,38 @@ async def _write_permission_denial_audit(
             )
 
 
+async def _best_effort_revoke_invalid_principal(
+    *,
+    request: Request,
+    principal: Principal,
+    settings: Settings,
+) -> None:
+    """Make a database-rejected JTI cheap to reject on its next request."""
+    try:
+        await revoke_active_jti(
+            get_redis(request),
+            claims=AccessTokenClaims(
+                user_id=principal.user_id,
+                token_id=principal.token_id,
+                issued_at=principal.issued_at,
+                expires_at=principal.expires_at,
+            ),
+            user_token_version=principal.token_version,
+            settings=settings,
+        )
+    except RbacError:
+        # revoke_active_jti already logs Redis failures. A compare miss means a
+        # concurrent request has already removed the exact JTI.
+        return
+    except Exception as exc:
+        safe_log(
+            logger,
+            logging.ERROR,
+            "security.inactive_token_cleanup.failed",
+            extra=safe_exception_metadata(exc),
+        )
+
+
 async def get_current_principal(
     request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
@@ -82,7 +119,6 @@ async def get_current_principal(
         issued_at=claims.issued_at,
         expires_at=claims.expires_at,
     )
-    await enforce_principal_rate_limit(request, principal, settings)
     return principal
 
 
@@ -93,7 +129,9 @@ async def get_authorization_context(
     request: Request,
     principal: PrincipalDependency,
     session: SessionDependency,
+    settings: SettingsDependency,
 ) -> AuthorizationContext:
+    await precheck_principal_rate_limit(request, principal, settings)
     try:
         state = await session.scalar(
             select(RbacState).where(RbacState.scope == "global")
@@ -103,6 +141,11 @@ async def get_authorization_context(
         authority = await load_authority_snapshot(session, user_id=principal.user_id)
     except RbacError as exc:
         if exc.reason_code == "user_not_found":
+            await _best_effort_revoke_invalid_principal(
+                request=request,
+                principal=principal,
+                settings=settings,
+            )
             raise unauthenticated("identity_inactive_or_revoked") from exc
         raise
     except SQLAlchemyError as exc:
@@ -122,7 +165,14 @@ async def get_authorization_context(
         not authority.user_is_active
         or authority.token_version != principal.token_version
     ):
+        await _best_effort_revoke_invalid_principal(
+            request=request,
+            principal=principal,
+            settings=settings,
+        )
         raise unauthenticated("identity_inactive_or_revoked")
+    request.state.actor_user_id = str(principal.user_id)
+    await enforce_principal_rate_limit(request, principal, settings)
     context = AuthorizationContext(
         principal=principal,
         authorization_epoch=state.epoch,
@@ -130,7 +180,6 @@ async def get_authorization_context(
         request_id=request_id_for(request),
         audit_source=AuditSource.HTTP,
     )
-    request.state.actor_user_id = str(principal.user_id)
     return context
 
 

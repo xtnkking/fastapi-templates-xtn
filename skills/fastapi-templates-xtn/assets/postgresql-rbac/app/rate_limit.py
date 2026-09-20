@@ -37,6 +37,22 @@ end
 return {count, remaining_ms}
 """
 
+INSPECT_FIXED_WINDOW_SCRIPT: Final = r"""
+local raw_count = redis.call('GET', KEYS[1])
+if not raw_count then
+    return {0, -2}
+end
+local count = tonumber(raw_count)
+if not count or count < 1 or count ~= math.floor(count) then
+    return redis.error_reply('rate limit key has invalid count')
+end
+local remaining_ms = redis.call('PTTL', KEYS[1])
+if remaining_ms <= 0 then
+    return redis.error_reply('rate limit key has invalid expiry')
+end
+return {count, remaining_ms}
+"""
+
 
 class RateLimitUnavailable(RuntimeError):
     """Redis did not produce a trustworthy admission decision."""
@@ -149,6 +165,37 @@ def _parse_result(raw: object, *, policy: RateLimitPolicy) -> RateLimitResult:
     )
 
 
+def _parse_inspection(raw: object, *, policy: RateLimitPolicy) -> RateLimitResult:
+    if (
+        not isinstance(raw, Sequence)
+        or isinstance(raw, (str, bytes))
+        or len(raw) != 2
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in raw)
+    ):
+        raise RateLimitUnavailable("rate-limit store returned an invalid inspection")
+    count, ttl_ms = cast(tuple[int, int], tuple(raw))
+    if count == 0 and ttl_ms == -2:
+        return RateLimitResult(
+            allowed=True,
+            limit=policy.limit,
+            remaining=policy.limit,
+            retry_after_ms=0,
+            reset_after_ms=0,
+        )
+    if count < 1 or not 0 < ttl_ms <= policy.window_seconds * 1000:
+        raise RateLimitUnavailable("rate-limit store returned an invalid inspection")
+    # This inspection answers whether the next increment can be admitted.
+    # A window whose current count already equals its limit is exhausted.
+    allowed = count < policy.limit
+    return RateLimitResult(
+        allowed=allowed,
+        limit=policy.limit,
+        remaining=max(0, policy.limit - count),
+        retry_after_ms=0 if allowed else ttl_ms,
+        reset_after_ms=ttl_ms,
+    )
+
+
 async def check_rate_limit(
     redis: Redis,
     *,
@@ -180,3 +227,30 @@ async def check_rate_limit(
     except RedisError as exc:
         raise RateLimitUnavailable("rate-limit store is unavailable") from exc
     return _parse_result(raw, policy=policy)
+
+
+async def inspect_rate_limit(
+    redis: Redis,
+    *,
+    namespace: str,
+    policy: RateLimitPolicy,
+    subject_type: str,
+    subject: str,
+    key_secret: bytes,
+) -> RateLimitResult:
+    """Read an existing window atomically without creating or incrementing it."""
+    key = build_rate_limit_key(
+        namespace=namespace,
+        policy=policy,
+        subject_type=subject_type,
+        subject=subject,
+        key_secret=key_secret,
+    )
+    try:
+        raw = await cast(
+            Awaitable[object],
+            redis.eval(INSPECT_FIXED_WINDOW_SCRIPT, 1, key),
+        )
+    except RedisError as exc:
+        raise RateLimitUnavailable("rate-limit store is unavailable") from exc
+    return _parse_inspection(raw, policy=policy)

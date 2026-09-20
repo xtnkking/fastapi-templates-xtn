@@ -5,10 +5,12 @@ from redis.exceptions import ConnectionError
 
 from app.rate_limit import (
     FIXED_WINDOW_SCRIPT,
+    INSPECT_FIXED_WINDOW_SCRIPT,
     RateLimitPolicy,
     RateLimitUnavailable,
     build_rate_limit_key,
     check_rate_limit,
+    inspect_rate_limit,
 )
 
 POLICY = RateLimitPolicy(name="login", limit=2, window_seconds=300)
@@ -115,5 +117,63 @@ async def test_redis_failure_denies_before_protected_work() -> None:
             policy=POLICY,
             subject_type="ip",
             subject="203.0.113.9",
+            key_secret=KEY_SECRET,
+        )
+
+
+@pytest.mark.asyncio
+async def test_inspection_does_not_create_or_increment_a_missing_window() -> None:
+    redis = AsyncMock()
+    redis.eval.return_value = [0, -2]
+
+    result = await inspect_rate_limit(
+        redis,
+        namespace="example",
+        policy=POLICY,
+        subject_type="actor",
+        subject="UABC1234567",
+        key_secret=KEY_SECRET,
+    )
+
+    assert result.allowed is True
+    assert result.remaining == POLICY.limit
+    assert result.reset_after_ms == 0
+    assert "INCR" not in INSPECT_FIXED_WINDOW_SCRIPT
+    assert redis.eval.await_args.args[1] == 1
+    assert len(redis.eval.await_args.args) == 3
+
+
+@pytest.mark.asyncio
+async def test_inspection_reports_an_existing_exhausted_window() -> None:
+    redis = AsyncMock()
+    redis.eval.return_value = [2, 2500]
+
+    result = await inspect_rate_limit(
+        redis,
+        namespace="example",
+        policy=POLICY,
+        subject_type="actor",
+        subject="UABC1234567",
+        key_secret=KEY_SECRET,
+    )
+
+    assert result.allowed is False
+    assert result.remaining == 0
+    assert result.retry_after_ms == 2500
+
+
+@pytest.mark.parametrize("raw", ([0, 1000], [1, -2], [3, 300001], ["1", 1000]))
+@pytest.mark.asyncio
+async def test_invalid_inspection_result_fails_closed(raw: object) -> None:
+    redis = AsyncMock()
+    redis.eval.return_value = raw
+
+    with pytest.raises(RateLimitUnavailable):
+        await inspect_rate_limit(
+            redis,
+            namespace="example",
+            policy=POLICY,
+            subject_type="actor",
+            subject="UABC1234567",
             key_secret=KEY_SECRET,
         )
