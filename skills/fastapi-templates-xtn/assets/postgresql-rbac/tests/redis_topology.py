@@ -8,10 +8,10 @@ fresh private directory and is stopped through its own process handle.
 from __future__ import annotations
 
 import asyncio
-import os
 import secrets
 import socket
 import subprocess
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -116,13 +116,17 @@ class RedisTopology:
         command = [str(self.executable.resolve(strict=True)), "redis.conf"]
         if sentinel:
             command.append("--sentinel")
+        if sys.platform == "win32":
+            creationflags = subprocess.CREATE_NO_WINDOW
+        else:
+            creationflags = 0
         try:
             process = subprocess.Popen(
                 command,
                 cwd=node_directory,
                 stdout=output,
                 stderr=subprocess.STDOUT,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                creationflags=creationflags,
             )
         except BaseException:
             output.close()

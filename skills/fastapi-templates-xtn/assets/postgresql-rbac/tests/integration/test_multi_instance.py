@@ -28,7 +28,10 @@ async def instance(
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
-    creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    if sys.platform == "win32":
+        creationflags = subprocess.CREATE_NO_WINDOW
+    else:
+        creationflags = 0
     process = await asyncio.to_thread(
         subprocess.Popen,
         [sys.executable, "-B", "-m", "tests.integration.instance_server", str(port)],
