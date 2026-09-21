@@ -8,7 +8,7 @@
 
 ## 当前状态
 
-`v0.7.0` 是当前发布版本；唯一权威版本值位于
+`v0.7.0` 是最新正式标签；唯一权威版本值位于
 [`skills/fastapi-templates-xtn/VERSION`](skills/fastapi-templates-xtn/VERSION)。
 需要当前不可变基线时应安装此标签。
 

@@ -9,7 +9,7 @@ structured logging, and separate durable audits.
 
 ## Status
 
-`v0.7.0` is the current release; the authoritative version value is in
+`v0.7.0` is the latest published tag; the authoritative version value is in
 [`skills/fastapi-templates-xtn/VERSION`](skills/fastapi-templates-xtn/VERSION).
 Install this immutable tag for the current baseline.
 

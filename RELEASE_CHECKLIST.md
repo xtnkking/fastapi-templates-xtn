@@ -6,12 +6,14 @@ Use this checklist for the first public preview and subsequent releases.
 
 ## Prepare v0.7.0
 
-Release readiness: `DRAFT`
+Release readiness: `READY`
 
-Target date: `2026-09-21`. Keep this block `DRAFT` until the pre-tag evidence is
-verified for the current candidate. Historical `v0.6.2` results do not establish
-readiness for this version. Record the actual candidate commit and successful CI
-run before marking `READY`; final branch and tag CI must pass before publication.
+Target date: `2026-09-21`. Reviewed candidate: `00a25b81e6b43b51ea8442976eb506ad4d377b44`,
+[successful branch CI](https://github.com/xtnkking/fastapi-templates-xtn/actions/runs/35616975745).
+The final readiness commit changes only the bilingual checklists and README
+release-status wording; its branch and tag
+CI must pass before publication. Historical results are not used as this version's
+evidence.
 
 Scope: responsibility-based source directories; one standalone PostgreSQL and
 one shared standalone Redis by default; opt-in Sentinel/Cluster clients and
@@ -23,21 +25,23 @@ quota keys start fresh windows once; no PostgreSQL migration is added.
 
 ### Pre-tag evidence
 
-- [ ] `VERSION`, package metadata, current links, bilingual release notes and
+- [x] `VERSION`, package metadata, current links, bilingual release notes and
   architecture/migration notes consistently identify `0.7.0`; published migration
   revisions remain byte-for-byte unchanged.
-- [ ] Current Skill/release validators, updater and country-validator tests,
-  Ruff, strict mypy, and the full isolated PostgreSQL 17/Redis 7 suite pass.
-- [ ] Disposable standalone, Sentinel promotion and Cluster tests verify client
+- [x] Current Skill/release validators, updater and country-validator tests,
+  Ruff, strict mypy, and all 955 tests pass on isolated PostgreSQL 17/Redis 7:
+  763 unit/Redis tests, 185 PostgreSQL tests and 7 real topology tests.
+- [x] Disposable standalone, Sentinel promotion and Cluster tests verify client
   configuration, session/CAPTCHA atomicity and per-subject limits. Record any
-  untested connection boundary, including real TLS certificate handshakes.
-- [ ] Python 3.12/Linux candidate CI verifies dependency closure, `pip check`,
+  untested connection boundary: real TLS certificate handshakes, production
+  network partitions and Cluster replica failover were not exercised.
+- [x] Python 3.12/Linux candidate CI verifies dependency closure, `pip check`,
   `pip-audit`, and all applicable tests with no unrecorded vulnerability exception.
-- [ ] The `0.7.0` wheel passes isolated import validation and contains both locale
+- [x] The `0.7.0` wheel passes isolated import validation and contains both locale
   catalogs plus all three legal notices.
-- [ ] Safe-update tests and a dry run verify the intended local Skill target;
+- [x] Safe-update tests and a dry run verify the intended local Skill target;
   the final reviewed diff preserves attribution and the simple standalone default.
-- [ ] Record the candidate commit and successful branch CI for this release;
+- [x] Record the candidate commit and successful branch CI for this release;
   verify that no credentials, private configuration, caches or test databases
   enter the release tree.
 
