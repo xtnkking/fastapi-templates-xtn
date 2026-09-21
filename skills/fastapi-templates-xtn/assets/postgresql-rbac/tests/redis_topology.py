@@ -113,7 +113,9 @@ class RedisTopology:
                 "\n".join(config) + "\n", encoding="utf-8"
             )
         output = (node_directory / "process.log").open("wb")
-        command = [str(self.executable.resolve(strict=True)), "redis.conf"]
+        # Debian/Ubuntu redis-server can link to the redis-check-rdb binary.
+        # Redis selects its mode from argv[0], so preserve the executable name.
+        command = [str(self.executable.absolute()), "redis.conf"]
         if sentinel:
             command.append("--sentinel")
         if sys.platform == "win32":
