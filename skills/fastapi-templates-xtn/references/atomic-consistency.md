@@ -116,6 +116,11 @@ The global row intentionally serializes authorization changes in this
 single-project baseline. This makes assignment, revocation, user status, shared
 role edits, and offline super-admin handover participate in one proof. Keep
 transactions short; do not perform network I/O while holding the guard.
+Its lock wait is a throughput limit even with more app instances. Do not apply
+this global lock to unrelated business writes; include it only where the
+authorization or immediate-revocation proof requires it. Changing that scope or
+partitioning the lock requires a new concurrency proof. For sizing and outage
+behavior, read [Capacity and availability](application-capacity-and-availability.md).
 The row exists for the database lifetime: runtime and production-maintenance
 roles cannot delete, truncate, disable, or soft-delete it. Missing state fails
 closed and is never repaired opportunistically.
@@ -256,6 +261,12 @@ different digest is a conflict; a completed key replays its recorded result.
 When commit outcome is unknown and no idempotency record exists, require an
 authoritative reread or reconciliation before another non-idempotent attempt.
 
+The bundled adapter bounds pool, connection, statement, and lock waits through
+`app/core/config.py` and returns classified infrastructure timeouts as `503001`.
+It does not implement automatic transaction retries or generic idempotency.
+The retry protocol above applies only when the concrete project adds and tests
+it; a `503` after connection loss is not permission to blindly replay a write.
+
 ## Versions, Caches, And External Effects
 
 - Increment user authorization versions and the global epoch in the mutation
@@ -282,10 +293,10 @@ revocation from this design.
 
 The included asset implements the core boundary in:
 
-- [`app/rbac/service.py`](../assets/postgresql-rbac/app/rbac/service.py): allowed
+- [`app/services/access.py`](../assets/postgresql-rbac/app/services/access.py): allowed
   mutation, version, and audit commits plus rollback before the denied-audit
   transaction;
-- [`app/rbac/queries.py`](../assets/postgresql-rbac/app/rbac/queries.py): canonical
+- [`app/repositories/access.py`](../assets/postgresql-rbac/app/repositories/access.py): canonical
   user, global guard, role, and policy locks with identity-map refresh;
 - [`alembic/versions/0001_single_project_rbac.py`](../assets/postgresql-rbac/alembic/versions/0001_single_project_rbac.py):
   baseline database enforcement of the 10-live-role limit and serialized
@@ -296,7 +307,7 @@ The included asset implements the core boundary in:
   isolation, lock waits, committed actor revocation, and concurrent assignments.
 
 The asset does not by itself prove crash-proof denied-audit delivery, generic
-request idempotency, database lock timeouts, a business outbox, or
+request idempotency, deployment failover, a business outbox, or
 product-specific protected writes. It implements body `expected_version` checks
 for the shared role commands named above. Add and test other relevant pieces
 when adapting those surfaces.

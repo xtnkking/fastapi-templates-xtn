@@ -1,7 +1,7 @@
 import uuid
 
 from app.main import app
-from app.rbac.schemas import UserResponse, UserRoleMutationResponse
+from app.schemas.access import UserResponse, UserRoleMutationResponse
 
 
 def test_user_response_separates_assigned_and_effective_authority() -> None:

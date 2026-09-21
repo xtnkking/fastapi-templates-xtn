@@ -193,11 +193,11 @@ Token 或会话表。
 
 这不是只有文档的约定，随附资产已经包含完整调用链：
 
-- [`app/i18n.py`](../assets/postgresql-rbac/app/i18n.py)：语言选择、消息键、翻译、
+- [`app/core/i18n.py`](../assets/postgresql-rbac/app/core/i18n.py)：语言选择、消息键、翻译、
   参数校验文案和响应语言头；
-- [`app/locales/zh-CN.json`](../assets/postgresql-rbac/app/locales/zh-CN.json) 和
-  [`app/locales/en.json`](../assets/postgresql-rbac/app/locales/en.json)：两份等键资源；
-- [`app/api_contract.py`](../assets/postgresql-rbac/app/api_contract.py) 和
+- [`app/assets/locales/zh-CN.json`](../assets/postgresql-rbac/app/assets/locales/zh-CN.json) 和
+  [`app/assets/locales/en.json`](../assets/postgresql-rbac/app/assets/locales/en.json)：两份等键资源；
+- [`app/core/api_contract.py`](../assets/postgresql-rbac/app/core/api_contract.py) 和
   [`app/main.py`](../assets/postgresql-rbac/app/main.py)：统一响应、异常处理和中间件接线；
 - [`tests/test_i18n.py`](../assets/postgresql-rbac/tests/test_i18n.py)：语言协商、成功与
   失败响应、参数错误、响应头和并发隔离测试。
@@ -209,6 +209,13 @@ Token 或会话表。
 运行日志是输出到 stdout 的单行结构化 JSON，用来排查请求、依赖、耗时和
 未捕获异常。它不是审计记录，不能包含密码、Token、JTI、验证码答案、完整
 请求体、数据库/Redis URL 或代理凭据。
+
+日志先在当前调用处完成安全格式化，再交给每个进程自己的后台线程输出，避免
+stdout 写得慢时卡住请求。默认队列最多 1000 条，退出时最多等待 2 秒，参数在
+`app/core/config.py` 和 `.env.example`。队列满、单条超过 16 KiB 或退出排空
+超时会丢弃运行日志并计数，不回退到同步写入；已经卡住的输出也不保证能在退出前
+完成。这个队列不用于数据库审计，审计仍遵守原来的事务要求。完整行为见
+[运行日志](operational-logging.md)。
 
 审计分三类：
 
@@ -247,6 +254,7 @@ Token 或会话表。
 `GET /health/ready` 用来决定部署是否可以接收流量。它在短超时内并发验证：
 
 - PostgreSQL 的 `alembic_version` 只有一个版本，且必须为 `0004_password_auth`；
+- PostgreSQL 必须为可写主库，不能把延迟同步的只读副本当作当前鉴权来源；
 - 存在可读取的 `rbac_state(scope='global')` 固定行；
 - 活跃 JTI Redis 和限流 Redis 都能执行 `PING`；
 - 两套 Redis 都能执行 Lua `PSETEX`、`GET`、`DEL` 写读删探测。
@@ -271,7 +279,28 @@ Redis 探测使用随机的非敏感 Key，正常时在 Lua 内立即删除；�
 修改和管理接口默认都必须登录。公开路径和 OpenAPI 不使用 `rbac` 名称，避免
 把内部授权实现暴露成外部 API 设计。
 
-## 代码复用与抽象
+## 项目目录与代码复用
+
+先区分项目情况：空目录且尚无既定框架时，可以采用下方默认方案；使用者另有
+目录方案时尊重其选择。已有项目（包括已经搭了一部分的项目）沿用原框架、目录、
+调用方式和基础设施，只接入本次需要的功能。已有仓库里的空业务目录仍属于原项目，
+不能当成全新服务。调用 Skill 或要求新增功能、修复、优化，不等于同意整体重构；
+只有使用者明确要求时，才在约定范围内调整架构，也不能直接用随附模板覆盖原项目。
+
+采用默认方案的新项目先按职责分目录：接口放 `api`，配置、安全和日志等放 `core`，数据库连接
+放 `db`，FastAPI 依赖放 `dependencies`，表模型放 `models`，查询放
+`repositories`，输入输出契约放 `schemas`，业务与事务放 `services`。
+`app` 顶层只保留 `main.py` 和 `__init__.py` 两个 Python 文件。业务变多后，
+在各层目录内部增加 `users.py`、`orders.py` 或相应业务子包。
+
+这些目录负责归类实际代码，不要求每个业务在每层都建文件。简单且已授权的查询
+可以由 API 直接调用 Repository；只用一次的短小 ORM 读取也可以留在路由中，
+需要复用、可见性/分页、批量、锁顺序或复杂查询时才提到 Repository。
+Service 可以在自己拥有的事务中直接 `session.add()`，
+无需给每条 ORM 语句加包装。模型不依赖 Service。随附多语言资源确实使用
+`app/assets/locales`，线下恢复命令位于 `app/commands/passwords.py`；没有任务
+就不建 `workers`，没有合适的通用行为就不建 `utils`。
+小项目与多业务示意见[项目目录规范](project-structure.md)。
 
 新增函数前先找现有实现。两处代码如果代表同一条规则、以后改规则时必须一起改，
 就优先通过少量有意义的参数共用实现。例如启用和禁用角色保留各自接口，但直接调用
@@ -281,6 +310,31 @@ Redis 探测使用随机的非敏感 Key，正常时在 Lua 内立即删除；�
 和 FastAPI 依赖适配即使只有一个调用者，也可以保留独立函数。权限、审计或失败
 处理不同的流程不能只因为代码长得像就硬合并，也不提前为假想需求建立万能工具类。
 具体判断与验证方式见[复用与抽象规范](reuse-and-abstraction.md)。
+
+## 代码可靠性与部署边界
+
+本 Skill 重点规范代码组织、复用、校验、权限、安全、事务、异常、日志审计及测试。
+不停机发布、生产容量、集群运维、监控平台和恢复演练由使用者按项目需要决定，
+不作为普通功能开发的前置条件，也不把未实现这些能力当作 Skill 的默认缺陷。
+
+新项目默认一个单机 PostgreSQL 和一个单机 Redis，只填两个连接地址；登录状态、
+验证码和限流共用 Redis。集群、读写分离、独立限流 Redis 都按明确需求接入，
+不作为必须回答的选择题；已有项目保留原拓扑。需要数据库集群时才接入运维提供
+的可写入口，主备和入口切换由运维负责。代码保持
+连接池、有限等待、坏连接清理和正确的事务错误处理，断线后不能盲目重试写入。
+不默认增加读写分离，鉴权和权限查询读主库。Redis 已支持单机、Sentinel 主节点
+发现和原生 Cluster 路由。默认仍是单机；需要集群时按运维提供的节点、主服务名、
+账号和 TLS 要求填写[Redis 连接配置](redis-connections.md)，业务接口共用同一套实现。
+同一用户的会话原子操作落在同一分片，不同用户可分散；验证码刷新仍集中于一个
+分片，保证新旧验证码替换的原子性，这不是全站限流额度。
+
+连接数按进程累计，参数在 `app/core/config.py` 和 `.env.example`。多进程共用
+数据库、Redis、密钥和会话规则；Token 活跃状态不能缓存到单个进程里。授权写锁
+只保护对应业务，不能把无关写入都挂上去。已有有界日志输出和资源清理继续保留。
+
+验证针对修改的代码边界开展；已有独立进程、数据库超时和并发测试继续保留。
+GET 压测工具只在实际性能任务中按需使用，不能用短样本承诺生产吞吐或高可用。
+调整连接池、超时或共享状态时再读[容量与可用性](application-capacity-and-availability.md)。
 
 ## 按需扩展
 
@@ -295,9 +349,14 @@ Redis 探测使用随机的非敏感 Key，正常时在 Lua 内立即删除；�
 项目自行验证，但不能描述为本 Skill 已验证。集成测试必须使用全新、空白、
 可丢弃且明确隔离的 PostgreSQL 和 Redis 目标。
 
-`v0.6.2` 不改变数据库结构，不需要新增 Alembic 迁移。`v0.5.0` 已发布的
+`v0.7.0` 不改变数据库结构，不需要新增 Alembic 迁移。`v0.5.0` 已发布的
 `0001` 到 `0004` 属于不可变历史；以后任何表或种子变化必须新增向前迁移，
 不得改写已发布迁移。
+
+单纯更新 Skill 不会更改已有网站。只有把 `v0.7.0` 的新版会话实现部署到已有
+项目时，原登录才会失效，需要用户重新登录一次；变更后的限流键重新开始计数。
+这是 Redis 记录布局调整，不会删除账号、角色、权限或审计数据。默认仍是单机
+PostgreSQL 加一台共用的单机 Redis，不要求使用者启用集群。
 
 需要实施细节时按任务读取：
 
@@ -306,6 +365,7 @@ Redis 探测使用随机的非敏感 Key，正常时在 Lua 内立即删除；�
 - [JWT/JTI 安全](jwt-session-security.md)
 - [图形验证码](verification-and-abuse-defense.md)
 - [限流](rate-limiting.md)
+- [容量与可用性](application-capacity-and-availability.md)
 - [API 多语言](api-internationalization.md)
 - [运行日志](operational-logging.md)
 - [RBAC 审计](audit-module.md)

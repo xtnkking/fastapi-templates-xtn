@@ -116,3 +116,11 @@ jobs:
         run: python -B -m pytest -p no:cacheprovider -m "not postgresql"
       - name: PostgreSQL integration tests
         run: python -B -m pytest -p no:cacheprovider -m postgresql
+      - name: Install disposable Redis topology test binary
+        run: |
+          # Only use the binary; the Redis service container already owns 6379.
+          sudo systemctl mask redis-server.service
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+      - name: Redis standalone, Sentinel, and Cluster client integration
+        run: TEST_REDIS_SERVER="$(command -v redis-server)" python -B -m pytest -p no:cacheprovider tests/test_redis_topology_live.py

@@ -4,14 +4,14 @@ from typing import cast
 import pytest
 from sqlalchemy import CheckConstraint, Table
 
-from app.audit import AuditSource
-from app.base import Base
-from app.password_models import (
+from app.core.audit import AuditSource
+from app.db.base import Base
+from app.models.access import User
+from app.models.account_security import (
     AccountSecurityActorType,
     AccountSecurityAuditEvent,
     AccountSecurityAuditOutcome,
 )
-from app.rbac.models import User
 
 
 def test_user_model_owns_nullable_password_state_without_an_episode_table() -> None:

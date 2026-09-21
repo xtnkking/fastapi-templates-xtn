@@ -9,17 +9,17 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.audit import AuditSource
-from app.business_audit import (
+from app.core.audit import AuditSource
+from app.core.business_audit import (
     BusinessAuditActionSpec,
     BusinessAuditActor,
     BusinessAuditActorType,
-    BusinessAuditEvent,
     BusinessAuditFacts,
     BusinessAuditOutcome,
-    BusinessAuditWriter,
 )
-from app.database import SessionFactory, engine
+from app.db.postgres import SessionFactory, engine
+from app.models.business_audit import BusinessAuditEvent
+from app.services.business_audit import BusinessAuditWriter
 from tests.integration.conftest import World
 
 pytestmark = pytest.mark.postgresql

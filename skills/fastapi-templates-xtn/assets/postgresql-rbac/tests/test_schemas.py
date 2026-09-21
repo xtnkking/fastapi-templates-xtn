@@ -3,7 +3,7 @@ import uuid
 import pytest
 from pydantic import ValidationError
 
-from app.rbac.schemas import (
+from app.schemas.access import (
     PermissionIdsRequest,
     RoleCreateRequest,
     RoleIdsRequest,

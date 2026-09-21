@@ -1,9 +1,9 @@
-from app.rate_limit import RateLimitResult
-from app.rate_limit_middleware import (
+from app.core.middleware.rate_limit import (
     rate_limit_headers,
     semantic_rate_limit_headers,
     trusted_client_ip,
 )
+from app.core.security.rate_limit import RateLimitResult
 
 
 def test_only_asgi_peer_is_used_for_anonymous_rate_limit() -> None:

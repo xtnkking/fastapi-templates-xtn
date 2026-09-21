@@ -7,15 +7,15 @@ from httpx import AsyncClient
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
-from app.database import SessionFactory
-from app.rbac.domain import (
+from app.core.errors import RbacError
+from app.core.security.domain import (
     AuthorizationContext,
     PermissionKey,
     Principal,
     SystemRoleKey,
 )
-from app.rbac.errors import RbacError
-from app.rbac.models import (
+from app.db.postgres import SessionFactory
+from app.models.access import (
     Permission,
     RbacAuditEvent,
     RbacState,
@@ -24,9 +24,9 @@ from app.rbac.models import (
     User,
     UserRole,
 )
-from app.rbac.queries import load_authority_snapshot, lock_rbac_state
-from app.rbac.schemas import UserStatusUpdateRequest
-from app.rbac.service import RbacService
+from app.repositories.access import load_authority_snapshot, lock_rbac_state
+from app.schemas.access import UserStatusUpdateRequest
+from app.services.access import RbacService
 from tests.integration.conftest import World
 
 pytestmark = pytest.mark.postgresql

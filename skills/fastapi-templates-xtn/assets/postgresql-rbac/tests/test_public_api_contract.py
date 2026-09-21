@@ -13,10 +13,29 @@ from sqlalchemy.exc import OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 
-import app.rbac.api as rbac_api_module
-from app.abuse_flow import InvalidLoginCredentialsError
-from app.api_contract import ApiResponse, BusinessCode, PageData
-from app.database import get_session
+import app.api.access as rbac_api_module
+from app.api.access import router as public_router
+from app.core.api_contract import ApiResponse, BusinessCode, PageData
+from app.core.config import get_settings
+from app.core.errors import (
+    conflict,
+    forbidden,
+    invalid_request,
+    not_found,
+    stale_resource_version,
+    unauthenticated,
+    unavailable,
+)
+from app.core.security.domain import (
+    AuthoritySnapshot,
+    AuthorizationContext,
+    PermissionKey,
+    Principal,
+    RoleGrant,
+)
+from app.core.security.rate_limit import RateLimitExceeded, RateLimitResult
+from app.db.postgres import get_session
+from app.dependencies.authentication import get_authorization_context
 from app.main import (
     app,
     handle_database_unavailable,
@@ -26,34 +45,14 @@ from app.main import (
     handle_request_validation_error,
     handle_unexpected_error,
 )
-from app.rate_limit import RateLimitResult
-from app.rate_limit_dependencies import RateLimitExceeded
-from app.rbac.api import router as public_router
-from app.rbac.dependencies import get_authorization_context
-from app.rbac.domain import (
-    AuthoritySnapshot,
-    AuthorizationContext,
-    PermissionKey,
-    Principal,
-    RoleGrant,
-)
-from app.rbac.errors import (
-    conflict,
-    forbidden,
-    invalid_request,
-    not_found,
-    stale_resource_version,
-    unauthenticated,
-    unavailable,
-)
-from app.rbac.schemas import (
+from app.schemas.access import (
     RoleMutationResponse,
     RoleResponse,
     UserResponse,
     UserRoleMutationResponse,
 )
-from app.rbac.service import get_rbac_service
-from app.settings import get_settings
+from app.services.abuse_flow import InvalidLoginCredentialsError
+from app.services.access import get_rbac_service
 
 REQUIRED_ROUTES = {
     ("POST", "/api/v1/auth/logout"),
@@ -577,7 +576,9 @@ async def test_database_operational_error_is_dependency_unavailable() -> None:
     request = Request(
         {"type": "http", "method": "GET", "path": "/controlled-test", "headers": []}
     )
-    error = OperationalError("controlled statement", {}, RuntimeError("offline"))
+    error = OperationalError(
+        "controlled statement", {}, RuntimeError("offline"), connection_invalidated=True
+    )
 
     response = await handle_database_unavailable(request, error)
 
@@ -942,7 +943,7 @@ async def test_user_write_routes_use_service_transaction_snapshots(
         )
     )
     monkeypatch.setattr(
-        "app.rbac.api.load_user_access_views",
+        "app.api.access.load_user_access_views",
         post_transaction_reload,
     )
     app.dependency_overrides[get_authorization_context] = current_context
@@ -1018,7 +1019,7 @@ async def test_unprivileged_user_cannot_call_required_management_routes(
 
     write_audit = AsyncMock()
     monkeypatch.setattr(
-        "app.rbac.dependencies._write_permission_denial_audit",
+        "app.dependencies.authentication._write_permission_denial_audit",
         write_audit,
     )
 

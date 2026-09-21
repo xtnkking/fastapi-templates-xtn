@@ -9,16 +9,16 @@ Additional languages are an explicit project extension.
 
 The feature is implemented in the bundled asset, not only described here:
 
-- [`app/i18n.py`](../assets/postgresql-rbac/app/i18n.py) defines `MessageKey`,
+- [`app/core/i18n.py`](../assets/postgresql-rbac/app/core/i18n.py) defines `MessageKey`,
   validates both catalogs at import time, selects a bounded request locale,
   translates message keys, maps validation error types, and applies language
   response headers.
-- [`app/locales/zh-CN.json`](../assets/postgresql-rbac/app/locales/zh-CN.json)
+- [`app/assets/locales/zh-CN.json`](../assets/postgresql-rbac/app/assets/locales/zh-CN.json)
   contains the Simplified Chinese runtime messages.
-- [`app/locales/en.json`](../assets/postgresql-rbac/app/locales/en.json) contains
+- [`app/assets/locales/en.json`](../assets/postgresql-rbac/app/assets/locales/en.json) contains
   the English runtime messages. Both JSON files must have exactly the same keys
   as `MessageKey`.
-- [`app/api_contract.py`](../assets/postgresql-rbac/app/api_contract.py) translates
+- [`app/core/api_contract.py`](../assets/postgresql-rbac/app/core/api_contract.py) translates
   stable keys while building success and error envelopes.
 - [`app/main.py`](../assets/postgresql-rbac/app/main.py) resolves the request
   locale, localizes framework and unexpected errors, and attaches
@@ -99,7 +99,7 @@ a process-global mutable current language: concurrent Chinese and English
 requests would leak into one another. Translation is pure in-memory lookup and
 must not add PostgreSQL or Redis work to a request.
 
-The bundled asset keeps `app/locales/zh-CN.json` and `app/locales/en.json` as
+The bundled asset keeps `app/assets/locales/zh-CN.json` and `app/assets/locales/en.json` as
 package data. Startup fails if a catalog is unreadable, has blank values, or its
 key set differs from `MessageKey`; silently returning a key name is forbidden.
 
@@ -124,7 +124,7 @@ When the project owner explicitly needs another language:
 
 1. Add its canonical code and only required safe aliases to the static locale
    registry. Never turn a request value into a file path or dynamic import.
-2. Add one UTF-8 JSON catalog under `app/locales/` with exactly the same keys as
+2. Add one UTF-8 JSON catalog under `app/assets/locales/` with exactly the same keys as
    `MessageKey`, and include it as package data.
 3. Translate every value; do not copy English as a silent placeholder.
 4. Add parser, fallback, response-header, catalog-parity, validation, error, and

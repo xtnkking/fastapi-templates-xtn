@@ -10,20 +10,21 @@ import pytest
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from app.api_contract import BusinessCode
-from app.rbac.errors import RbacError
-from app.rbac.security import (
+from app.core.api_contract import BusinessCode
+from app.core.config import Settings, get_settings
+from app.core.errors import RbacError
+from app.core.security.tokens import (
     MAX_BEARER_TOKEN_BYTES,
     OPTIONAL_ACCESS_SCOPE_CLAIMS,
     REQUIRED_ACCESS_CLAIMS,
     AccessTokenClaims,
-    _active_jti_key,
+    _active_jti_field,
+    _user_session_keys,
     decode_access_token,
     issue_access_token,
     require_active_jti,
     revoke_active_jti,
 )
-from app.settings import Settings, get_settings
 
 
 def issuer_audience_settings() -> Settings:
@@ -241,22 +242,23 @@ async def test_issuer_registers_exact_minimal_token_before_returning() -> None:
     (
         script,
         key_count,
-        key,
-        index,
-        version_key,
+        records_key,
+        order_key,
+        expires_key,
+        field,
         value,
         expires_at,
-        _,
         version,
         maximum,
     ) = mock.eval.await_args.args
     assert key_count == 3
     assert "redis.call('TIME')" in script
-    assert "'NX', 'EX', ttl_seconds" in script
-    assert "redis.call('PEXPIREAT', KEYS[1], expires_at * 1000)" in script
-    assert str(claims.token_id) not in key
-    assert str(user_id) not in index
-    assert str(user_id) not in version_key
+    assert (records_key, order_key, expires_key) == _user_session_keys(
+        settings=settings, user_id=user_id
+    )
+    assert field == _active_jti_field(settings=settings, token_id=claims.token_id)
+    assert str(claims.token_id) not in field
+    assert all(str(user_id) not in key for key in (records_key, order_key, expires_key))
     assert json.loads(value) == {
         "exp": claims.expires_at,
         "iat": claims.issued_at,
@@ -286,13 +288,13 @@ async def test_issuer_uses_configured_access_token_lifetime() -> None:
     assert claims.expires_at - claims.issued_at == 900
 
 
-def test_active_jti_key_does_not_depend_on_optional_issuer_or_audience() -> None:
+def test_active_jti_field_does_not_depend_on_optional_issuer_or_audience() -> None:
     token_id = uuid.uuid4()
     default_settings = get_settings()
     configured_settings = issuer_audience_settings()
 
-    default_key = _active_jti_key(settings=default_settings, token_id=token_id)
-    configured_key = _active_jti_key(
+    default_key = _active_jti_field(settings=default_settings, token_id=token_id)
+    configured_key = _active_jti_field(
         settings=configured_settings,
         token_id=token_id,
     )
@@ -324,7 +326,7 @@ async def test_configured_scope_uses_the_same_active_jti_lifecycle() -> None:
         issuer=settings.jwt_issuer,
         options={"strict_aud": True},
     )
-    key, record = mock.eval.await_args.args[2], mock.eval.await_args.args[5]
+    key, record = mock.eval.await_args.args[2], mock.eval.await_args.args[6]
     mock.eval.return_value = record
 
     version = await require_active_jti(redis, claims=claims, settings=settings)
@@ -396,7 +398,7 @@ async def test_issuer_retries_one_duplicate_jti_then_succeeds() -> None:
 
     assert token
     assert mock.eval.await_count == 2
-    assert mock.eval.await_args_list[0].args[2] != mock.eval.await_args_list[1].args[2]
+    assert mock.eval.await_args_list[0].args[5] != mock.eval.await_args_list[1].args[5]
 
 
 async def test_issuer_does_not_return_after_duplicate_retry_is_exhausted() -> None:
@@ -429,10 +431,6 @@ async def test_issuer_rejects_a_stale_token_version_without_retry() -> None:
 
     assert caught.value.status_code == 401
     mock.eval.assert_awaited_once()
-    script = mock.eval.await_args.args[0]
-    assert script.index("parsed_version > incoming_version") < script.index(
-        "'SET', KEYS[1]"
-    )
 
 
 async def test_issuer_maps_redis_failure_to_service_unavailable() -> None:
@@ -482,7 +480,7 @@ async def _issued_claims_and_record() -> tuple[Settings, AccessTokenClaims, str]
     return (
         settings,
         decode_access_token(token, settings),
-        issuer_mock.eval.await_args.args[5],
+        issuer_mock.eval.await_args.args[6],
     )
 
 
@@ -552,7 +550,7 @@ async def test_active_jti_read_failure_is_service_unavailable() -> None:
     assert caught.value.status_code == 503
 
 
-async def test_logout_deletes_only_the_current_hashed_jti_key() -> None:
+async def test_logout_deletes_only_the_current_hashed_jti_field() -> None:
     settings, claims, record = await _issued_claims_and_record()
     redis, mock = redis_mock()
     mock.eval.return_value = 1
@@ -565,10 +563,15 @@ async def test_logout_deletes_only_the_current_hashed_jti_key() -> None:
     )
 
     mock.eval.assert_awaited_once()
-    _script, key_count, key, index, expected = mock.eval.await_args.args
-    assert key_count == 2
-    assert "auth:sessions:" in index
-    assert str(claims.token_id) not in key
+    _script, key_count, records, order, expires, field, expected = (
+        mock.eval.await_args.args
+    )
+    assert key_count == 3
+    assert (records, order, expires) == _user_session_keys(
+        settings=settings, user_id=claims.user_id
+    )
+    assert field == _active_jti_field(settings=settings, token_id=claims.token_id)
+    assert str(claims.token_id) not in field
     assert expected == record
 
 

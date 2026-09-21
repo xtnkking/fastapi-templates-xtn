@@ -9,7 +9,7 @@ starting policy, not a claim that one set of numbers fits every deployment.
 Before generating a project, show these defaults together and ask the product
 owner to accept them or name the values to change. Do not silently add a quota
 for an endpoint that the project does not expose. Keep the values in
-`app/settings.py`, list corresponding `RATE_LIMIT_*` overrides in `.env.example`,
+`app/core/config.py`, list corresponding `RATE_LIMIT_*` overrides in `.env.example`,
 and explain in the copied asset README that changing the deployment `.env` and
 restarting applies new limits. Lua and route files contain no policy numbers.
 
@@ -137,13 +137,17 @@ increment for the same selected window. Do not replace this with one generic
 authenticated-CAPTCHA bucket that would make the scenes consume one another.
 
 Keep Redis keys private:
-`rl:v2:{<static_namespace>}:<business>:<subject_type>:<hmac_sha256>`.
+`rl:v2:<static_namespace>:<business>:<subject_type>:<hmac_sha256>`.
 HMAC covers the policy name and canonical subject with a distinct deployment
 secret; never place a raw IP, username, user ID, challenge, JWT, or target in a
 key or log. Validate static names, secret strength, and subject bounds. Keep
 Redis timeouts bounded and use a separate limiter client/namespace from active
 JWT JTI records. A separately operated limiter Redis is a deployment option,
 not another required business feature.
+
+Each Lua operation uses one key; do not wrap the shared namespace in a Cluster
+hash tag, which would put every user's quota on one node. Removing the former
+namespace tag starts fresh windows once; existing counters expire naturally.
 
 ## HTTP And Failure Contract
 

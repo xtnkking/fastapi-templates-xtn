@@ -140,10 +140,12 @@ GIN indexes add substantial write and storage cost.
 The bundled PostgreSQL asset separates shared audit safety from RBAC and business
 tables:
 
-- `app/audit.py` owns `AuditSource`, JSON sanitization, bounded depth and size,
+- `app/core/audit.py` owns `AuditSource`, JSON sanitization, bounded depth and size,
   sensitive key/value rejection, and action/reason/request-ID validators;
-- `app/business_audit.py` owns `BusinessAuditEvent`, actor/outcome types,
-  `BusinessAuditActionSpec`, trusted event facts, and `BusinessAuditWriter`;
+- `app/core/business_audit.py` owns actor/outcome types, `BusinessAuditActionSpec`,
+  trusted event facts, and pure catalog/payload validation;
+- `app/models/business_audit.py` owns the `BusinessAuditEvent` table and constraints;
+- `app/services/business_audit.py` owns the transaction-aware `BusinessAuditWriter`;
 - `alembic/env.py` imports the model so Alembic sees it on shared metadata;
 - the Alembic revisions create constraints, indexes, and append-only controls;
 - unit tests exercise catalog and sanitizer behavior; and

@@ -7,17 +7,17 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from app.database import SessionFactory
-from app.rbac.domain import (
+from app.core.errors import RbacError
+from app.core.security.domain import (
     MAX_ROLES_PER_USER,
     AuthorizationContext,
     Principal,
     SystemRoleKey,
 )
-from app.rbac.errors import RbacError
-from app.rbac.models import RbacAuditEvent, RbacState, Role, User, UserRole
-from app.rbac.queries import load_authority_snapshot, lock_rbac_state
-from app.rbac.service import RbacService
+from app.db.postgres import SessionFactory
+from app.models.access import RbacAuditEvent, RbacState, Role, User, UserRole
+from app.repositories.access import load_authority_snapshot, lock_rbac_state
+from app.services.access import RbacService
 from tests.integration.conftest import World
 from tests.integration.test_bootstrap import _run_handover
 

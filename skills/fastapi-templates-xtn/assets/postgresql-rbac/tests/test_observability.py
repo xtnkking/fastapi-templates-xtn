@@ -5,14 +5,14 @@ from typing import Protocol, cast
 
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
-from app.observability import (
+from app.core.observability import (
     SafeJsonFormatter,
     bind_request_context,
     current_request_id,
     request_log_level,
     reset_request_context,
 )
+from app.main import app
 
 
 class CompletionRecord(Protocol):
@@ -149,7 +149,7 @@ async def test_request_completion_log_uses_response_request_id() -> None:
 
 
 async def test_unexpected_error_emits_one_final_completion_event() -> None:
-    from app.rbac.dependencies import get_authorization_context
+    from app.dependencies.authentication import get_authorization_context
 
     records: list[logging.LogRecord] = []
 

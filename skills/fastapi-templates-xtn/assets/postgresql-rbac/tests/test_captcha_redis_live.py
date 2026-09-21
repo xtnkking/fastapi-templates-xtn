@@ -8,17 +8,17 @@ import uuid
 import pytest
 from redis.asyncio import Redis
 
-from app.abuse_defense import AbuseDefenseService
-from app.captcha import CaptchaService
-from app.rate_limit_dependencies import RateLimitExceeded
-from app.rbac.errors import RbacError
-from app.rbac.security import (
+from app.core.config import get_settings
+from app.core.errors import RbacError
+from app.core.security.abuse_defense import AbuseDefenseService
+from app.core.security.captcha import CaptchaService
+from app.core.security.rate_limit import RateLimitExceeded
+from app.core.security.tokens import (
     decode_access_token,
     issue_access_token,
     list_active_sessions,
     require_active_jti,
 )
-from app.settings import get_settings
 from tests.integration.safety import confirmed_redis_only_target
 
 
@@ -43,7 +43,7 @@ async def test_atomic_captcha_and_session_limit_against_isolated_redis(
             raise RuntimeError("image renderer failed")
 
         with monkeypatch.context() as patch:
-            patch.setattr("app.captcha._captcha_image", fail_render)
+            patch.setattr("app.core.security.captcha._captcha_image", fail_render)
             with pytest.raises(RuntimeError, match="image renderer failed"):
                 await service.issue(
                     scene="admin_reset", owner_id=owner, previous_captcha_id=initial

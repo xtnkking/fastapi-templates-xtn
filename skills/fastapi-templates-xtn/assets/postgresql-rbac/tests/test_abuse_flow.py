@@ -2,9 +2,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.abuse_flow import IdentityAbuseFlow, InvalidLoginCredentialsError
-from app.rate_limit import RateLimitResult, RateLimitUnavailable
-from app.rate_limit_dependencies import RateLimitExceeded
+from app.core.security.rate_limit import (
+    RateLimitExceeded,
+    RateLimitResult,
+    RateLimitUnavailable,
+)
+from app.services.abuse_flow import IdentityAbuseFlow, InvalidLoginCredentialsError
 
 
 @pytest.mark.parametrize(

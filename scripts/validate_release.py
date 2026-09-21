@@ -86,6 +86,9 @@ REQUIRED_SKILL_FILES = (
     "references/proxy-availability-testing.md",
     "references/rate-limiting.md",
     "references/reuse-and-abstraction.md",
+    "references/project-structure.md",
+    "references/application-capacity-and-availability.md",
+    "references/redis-connections.md",
     "references/verification-and-abuse-defense.md",
     "scripts/test_validate_country_csv.py",
     "scripts/validate_country_csv.py",
@@ -99,35 +102,46 @@ REQUIRED_ASSET_FILES = (
     "constraints-ci-py312.txt",
     "pyproject.toml",
     "alembic/env.py",
-    "app/abuse_flow.py",
-    "app/api_contract.py",
-    "app/i18n.py",
-    "app/locales/__init__.py",
-    "app/locales/en.json",
-    "app/locales/zh-CN.json",
-    "app/abuse_defense.py",
-    "app/audit.py",
-    "app/authentication_api.py",
-    "app/authentication_schemas.py",
-    "app/authentication_service.py",
-    "app/business_audit.py",
-    "app/captcha.py",
-    "app/captcha_request.py",
-    "app/observability.py",
-    "app/password_models.py",
-    "app/password_operator.py",
-    "app/passwords.py",
-    "app/rate_limit.py",
-    "app/rate_limit_dependencies.py",
-    "app/rate_limit_middleware.py",
-    "app/redis_client.py",
-    "app/rbac/api.py",
-    "app/rbac/policy.py",
-    "app/rbac/queries.py",
-    "app/rbac/security.py",
-    "app/rbac/service.py",
-    "app/security_policies.py",
-    "app/settings.py",
+    "app/services/abuse_flow.py",
+    "app/core/api_contract.py",
+    "app/core/i18n.py",
+    "app/assets/locales/__init__.py",
+    "app/assets/locales/en.json",
+    "app/assets/locales/zh-CN.json",
+    "app/core/security/abuse_defense.py",
+    "app/core/audit.py",
+    "app/api/authentication.py",
+    "app/schemas/authentication.py",
+    "app/services/authentication.py",
+    "app/services/business_audit.py",
+    "app/core/business_audit.py",
+    "app/models/business_audit.py",
+    "app/core/security/captcha.py",
+    "app/dependencies/captcha.py",
+    "app/core/observability.py",
+    "app/models/account_security.py",
+    "app/commands/passwords.py",
+    "app/core/security/passwords.py",
+    "app/core/security/identity.py",
+    "app/core/security/rate_limit.py",
+    "app/dependencies/rate_limit.py",
+    "app/core/middleware/rate_limit.py",
+    "app/db/redis.py",
+    "app/db/errors.py",
+    "scripts/load_test.py",
+    "tests/test_load_test.py",
+    "tests/test_database_availability.py",
+    "tests/integration/test_database_availability.py",
+    "tests/integration/test_authentication_connections.py",
+    "tests/integration/test_multi_instance.py",
+    "tests/integration/instance_server.py",
+    "app/api/access.py",
+    "app/core/security/policy.py",
+    "app/repositories/access.py",
+    "app/core/security/tokens.py",
+    "app/services/access.py",
+    "app/core/security/policies.py",
+    "app/core/config.py",
     "alembic/versions/0003_business_audit.py",
     "alembic/versions/0004_password_auth.py",
     "sql/bootstrap_super_admin.sql",
@@ -146,6 +160,9 @@ REQUIRED_ASSET_FILES = (
     "tests/test_dependency_observability.py",
     "tests/test_observability.py",
     "tests/test_observability_formatter.py",
+    "tests/test_buffered_logging.py",
+    "tests/integration/database_proxy.py",
+    "tests/integration/test_database_deadlines.py",
     "tests/test_password_migration.py",
     "tests/test_password_models.py",
     "tests/test_passwords.py",
@@ -160,6 +177,11 @@ REQUIRED_ASSET_FILES = (
     "tests/test_schemas.py",
     "tests/test_security.py",
     "tests/test_settings.py",
+    "tests/test_redis_clients.py",
+    "tests/test_redis_session_slots.py",
+    "tests/redis_topology.py",
+    "tests/test_redis_topology_live.py",
+    "tests/integration/test_redis_session_registry.py",
     "tests/integration/test_abuse_defense_redis.py",
     "tests/integration/safety.py",
     "tests/integration/test_business_audit.py",
@@ -334,7 +356,7 @@ def validate_identity_and_row_lifecycle(errors: list[str]) -> None:
     paths = {
         "entrypoint": SKILL_ROOT / "SKILL.md",
         "reference": SKILL_ROOT / "references" / "identity-soft-delete.md",
-        "models": ASSET_ROOT / "app" / "rbac" / "models.py",
+        "models": ASSET_ROOT / "app" / "models" / "access.py",
         "migration": ASSET_ROOT
         / "alembic"
         / "versions"
@@ -714,9 +736,9 @@ def validate_access_token_baseline(errors: list[str]) -> None:
         "skill": SKILL_ROOT / "SKILL.md",
         "policy": SKILL_ROOT / "references" / "jwt-session-security.md",
         "implementation": SKILL_ROOT / "references" / "jwt-session-implementation.md",
-        "settings": ASSET_ROOT / "app" / "settings.py",
-        "security": ASSET_ROOT / "app" / "rbac" / "security.py",
-        "dependencies": ASSET_ROOT / "app" / "rbac" / "dependencies.py",
+        "settings": ASSET_ROOT / "app" / "core" / "config.py",
+        "security": ASSET_ROOT / "app" / "core" / "security" / "tokens.py",
+        "dependencies": ASSET_ROOT / "app" / "dependencies" / "authentication.py",
         "environment": ASSET_ROOT / ".env.example",
         "settings tests": ASSET_ROOT / "tests" / "test_settings.py",
         "security tests": ASSET_ROOT / "tests" / "test_security.py",
@@ -759,20 +781,22 @@ def validate_access_token_baseline(errors: list[str]) -> None:
     required_markers = {
         "policy": (
             "86,400 seconds after `iat` by default",
-            "Redis 5.0+ Lua operation",
+            "Redis 7 Lua operation",
             "server `TIME`",
-            "SET ... NX EX <remaining_seconds>",
-            "PEXPIREAT <exp * 1000>",
+            "HSETNX",
+            "PEXPIREAT",
+            "PEXPIRETIME",
             "Redis is the only per-token online active-JTI gate",
         ),
         "implementation": (
-            "DEFAULT_ACCESS_TTL_SECONDS = 86_400",
-            "ACTIVATE_JTI =",
-            "redis.replicate_commands()",
-            "redis.call('TIME')",
-            "redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', ttl_seconds)",
-            "redis.call('PEXPIREAT', KEYS[1], expires_at * 1000)",
-            "COMPARE_AND_DELETE",
+            "../assets/postgresql-rbac/app/core/security/tokens.py",
+            "issue_access_token(",
+            "require_active_jti(",
+            "revoke_active_jti(",
+            "HSETNX",
+            "PEXPIRETIME",
+            "PEXPIREAT",
+            "auth:sessions:v2",
         ),
         "settings": (
             "jwt_issuer: str | None = None",
@@ -787,10 +811,12 @@ def validate_access_token_baseline(errors: list[str]) -> None:
             "if set(payload) != expected_claims",
             "if settings.jwt_issuer is not None and settings.jwt_audience is not None",
             "_ACTIVATE_JTI =",
-            "redis.replicate_commands()",
             "redis.call('TIME')",
-            "redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', ttl_seconds)",
-            "redis.call('PEXPIREAT', KEYS[1], expires_at * 1000)",
+            "redis.call('HSETNX', KEYS[1], ARGV[1], ARGV[2])",
+            "redis.call('PEXPIRETIME', KEYS[1])",
+            "redis.call('PEXPIREAT', key, deadline_ms)",
+            "_READ_ACTIVE_JTI",
+            "_LIST_USER_SESSIONS",
             "redis.eval(",
             "_COMPARE_AND_DELETE",
         ),
@@ -809,7 +835,7 @@ def validate_access_token_baseline(errors: list[str]) -> None:
             "test_configured_issuer_and_audience_mode_accepts_exact_seven_claims",
             "test_configured_issuer_and_audience_mode_rejects_invalid_scope",
             "test_configured_issuer_and_audience_mode_rejects_each_missing_claim",
-            "test_active_jti_key_does_not_depend_on_optional_issuer_or_audience",
+            "test_active_jti_field_does_not_depend_on_optional_issuer_or_audience",
             "test_configured_scope_uses_the_same_active_jti_lifecycle",
         ),
     }
@@ -951,14 +977,14 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         "environment": ASSET_ROOT / ".env.example",
         "pyproject": ASSET_ROOT / "pyproject.toml",
         "main": ASSET_ROOT / "app" / "main.py",
-        "settings": ASSET_ROOT / "app" / "settings.py",
-        "passwords": ASSET_ROOT / "app" / "passwords.py",
-        "models": ASSET_ROOT / "app" / "password_models.py",
-        "users model": ASSET_ROOT / "app" / "rbac" / "models.py",
-        "schemas": ASSET_ROOT / "app" / "authentication_schemas.py",
-        "API": ASSET_ROOT / "app" / "authentication_api.py",
-        "service": ASSET_ROOT / "app" / "authentication_service.py",
-        "operator": ASSET_ROOT / "app" / "password_operator.py",
+        "settings": ASSET_ROOT / "app" / "core" / "config.py",
+        "passwords": ASSET_ROOT / "app" / "core" / "security" / "passwords.py",
+        "models": ASSET_ROOT / "app" / "models" / "account_security.py",
+        "users model": ASSET_ROOT / "app" / "models" / "access.py",
+        "schemas": ASSET_ROOT / "app" / "schemas" / "authentication.py",
+        "API": ASSET_ROOT / "app" / "api" / "authentication.py",
+        "service": ASSET_ROOT / "app" / "services" / "authentication.py",
+        "operator": ASSET_ROOT / "app" / "commands" / "passwords.py",
         "Alembic environment": ASSET_ROOT / "alembic" / "env.py",
         "migration": (ASSET_ROOT / "alembic" / "versions" / "0004_password_auth.py"),
         "API tests": ASSET_ROOT / "tests" / "test_authentication_api.py",
@@ -1522,7 +1548,10 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             if marker not in text[label]:
                 fail(errors, f"{label} is missing local-password test {marker!r}")
 
-    if "from app import password_models" not in text["Alembic environment"]:
+    if (
+        "from app.models import account_security as account_security_models"
+        not in text["Alembic environment"]
+    ):
         fail(errors, "Alembic metadata must import password_models")
     for label, markers in {
         "reference": (
@@ -1554,15 +1583,15 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
         "verification reference": (
             SKILL_ROOT / "references" / "verification-and-abuse-defense.md"
         ),
-        "settings": ASSET_ROOT / "app" / "settings.py",
-        "policy registry": ASSET_ROOT / "app" / "security_policies.py",
-        "limiter": ASSET_ROOT / "app" / "rate_limit.py",
-        "middleware": ASSET_ROOT / "app" / "rate_limit_middleware.py",
-        "actor dependency": ASSET_ROOT / "app" / "rate_limit_dependencies.py",
-        "abuse defense": ASSET_ROOT / "app" / "abuse_defense.py",
-        "identity abuse flow": ASSET_ROOT / "app" / "abuse_flow.py",
-        "captcha": ASSET_ROOT / "app" / "captcha.py",
-        "redis client": ASSET_ROOT / "app" / "redis_client.py",
+        "settings": ASSET_ROOT / "app" / "core" / "config.py",
+        "policy registry": ASSET_ROOT / "app" / "core" / "security" / "policies.py",
+        "limiter": ASSET_ROOT / "app" / "core" / "security" / "rate_limit.py",
+        "middleware": ASSET_ROOT / "app" / "core" / "middleware" / "rate_limit.py",
+        "actor dependency": ASSET_ROOT / "app" / "dependencies" / "rate_limit.py",
+        "abuse defense": ASSET_ROOT / "app" / "core" / "security" / "abuse_defense.py",
+        "identity abuse flow": ASSET_ROOT / "app" / "services" / "abuse_flow.py",
+        "captcha": ASSET_ROOT / "app" / "core" / "security" / "captcha.py",
+        "redis client": ASSET_ROOT / "app" / "db" / "redis.py",
         "application": ASSET_ROOT / "app" / "main.py",
         "environment": ASSET_ROOT / ".env.example",
         "settings tests": ASSET_ROOT / "tests" / "test_settings.py",
@@ -1610,7 +1639,7 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
         ),
         "settings": (
             "app_environment: str = Field(",
-            "rate_limit_redis_url: str | None = None",
+            "rate_limit_redis_url: str | None = Field(default=None, repr=False)",
             "rate_limit_hmac_key: SecretStr",
             "max_active_sessions_per_user: int = Field(ge=1)",
             "rate_limit_captcha_create_per_five_minutes: int = Field(default=10",
@@ -1673,7 +1702,7 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
             "@app.exception_handler(RateLimitUnavailable)",
         ),
         "environment": (
-            "RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6380/0",
+            "# RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6380/0",
             "APP_ENVIRONMENT=development",
             "RATE_LIMIT_HMAC_KEY=",
             "MAX_ACTIVE_SESSIONS_PER_USER=",
@@ -1706,6 +1735,7 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
         "captcha Redis tests": ("test_",),
         "compose": (
             "redis-rate-limit:",
+            'profiles: ["separate-rate-limit"]',
             '"127.0.0.1:6380:6379"',
         ),
         "CI": (
@@ -1956,10 +1986,10 @@ def validate_user_role_limit(errors: list[str]) -> None:
         / "postgresql-rbac-implementation.md",
         "migration reference": SKILL_ROOT / "references" / "migrations.md",
         "testing reference": SKILL_ROOT / "references" / "testing.md",
-        "domain": ASSET_ROOT / "app" / "rbac" / "domain.py",
-        "schemas": ASSET_ROOT / "app" / "rbac" / "schemas.py",
-        "queries": ASSET_ROOT / "app" / "rbac" / "queries.py",
-        "service": ASSET_ROOT / "app" / "rbac" / "service.py",
+        "domain": ASSET_ROOT / "app" / "core" / "security" / "domain.py",
+        "schemas": ASSET_ROOT / "app" / "schemas" / "access.py",
+        "queries": ASSET_ROOT / "app" / "repositories" / "access.py",
+        "service": ASSET_ROOT / "app" / "services" / "access.py",
         "migration": ASSET_ROOT
         / "alembic"
         / "versions"
@@ -2080,10 +2110,10 @@ def validate_administrative_read_visibility(errors: list[str]) -> None:
         / "references"
         / "postgresql-rbac-implementation.md",
         "testing reference": SKILL_ROOT / "references" / "testing.md",
-        "queries": ASSET_ROOT / "app" / "rbac" / "queries.py",
-        "policy": ASSET_ROOT / "app" / "rbac" / "policy.py",
-        "routes": ASSET_ROOT / "app" / "rbac" / "api.py",
-        "service": ASSET_ROOT / "app" / "rbac" / "service.py",
+        "queries": ASSET_ROOT / "app" / "repositories" / "access.py",
+        "policy": ASSET_ROOT / "app" / "core" / "security" / "policy.py",
+        "routes": ASSET_ROOT / "app" / "api" / "access.py",
+        "service": ASSET_ROOT / "app" / "services" / "access.py",
         "policy tests": ASSET_ROOT / "tests" / "test_policy.py",
         "dependency tests": ASSET_ROOT / "tests" / "test_dependency_observability.py",
         "query tests": ASSET_ROOT / "tests" / "test_rbac_queries.py",
@@ -2386,7 +2416,7 @@ def validate_super_admin_bootstrap(errors: list[str]) -> None:
 
 def validate_rbac_database_naming(errors: list[str]) -> None:
     paths = {
-        "model": ASSET_ROOT / "app" / "rbac" / "models.py",
+        "model": ASSET_ROOT / "app" / "models" / "access.py",
         "migration": ASSET_ROOT
         / "alembic"
         / "versions"
@@ -2484,14 +2514,14 @@ def validate_api_internationalization(errors: list[str]) -> None:
         "Chinese changelog": REPO_ROOT / "CHANGELOG.zh-CN.md",
         "release checklist": REPO_ROOT / "RELEASE_CHECKLIST.md",
         "Chinese release checklist": REPO_ROOT / "RELEASE_CHECKLIST.zh-CN.md",
-        "implementation": ASSET_ROOT / "app" / "i18n.py",
-        "contract": ASSET_ROOT / "app" / "api_contract.py",
+        "implementation": ASSET_ROOT / "app" / "core" / "i18n.py",
+        "contract": ASSET_ROOT / "app" / "core" / "api_contract.py",
         "application": ASSET_ROOT / "app" / "main.py",
-        "errors": ASSET_ROOT / "app" / "rbac" / "errors.py",
+        "errors": ASSET_ROOT / "app" / "core" / "errors.py",
         "pyproject": ASSET_ROOT / "pyproject.toml",
         "tests": ASSET_ROOT / "tests" / "test_i18n.py",
-        "Chinese catalog": ASSET_ROOT / "app" / "locales" / "zh-CN.json",
-        "English catalog": ASSET_ROOT / "app" / "locales" / "en.json",
+        "Chinese catalog": ASSET_ROOT / "app" / "assets" / "locales" / "zh-CN.json",
+        "English catalog": ASSET_ROOT / "app" / "assets" / "locales" / "en.json",
     }
     if any(not path.is_file() for path in paths.values()):
         return
@@ -2665,7 +2695,7 @@ def validate_api_internationalization(errors: list[str]) -> None:
             "message=validation_message(request, error)",
         ),
         "errors": ("message_key: MessageKey", "self.message_key = message_key"),
-        "pyproject": ('app = ["locales/*.json"]',),
+        "pyproject": ('"app.assets.locales" = ["*.json"]',),
         "tests": (
             "test_catalogs_are_complete_bounded_and_safe",
             "test_accept_language_negotiation",
@@ -2721,12 +2751,12 @@ def validate_api_response_contract(errors: list[str]) -> None:
     paths = {
         "entrypoint": SKILL_ROOT / "SKILL.md",
         "reference": SKILL_ROOT / "references" / "api-response-standard.md",
-        "contract": ASSET_ROOT / "app" / "api_contract.py",
+        "contract": ASSET_ROOT / "app" / "core" / "api_contract.py",
         "application": ASSET_ROOT / "app" / "main.py",
-        "routes": ASSET_ROOT / "app" / "rbac" / "api.py",
-        "errors": ASSET_ROOT / "app" / "rbac" / "errors.py",
-        "schemas": ASSET_ROOT / "app" / "rbac" / "schemas.py",
-        "service": ASSET_ROOT / "app" / "rbac" / "service.py",
+        "routes": ASSET_ROOT / "app" / "api" / "access.py",
+        "errors": ASSET_ROOT / "app" / "core" / "errors.py",
+        "schemas": ASSET_ROOT / "app" / "schemas" / "access.py",
+        "service": ASSET_ROOT / "app" / "services" / "access.py",
         "proxy backend": SKILL_ROOT / "references" / "proxy-availability-backend.md",
         "proxy frontend": SKILL_ROOT / "references" / "proxy-availability-frontend.md",
     }
@@ -2837,12 +2867,12 @@ def validate_observability_and_audit(errors: list[str]) -> None:
         "entrypoint": SKILL_ROOT / "SKILL.md",
         "logging reference": SKILL_ROOT / "references" / "operational-logging.md",
         "audit reference": SKILL_ROOT / "references" / "audit-module.md",
-        "logging implementation": ASSET_ROOT / "app" / "observability.py",
-        "audit implementation": ASSET_ROOT / "app" / "audit.py",
+        "logging implementation": ASSET_ROOT / "app" / "core" / "observability.py",
+        "audit implementation": ASSET_ROOT / "app" / "core" / "audit.py",
         "application": ASSET_ROOT / "app" / "main.py",
-        "database": ASSET_ROOT / "app" / "database.py",
-        "settings": ASSET_ROOT / "app" / "settings.py",
-        "model": ASSET_ROOT / "app" / "rbac" / "models.py",
+        "database": ASSET_ROOT / "app" / "db" / "postgres.py",
+        "settings": ASSET_ROOT / "app" / "core" / "config.py",
+        "model": ASSET_ROOT / "app" / "models" / "access.py",
         "migration": ASSET_ROOT
         / "alembic"
         / "versions"
@@ -2983,7 +3013,9 @@ def validate_business_audit(errors: list[str]) -> None:
         "operations reference": SKILL_ROOT
         / "references"
         / "business-audit-operations.md",
-        "implementation": ASSET_ROOT / "app" / "business_audit.py",
+        "implementation": ASSET_ROOT / "app" / "services" / "business_audit.py",
+        "contract": ASSET_ROOT / "app" / "core" / "business_audit.py",
+        "model": ASSET_ROOT / "app" / "models" / "business_audit.py",
         "migration": ASSET_ROOT / "alembic" / "versions" / "0003_business_audit.py",
         "alembic environment": ASSET_ROOT / "alembic" / "env.py",
         "unit tests": ASSET_ROOT / "tests" / "test_business_audit.py",
@@ -3049,16 +3081,20 @@ def validate_business_audit(errors: list[str]) -> None:
             "## Legal Hold And Privacy",
             "## Backup And Recovery",
         ),
-        "implementation": (
+        "contract": (
             "class BusinessAuditOutcome(StrEnum):",
             "class BusinessAuditActorType(StrEnum):",
             "class BusinessAuditActionSpec:",
             "class BusinessAuditFacts:",
+        ),
+        "model": (
             "class BusinessAuditEvent(Base):",
             '__tablename__ = "business_audit_events"',
             'name=conv("ck_business_audit_id_uuid4")',
             'name=conv("ck_business_audit_actor_presence")',
             'name=conv("ck_business_audit_non_success_after")',
+        ),
+        "implementation": (
             "class BusinessAuditWriter:",
             "def add_succeeded(",
             "def add_after_savepoint_rollback(",
@@ -3081,7 +3117,7 @@ def validate_business_audit(errors: list[str]) -> None:
             "BEFORE TRUNCATE ON business_audit_events",
         ),
         "alembic environment": (
-            "from app import business_audit as business_audit_models",
+            "from app.models import business_audit as business_audit_models",
             "target_metadata = Base.metadata",
         ),
         "unit tests": (
@@ -3146,7 +3182,13 @@ def validate_business_audit(errors: list[str]) -> None:
                     f"delivery subsystem: {marker!r}",
                 )
 
-    for name in ("implementation", "migration", "alembic environment"):
+    for name in (
+        "implementation",
+        "contract",
+        "model",
+        "migration",
+        "alembic environment",
+    ):
         if "business_audit_delivery_outbox" in text[name]:
             relative = paths[name].relative_to(REPO_ROOT)
             fail(
@@ -3161,7 +3203,7 @@ def validate_business_audit(errors: list[str]) -> None:
         fail(errors, "business and RBAC audit event catalogs must remain separate")
 
     outcome_values = ("succeeded", "failed", "denied")
-    for name in ("policy reference", "implementation", "migration"):
+    for name in ("policy reference", "contract", "migration"):
         for outcome in outcome_values:
             if outcome not in text[name]:
                 relative = paths[name].relative_to(REPO_ROOT)
@@ -3337,7 +3379,7 @@ def validate_country_catalog(errors: list[str]) -> None:
 def validate_ci_and_current_documentation(errors: list[str]) -> None:
     ci_path = REPO_ROOT / ".github" / "workflows" / "ci.yml"
     pyproject_path = ASSET_ROOT / "pyproject.toml"
-    limiter_path = ASSET_ROOT / "app" / "rate_limit_dependencies.py"
+    limiter_path = ASSET_ROOT / "app" / "dependencies" / "rate_limit.py"
     limiter_tests_path = ASSET_ROOT / "tests" / "test_rate_limit_dependencies.py"
     openai_path = SKILL_ROOT / "agents" / "openai.yaml"
     if any(
@@ -3641,8 +3683,8 @@ def validate_distribution_tooling(errors: list[str]) -> None:
         "/licenses/LICENSE",
         "/licenses/NOTICE",
         "/licenses/THIRD_PARTY_NOTICES.md",
-        "/app/locales/en.json",
-        "/app/locales/zh-CN.json",
+        "/app/assets/locales/en.json",
+        "/app/assets/locales/zh-CN.json",
     ):
         if marker not in text["wheel validator"]:
             fail(errors, f"wheel validator is missing artifact check: {marker}")

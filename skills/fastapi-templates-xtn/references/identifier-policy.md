@@ -230,27 +230,18 @@ detail, list, search, count, export, bulk, and nested operations.
 
 ## Migration From Sequential IDs
 
-Do not replace a deployed primary key in one blocking step. Use an expand,
-backfill, compatible-read/write, and contract migration:
+Migrate deployed IDs only within an explicit migration request. Select the target
+prefix or UUIDv4 profile, preserve a complete old-to-new mapping, and update every
+parent and referencing table without null, duplicate, or orphaned relationships.
+Verify primary/foreign keys, uniqueness, and all query/schema/external consumers,
+including URLs, events, JWT `sub`, and Redis values. Remove old integer lookups and
+sequences only after dependent code/data have been converted and verified.
 
-1. Select and document the target prefix or UUIDv4 profile. Freeze its format
-   before generating any externally visible value.
-2. Add nullable new-ID columns to every parent and referencing table. Generate
-   new parent values under the target policy while old and new applications
-   coexist.
-3. Backfill parents in bounded batches, add uniqueness, and backfill children by
-   joining through the old key. Verify the mapping is complete and unambiguous.
-4. Add new foreign keys as `NOT VALID`, validate them, dual-write during the
-   compatibility window, and prove no null or orphaned mapping remains.
-5. Switch queries, events, URLs, schemas, logs, JWT `sub`, Redis values, and
-   external integrations. Reject malformed values rather than truncating or
-   normalizing them.
-6. Stop returning and accepting the old integer. Make new columns non-null and
-   move primary/foreign-key ownership using a procedure appropriate to table
-   size.
-7. Remove old keys, sequences, compatibility routes, and mapping columns only
-   after the rollback window and all old workers, jobs, caches, and tokens are
-   gone.
+Follow the owner's migration and rollback plan; an agreed maintenance-window
+conversion does not require dual writes or mixed application versions. Add
+compatibility code only for an explicitly selected online migration, and test
+that code when it is actually present. Do not introduce a rolling-release
+procedure as a default prerequisite to identifier changes.
 
 Keep an explicit old-to-new mapping until verification completes. Treat JWT
 subject conversion as a credential migration: expire or revoke old-subject
@@ -268,9 +259,10 @@ tokens instead of accepting both formats indefinitely.
   uniqueness, and direct-database generation where supported.
 - Test malformed, wrong-prefix, wrong-length, lowercase, random unknown, leaked,
   concealed, and unauthorized IDs through every lookup variant.
-- For a migration, test empty upgrade, production-shaped backfill, mixed-version
-  writes, constraint validation, rollback policy, old-token expiry, and removal
-  of all old integer lookup paths.
+- For a migration, test empty upgrade, representative-data conversion, complete
+  mappings, constraints, old-token expiry, and removal of old integer lookups.
+  Test compatibility writes and rollback paths only when the agreed migration
+  design includes them; never imply that a data-discarding downgrade is safe.
 
 Use both column and key metadata; checking sequence defaults alone does not find
 an integer key populated manually.

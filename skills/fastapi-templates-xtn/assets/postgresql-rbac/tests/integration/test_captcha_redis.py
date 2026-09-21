@@ -7,17 +7,17 @@ import pytest
 from httpx import AsyncClient
 from redis.asyncio import Redis
 
-from app import captcha
-from app.main import app
-from app.rbac.errors import RbacError
-from app.rbac.security import (
+from app.core.config import get_settings
+from app.core.errors import RbacError
+from app.core.security import captcha
+from app.core.security.tokens import (
     decode_access_token,
     issue_access_token,
     list_active_sessions,
     require_active_jti,
     revoke_active_jti,
 )
-from app.settings import get_settings
+from app.main import app
 
 pytestmark = pytest.mark.postgresql
 

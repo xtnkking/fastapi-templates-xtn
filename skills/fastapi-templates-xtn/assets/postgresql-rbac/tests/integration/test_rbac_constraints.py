@@ -5,9 +5,9 @@ import pytest
 from sqlalchemy import delete, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from app.database import SessionFactory, engine
-from app.rbac.domain import PermissionKey, SystemRoleKey
-from app.rbac.models import (
+from app.core.security.domain import PermissionKey, SystemRoleKey
+from app.db.postgres import SessionFactory, engine
+from app.models.access import (
     RbacAuditEvent,
     RbacState,
     Role,

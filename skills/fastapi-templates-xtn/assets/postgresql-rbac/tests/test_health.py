@@ -6,9 +6,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 import app.main as main_module
-from app.api_contract import BusinessCode
+from app.core.api_contract import BusinessCode
+from app.core.config import get_settings
 from app.main import app
-from app.settings import get_settings
 
 
 async def _request_readiness() -> Any:
@@ -73,6 +73,8 @@ async def test_postgresql_probe_requires_one_current_head_and_global_state(
 
     statement, parameters = connection.scalar.await_args.args
     normalized_sql = " ".join(str(statement).split())
+    assert "NOT pg_is_in_recovery()" in normalized_sql
+    assert "current_setting('transaction_read_only') = 'off'" in normalized_sql
     assert "count(*) FROM alembic_version" in normalized_sql
     assert "WHERE version_num = :expected_head" in normalized_sql
     assert "FROM rbac_state" in normalized_sql

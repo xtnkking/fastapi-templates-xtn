@@ -7,8 +7,9 @@ import pytest
 from sqlalchemy import delete, func, select
 from sqlalchemy.engine import make_url
 
-from app.database import SessionFactory
-from app.rbac.domain import (
+from app.core.config import get_settings
+from app.core.errors import RbacError
+from app.core.security.domain import (
     MAX_ROLES_PER_USER,
     PERMISSION_CATALOG,
     SUPER_ADMIN_PERMISSION_KEYS,
@@ -16,8 +17,8 @@ from app.rbac.domain import (
     SYSTEM_ROLE_SPECS,
     SystemRoleKey,
 )
-from app.rbac.errors import RbacError
-from app.rbac.models import (
+from app.db.postgres import SessionFactory
+from app.models.access import (
     Permission,
     RbacAuditEvent,
     RbacState,
@@ -26,8 +27,7 @@ from app.rbac.models import (
     User,
     UserRole,
 )
-from app.rbac.provisioning import create_user_with_default_role
-from app.settings import get_settings
+from app.services.provisioning import create_user_with_default_role
 
 pytestmark = pytest.mark.postgresql
 

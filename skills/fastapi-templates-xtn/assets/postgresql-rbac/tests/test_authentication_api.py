@@ -5,27 +5,26 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-import app.authentication_api as authentication_api
-from app.abuse_defense import AbuseDefenseService
-from app.abuse_flow import IdentityAbuseFlow
-from app.api_contract import BusinessCode
-from app.authentication_service import (
-    AuthenticatedPasswordUser,
-    get_local_authentication_service,
-)
-from app.captcha import CaptchaService
-from app.main import app
-from app.rate_limit import RateLimitResult
-from app.rate_limit_dependencies import RateLimitExceeded
-from app.rbac.dependencies import get_authorization_context
-from app.rbac.domain import (
+import app.api.authentication as authentication_api
+from app.core.api_contract import BusinessCode
+from app.core.config import get_settings
+from app.core.security.abuse_defense import AbuseDefenseService
+from app.core.security.captcha import CaptchaService
+from app.core.security.domain import (
     AuthoritySnapshot,
     AuthorizationContext,
     PermissionKey,
     Principal,
     RoleGrant,
 )
-from app.settings import get_settings
+from app.core.security.rate_limit import RateLimitExceeded, RateLimitResult
+from app.dependencies.authentication import get_authorization_context
+from app.main import app
+from app.services.abuse_flow import IdentityAbuseFlow
+from app.services.authentication import (
+    AuthenticatedPasswordUser,
+    get_local_authentication_service,
+)
 
 VALID_PASSWORD = "correct horse battery staple"
 NEW_PASSWORD = "new correct horse battery staple"

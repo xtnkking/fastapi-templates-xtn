@@ -1,4 +1,5 @@
 import asyncio
+import os
 from types import SimpleNamespace
 from typing import Any
 
@@ -8,6 +9,7 @@ from redis import Redis as SyncRedis
 from alembic import command
 from tests.integration import conftest as integration_fixtures
 from tests.integration import safety
+from tests.integration.instance_server import serve
 
 
 def configure_disposable_targets(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -219,3 +221,30 @@ def test_driver_runtime_error_does_not_echo_connection_details(
             )
         )
     assert "marker" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("DATABASE_URL", "postgresql+asyncpg://test:marker@other-host/fresh_test"),
+        ("REDIS_URL", "redis://other-host/15"),
+        ("RATE_LIMIT_REDIS_URL", "redis://other-host/0"),
+        ("APP_ENVIRONMENT", "production"),
+    ],
+)
+async def test_subprocess_server_refuses_mismatched_targets_before_starting(
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    configure_disposable_targets(monkeypatch)
+    for application, test in (
+        ("DATABASE_URL", "TEST_DATABASE_URL"),
+        ("REDIS_URL", "TEST_REDIS_URL"),
+        ("RATE_LIMIT_REDIS_URL", "TEST_RATE_LIMIT_REDIS_URL"),
+    ):
+        monkeypatch.setenv(application, os.environ[test])
+    monkeypatch.setenv("APP_ENVIRONMENT", "test")
+    monkeypatch.setenv(variable, value)
+    with pytest.raises(RuntimeError, match="guarded disposable test profile") as error:
+        await serve(0)
+    assert "marker" not in str(error.value)
+    assert "other-host" not in str(error.value)

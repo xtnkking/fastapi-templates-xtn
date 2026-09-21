@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.rbac import service as service_module
-from app.rbac.domain import AuthorizationContext
-from app.rbac.errors import RbacError, conflict, forbidden, not_found
-from app.rbac.service import RbacService
+from app.core.errors import RbacError, conflict, forbidden, not_found
+from app.core.security.domain import AuthorizationContext
+from app.services import access as service_module
+from app.services.access import RbacService
 
 
 class _AsyncContextManager:

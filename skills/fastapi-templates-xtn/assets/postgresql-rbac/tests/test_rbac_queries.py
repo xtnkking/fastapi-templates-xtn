@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ClauseElement
 
-from app.rbac.domain import AuthoritySnapshot, RoleGrant
-from app.rbac.models import Role, User
-from app.rbac.queries import (
+from app.core.security.domain import AuthoritySnapshot, RoleGrant
+from app.models.access import Role, User
+from app.repositories.access import (
     list_visible_users_page,
     load_authority_snapshots_for_users,
     load_live_super_admin_holder_ids,

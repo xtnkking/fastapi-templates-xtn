@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from app.api_contract import generic_error_code
-from app.observability import (
+from app.core.api_contract import generic_error_code
+from app.core.observability import (
     SafeJsonFormatter,
     bind_request_context,
     create_detached_task,
@@ -275,7 +275,7 @@ def test_safe_exception_metadata_uses_only_an_application_frame() -> None:
 
     location = metadata.get("exception_location")
     assert isinstance(location, dict)
-    assert location["module"] == "app.api_contract"
+    assert location["module"] == "app.core.api_contract"
     assert location["function"] == "generic_error_code"
     assert isinstance(location["line"], int)
     assert Path(__file__).name not in json.dumps(metadata)
@@ -292,7 +292,7 @@ async def test_detached_task_clears_request_context_and_reports_failure() -> Non
         assert current_request_id() is None
         raise RuntimeError("detached-task-secret")
 
-    application_logger = logging.getLogger("app.observability")
+    application_logger = logging.getLogger("app.core.observability")
     handler = CaptureHandler()
     application_logger.addHandler(handler)
     context_token = bind_request_context(str(uuid.uuid4()))

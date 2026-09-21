@@ -25,9 +25,15 @@ The included PostgreSQL asset uses this linear migration chain:
    evidence, and the `users:password:reset` permission/grants.
 
 These four revisions shipped with `v0.5.0` and are immutable migration history.
-`v0.6.2` changes no database shape and needs no new Alembic revision. Every
+`v0.7.0` changes no database shape and needs no new Alembic revision. Every
 later schema or seed change must use a new forward revision; never edit, replace,
 or reorder `0001` through `0004` after publication.
+
+The `v0.7.0` Redis session layout is separate from PostgreSQL migrations. Merely
+updating the Skill changes no running service. Deploying the new session code
+to an existing application requires users to log in again; changed rate-limit
+keys start fresh windows once. No account, role, permission, or audit data is
+removed by this change.
 
 A deployed application must preserve and explicitly map its existing users,
 roles, grants, assignments, versions, and audit history. After any revision
@@ -41,24 +47,17 @@ Standalone Alembic commands keep their normal `alembic.ini` logging setup.
 
 ## Migration Strategy
 
-Use an expand, compatible rollout, backfill, validate, and contract sequence for
-deployed systems:
+Write forward migrations for the requested schema or seed changes. Preserve
+existing data and authorization invariants, make catalog seeding idempotent,
+and verify the resulting schema with PostgreSQL tests. Size backfill batches
+only when actual data volume requires it; do not add dual writes or compatibility
+layers for a hypothetical release strategy.
 
-1. Add new nullable columns, tables, indexes, and non-breaking constraints.
-2. Seed stable permission keys and the three deterministic system roles
-   idempotently.
-3. Deploy code that can read the old and new shapes and dual-writes new authority
-   data, or use an equivalent controlled database transition. Confirm it is safe
-   while old application instances still exist.
-4. Backfill the system-role mapping and mandatory `user` assignments in bounded
-   batches when data volume requires it.
-5. Switch reads to the new model, stop legacy writers, and verify no old instance
-   or job can create invalid authorization data.
-6. Validate identity normalization/uniqueness/reuse, role shape,
-   unique-super-admin, default-user, live-relation uniqueness, soft-delete, and
-   authority-version invariants, then make constraints strict.
-7. Remove legacy authorization fields only after rollback and compatibility
-   windows close.
+The project owner chooses maintenance windows, release order, and rollback
+procedures. Zero-downtime upgrades and mixed-version compatibility are separate
+requirements, not prerequisites for ordinary migration code. Follow an existing
+project's agreed rollout contract; otherwise leave deployment design to the
+owner unless explicitly asked to implement it.
 
 Unmapped users and records default to only the mandatory base `user` role, which
 has no authorization-management permission. Never grant `admin` merely to make a
@@ -361,8 +360,6 @@ application-level authorization ordering proof.
   and controlled purge paths reject audit and `rbac_state` targets.
 - Check query plans for permission resolution and high-volume affected-user
   scans.
-- Verify the application during a mixed-version rollout when zero downtime is a
-  requirement.
 - Run PostgreSQL-specific constraints and optional row-level security against
   PostgreSQL; SQLite is not an adequate substitute.
 - Inspect PostgreSQL metadata and prove no authorization or business

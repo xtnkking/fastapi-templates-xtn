@@ -3,6 +3,9 @@
 Read when introducing shared functions or layers, adding a variant of an
 existing flow, or reviewing duplication. Apply these decisions to the changed
 surface; do not turn an ordinary feature into a repository-wide rewrite.
+Follow the host project's established abstractions and naming. A different
+preferred layout is not evidence that its framework needs replacing; only an
+explicitly requested reorganization changes that scope.
 
 ## Decide By Behavior
 
@@ -72,7 +75,12 @@ Remove unused parameters, unused wrappers, and redundant forwarding when changin
 their owning API. Preserve genuinely supported callers and versioned public
 contracts; do not invent compatibility wrappers when there is no such consumer.
 
-Keep a shared helper beside its actual domain. Do not create a generic `utils`
+Keep a shared helper beside its actual domain within the relevant responsibility
+directory; follow [Project structure](project-structure.md) for new-project
+placement. A simple authorized API query may call its repository directly, and
+a business service may use `session.add()` inside its own transaction. Neither
+needs a forwarding layer for the sake of a directory diagram.
+Do not create a generic `utils`
 module, base repository, service hierarchy, strategy registry, or callback
 framework solely to anticipate reuse. Add a new layer only when its query,
 business rule, or lifecycle responsibility improves the real call sites. Check

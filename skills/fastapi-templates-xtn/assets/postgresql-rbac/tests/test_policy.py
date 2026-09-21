@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from app.rbac.domain import (
+from app.core.security.domain import (
     ADMIN_PERMISSION_KEYS,
     SUPER_ADMIN_PERMISSION_KEYS,
     AuthoritySnapshot,
@@ -12,7 +12,7 @@ from app.rbac.domain import (
     RoleGrant,
     SystemRoleKey,
 )
-from app.rbac.policy import (
+from app.core.security.policy import (
     PolicyDecision,
     decide_role_administration,
     decide_role_change,

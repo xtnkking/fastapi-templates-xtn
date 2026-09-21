@@ -9,15 +9,15 @@ from typing import Literal, cast
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from redis.asyncio import Redis
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.abuse_flow import InvalidLoginCredentialsError
-from app.api_contract import (
+from app.api.access import router as access_router
+from app.api.authentication import authentication_routers
+from app.core.api_contract import (
     ApiResponse,
     BusinessCode,
     ValidationErrorData,
@@ -28,16 +28,17 @@ from app.api_contract import (
     request_id_for,
     request_id_headers,
 )
-from app.authentication_api import authentication_routers
-from app.database import engine
-from app.i18n import (
+from app.core.config import get_settings
+from app.core.errors import RbacError
+from app.core.i18n import (
     MessageKey,
     apply_language_headers,
     locale_for_request,
     validation_field,
     validation_message,
 )
-from app.observability import (
+from app.core.middleware.rate_limit import semantic_rate_limit_headers
+from app.core.observability import (
     bind_request_context,
     configure_logging,
     deactivate_request_context,
@@ -47,14 +48,17 @@ from app.observability import (
     safe_exception_metadata,
     safe_log,
 )
-from app.rate_limit import RateLimitUnavailable
-from app.rate_limit_dependencies import RateLimitExceeded
-from app.rate_limit_middleware import semantic_rate_limit_headers
-from app.rbac.api import router as access_router
-from app.rbac.errors import RbacError
-from app.redis_client import create_rate_limit_redis_client, create_redis_client
-from app.security_policies import SecurityPolicies
-from app.settings import get_settings
+from app.core.security.policies import SecurityPolicies
+from app.core.security.rate_limit import RateLimitExceeded, RateLimitUnavailable
+from app.db.errors import DatabaseUnavailableError, database_error_category
+from app.db.postgres import engine
+from app.db.redis import (
+    RedisClient,
+    close_redis_client,
+    create_rate_limit_redis_client,
+    create_redis_client,
+)
+from app.services.abuse_flow import InvalidLoginCredentialsError
 
 logger = logging.getLogger(__name__)
 
@@ -178,29 +182,37 @@ def _log_post_response_failure(
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     SecurityPolicies.from_settings(settings)
-    configure_logging(
+    log_handler = configure_logging(
         service_name=settings.service_name,
         service_version=settings.service_version,
         environment=settings.app_environment,
         log_level=settings.log_level,
         include_exception_details=settings.log_include_exception_details,
+        queue_capacity=settings.log_queue_capacity,
     )
-    redis = create_redis_client(settings)
-    rate_limit_redis = create_rate_limit_redis_client(settings)
-    app.state.redis = redis
-    app.state.rate_limit_redis = rate_limit_redis
-    safe_log(logger, logging.INFO, "application.started")
+    app.state.log_handler = log_handler
     try:
-        yield
+        redis = create_redis_client(settings)
+        try:
+            rate_limit_redis = create_rate_limit_redis_client(settings)
+            try:
+                app.state.redis = redis
+                app.state.rate_limit_redis = rate_limit_redis
+                safe_log(logger, logging.INFO, "application.started")
+                yield
+            finally:
+                await close_redis_client(rate_limit_redis)
+        finally:
+            await close_redis_client(redis)
     finally:
         try:
-            try:
-                await rate_limit_redis.aclose()
-            finally:
-                await redis.aclose()
-        finally:
             await engine.dispose()
+        finally:
             safe_log(logger, logging.INFO, "application.stopped")
+            logging.getLogger("app").removeHandler(log_handler)
+            await log_handler.shutdown(
+                timeout_seconds=settings.log_shutdown_timeout_seconds
+            )
 
 
 app = FastAPI(title="PostgreSQL Access Control Example", lifespan=lifespan)
@@ -219,7 +231,9 @@ _READINESS_REDIS_CLEANUP_TIMEOUT_SECONDS = 0.1
 _POSTGRESQL_READINESS_QUERY = text(
     """
     SELECT
-        (SELECT count(*) FROM alembic_version) = 1
+        NOT pg_is_in_recovery()
+        AND current_setting('transaction_read_only') = 'off'
+        AND (SELECT count(*) FROM alembic_version) = 1
         AND EXISTS (
             SELECT 1
             FROM alembic_version
@@ -260,7 +274,7 @@ async def _probe_postgresql() -> None:
             raise _ReadinessDependencyUnavailable
 
 
-async def _best_effort_delete_readiness_key(client: Redis, key: str) -> None:
+async def _best_effort_delete_readiness_key(client: RedisClient, key: str) -> None:
     try:
         async with asyncio.timeout(_READINESS_REDIS_CLEANUP_TIMEOUT_SECONDS):
             await cast(Awaitable[int], client.delete(key))
@@ -274,7 +288,7 @@ async def _best_effort_delete_readiness_key(client: Redis, key: str) -> None:
 
 
 async def _probe_redis(
-    client: Redis | None,
+    client: RedisClient | None,
     *,
     key_namespace: Literal["active-jti", "rate-limit"],
 ) -> None:
@@ -686,11 +700,17 @@ async def handle_unexpected_error(request: Request, exc: Exception) -> JSONRespo
     )
 
 
-@app.exception_handler(OperationalError)
+@app.exception_handler(SQLAlchemyError)
+@app.exception_handler(DatabaseUnavailableError)
 async def handle_database_unavailable(
     request: Request,
-    exc: OperationalError,
+    exc: SQLAlchemyError | DatabaseUnavailableError,
 ) -> JSONResponse:
+    category = database_error_category(exc)
+    if category is None:
+        # Keep the ordinary unhandled-error/logging path for SQL mistakes and
+        # integrity failures; only recognized availability failures become 503.
+        raise exc
     safe_log(
         logger,
         logging.ERROR,
@@ -701,7 +721,7 @@ async def handle_database_unavailable(
             "business_code": int(BusinessCode.SERVICE_UNAVAILABLE),
             "dependency": "postgresql",
             "dependency_operation": "request_database_operation",
-            "error_category": dependency_error_category(exc),
+            "error_category": category,
             **safe_exception_metadata(exc),
         },
     )

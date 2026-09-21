@@ -4,6 +4,69 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [0.7.0] - 2026-09-21
+
+- Made one standalone PostgreSQL and one shared standalone Redis the explicit
+  new-project default. The example limiter URL is now optional; cluster modes,
+  read/write splitting, and separate backends are requested extensions, with
+  existing project topology preserved and no mandatory cluster-choice prompt.
+- Added configurable Redis standalone, Sentinel, and native Cluster clients,
+  independent discovery/data authentication and TLS, complete limiter connection
+  inheritance, bounded pools, and no ambiguous-write replay. Sessions now use
+  per-user same-slot records and indexes; CAPTCHA scripts declare every key and
+  quotas distribute across slots. Only deploying the new session code to an
+  existing application requires re-login; updating the Skill alone does not.
+  Changed quota keys start fresh windows once on deployment. Added disposable
+  real topology tests and a task-routed configuration guide; infrastructure
+  remains operator-owned.
+- Focused the Skill on code conventions and correctness. Shortened capacity
+  guidance, removed the default rolling-release procedure, and scoped verification
+  to changed code. Production sizing, cluster drills, log platforms, and rollout
+  choices no longer act as ordinary coding prerequisites. Existing runtime
+  safeguards and tests are retained.
+- Clarified the operations handoff: when a PostgreSQL cluster is requested, use
+  one supplied writable endpoint; operations owns replication, promotion, and endpoint failover.
+  Read/write splitting requires an explicit need and deployment design, with
+  primary authorization reads preserved behind proxies. Scoped Redis delivery
+  and topology validation to application integration with supplied infrastructure.
+- Added a 20-second client database-command deadline and bounded transaction-free
+  checkout probe to cover silent network stalls. Timed-out connections retire
+  locally without waiting for network cleanup; database-boundary timeouts return
+  safe `503001`, while unrelated application errors retain their normal meaning.
+  Business SQL is not replayed; commit timeouts require state reconciliation.
+  The deadline is per command, not an overall request or failover guarantee.
+- Moved runtime stdout delivery to a bounded per-process background writer with
+  safe immutable JSON snapshots, loss counters, and a bounded shutdown drain;
+  database audit transactions remain separate. Added deterministic slow-sink
+  verification rather than treating successful log output as proof of isolation.
+- Added mutually exclusive count/duration read-load modes, bounded latency
+  sampling, and separate successful throughput reporting. Documented warm-up,
+  concurrency steps, sustained runs, and resource observations without requiring
+  a monitoring platform or claiming availability from load results.
+- Added task-routed capacity and availability guidance, bounded PostgreSQL/Redis
+  pool settings and database timeouts, writable-primary readiness, and precise
+  database-unavailability responses without automatic replay of business writes.
+- Released authentication read connections before later admission/business work
+  and kept password-hash concurrency slots occupied until native work ends,
+  including caller cancellation, to preserve small-pool and CPU bounds.
+- Added bounded GET load tooling and independent app-process integration checks
+  for shared sessions, revocation, and quotas. Load or single-node test success
+  does not claim production failover support.
+- Clarified that responsibility-based directories are an optional greenfield
+  default. Existing projects retain their framework and layout, including when
+  adding an empty business module; broad reorganization requires explicit scope.
+- Organized the runnable asset by responsibility, with business modules inside
+  API, core, database, dependencies, models, repositories, schemas, and services.
+  Moved translation resources and the offline password command to their owned
+  directories, and separated business-audit types, model, and writer.
+- Added task-routed project-layout guidance that permits direct simple reads
+  and in-service ORM writes without forwarding layers or empty scaffolding.
+  Updated current imports, file links, and command documentation.
+- The PostgreSQL schema and published `0001` through `0004` revisions remain
+  unchanged; this release requires no new Alembic migration.
+
 ## [0.6.2] - 2026-09-21
 
 - Added task-routed reuse and abstraction guidance: share rules that must change

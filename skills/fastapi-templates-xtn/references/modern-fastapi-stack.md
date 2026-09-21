@@ -14,8 +14,13 @@ existing repository when they are supported and intentional.
 - Use Alembic or the repository's migration system for persistent SQL schemas.
 - Prefer an application factory when tests or deployment require multiple app
   configurations. Otherwise a clear module-level app is acceptable.
-- Add repository and service layers only where they own meaningful query or
-  business behavior. For shared functions, repeated flows, or new layers, follow
+- For a new service without an established framework, use the optional default
+  responsibility directories from [Project structure](project-structure.md).
+  For existing applications, extend their own architecture and components;
+  adopting this Skill does not authorize replacing that framework or layout.
+  Add repository and service functions
+  only where they own meaningful query or business behavior; a folder does not
+  require a forwarding method. For shared functions and repeated flows, follow
   [Reuse and abstraction](reuse-and-abstraction.md).
 
 ## Settings
@@ -94,8 +99,16 @@ async def get_session() -> AsyncIterator[AsyncSession]:
   writes atomically.
 - Roll back failed transactions and dispose the engine during application
   shutdown when the process owns it.
+- Release authentication read sessions after copying their immutable result;
+  do not hold that pool connection while a business service acquires another.
+  Protected writes still reload authority inside their own locked transaction.
 - Use `Mapped`, `mapped_column`, explicit relationships, named constraints, and
   deterministic indexes. Avoid legacy `declarative_base()` in new templates.
+- Bound connection pools, checkout/connect waits, and PostgreSQL statement/lock
+  timeouts. Budget connections across all instances and processes; authoritative
+  authentication and RBAC reads use the writable primary. When changing pools,
+  timeouts, or shared process state, read
+  [Capacity and availability](application-capacity-and-availability.md).
 
 ## Schemas And Endpoints
 
@@ -134,7 +147,7 @@ async def get_session() -> AsyncIterator[AsyncSession]:
   disabled user is not an authenticated application principal. Do not add a
   PostgreSQL Token table or another per-request query for an individual Token.
 
-## Application Lifecycle And Operations
+## Application Lifecycle
 
 - Use FastAPI lifespan context for resources the process owns. Do not call
   imaginary `connect()` or `disconnect()` functions on an engine abstraction.
@@ -145,3 +158,7 @@ async def get_session() -> AsyncIterator[AsyncSession]:
   [Operational logging](operational-logging.md) when implementing this boundary.
 - Put trusted-proxy, host, HTTPS, payload-limit, timeout, and CORS configuration
   under deployment-aware policy instead of pretending one default fits all.
+- The bundled Redis factory supports standalone, Sentinel, and Cluster; choose
+  the supplied topology through [Redis connections](redis-connections.md).
+  Preserve same-slot multi-key Lua and primary reads when adapting it. An async
+  application or successful load test does not by itself prove production HA.

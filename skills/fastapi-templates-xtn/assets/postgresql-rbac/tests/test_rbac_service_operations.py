@@ -5,8 +5,8 @@ from unittest.mock import Mock
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.rbac.domain import AuthorizationContext
-from app.rbac.service import RbacService, RoleOperation
+from app.core.security.domain import AuthorizationContext
+from app.services.access import RbacService, RoleOperation
 
 
 def _service() -> tuple[RbacService, Mock]:

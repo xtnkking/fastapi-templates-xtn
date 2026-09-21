@@ -7,16 +7,16 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-import app.authentication_service as authentication_service
-from app.abuse_flow import InvalidLoginCredentialsError
-from app.audit import AuditSource
-from app.authentication_service import (
+import app.services.authentication as authentication_service
+from app.core.audit import AuditSource
+from app.core.errors import RbacError, forbidden, unavailable
+from app.core.security.passwords import PasswordHashError, PasswordVerification
+from app.models.access import User
+from app.services.abuse_flow import InvalidLoginCredentialsError
+from app.services.authentication import (
     LocalAuthenticationService,
     _PasswordSnapshot,
 )
-from app.passwords import PasswordHashError, PasswordVerification
-from app.rbac.errors import RbacError, forbidden, unavailable
-from app.rbac.models import User
 
 
 class _AsyncContext:

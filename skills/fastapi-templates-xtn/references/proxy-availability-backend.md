@@ -375,7 +375,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Request
 
-from app.api_contract import ApiResponse, BusinessCode, api_response
+from app.core.api_contract import ApiResponse, BusinessCode, api_response
 from .dependencies import ProxyCheckAccess, ProxyAvailabilityServiceDependency
 from .schemas import ProxyCheckFailure, ProxyCheckResponse, ProxyCheckSuccess
 

@@ -12,17 +12,18 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app.rbac import dependencies, security
-from app.rbac.domain import (
+from app.core.config import get_settings
+from app.core.errors import RbacError
+from app.core.security import tokens as security
+from app.core.security.domain import (
     AuthoritySnapshot,
     AuthorizationContext,
     PermissionKey,
     Principal,
 )
-from app.rbac.errors import RbacError
-from app.rbac.models import RbacState
-from app.rbac.security import AccessTokenClaims
-from app.settings import get_settings
+from app.core.security.tokens import AccessTokenClaims
+from app.dependencies import authentication as dependencies
+from app.models.access import RbacState
 
 
 def request() -> Request:
@@ -57,9 +58,12 @@ def authority(
     )
 
 
-def session_with_state() -> AsyncMock:
+@pytest.fixture
+def authorization_session(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     session = AsyncMock(spec=AsyncSession)
+    session.__aenter__.return_value = session
     session.scalar.return_value = RbacState(scope="global", epoch=7)
+    monkeypatch.setattr(dependencies, "SessionFactory", Mock(return_value=session))
     return session
 
 
@@ -101,6 +105,7 @@ async def test_principal_only_path_does_not_mark_authenticated_actor(
     [(False, 3), (True, 4)],
 )
 async def test_rejected_postgresql_identity_does_not_mark_actor(
+    authorization_session: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
     active: bool,
     authority_token_version: int,
@@ -131,7 +136,6 @@ async def test_rejected_postgresql_identity_does_not_mark_actor(
         await dependencies.get_authorization_context(
             current_request,
             current_principal,
-            cast(AsyncSession, session_with_state()),
             get_settings(),
         )
 
@@ -142,13 +146,17 @@ async def test_rejected_postgresql_identity_does_not_mark_actor(
 
 
 async def test_database_failure_logs_once_without_marking_actor(
+    authorization_session: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     current_request = request()
     current_principal = principal()
-    session = session_with_state()
+    session = authorization_session
     session.scalar.side_effect = OperationalError(
-        "SELECT secret FROM users", {}, RuntimeError("database-password")
+        "SELECT secret FROM users",
+        {},
+        RuntimeError("database-password"),
+        connection_invalidated=True,
     )
     log = Mock(return_value=True)
     exception_metadata = {
@@ -166,7 +174,6 @@ async def test_database_failure_logs_once_without_marking_actor(
         await dependencies.get_authorization_context(
             current_request,
             current_principal,
-            cast(AsyncSession, session),
             get_settings(),
         )
 
@@ -186,6 +193,7 @@ async def test_database_failure_logs_once_without_marking_actor(
 
 
 async def test_successful_authorization_context_marks_actor(
+    authorization_session: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     current_request = request()
@@ -213,7 +221,6 @@ async def test_successful_authorization_context_marks_actor(
     context = await dependencies.get_authorization_context(
         current_request,
         current_principal,
-        cast(AsyncSession, session_with_state()),
         get_settings(),
     )
 

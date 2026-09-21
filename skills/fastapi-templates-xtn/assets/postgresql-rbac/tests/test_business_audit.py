@@ -7,19 +7,19 @@ import pytest
 from sqlalchemy.dialects.postgresql.base import PGDialect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app import business_audit
-from app.audit import AuditSource
-from app.base import Base
-from app.business_audit import (
+from app.core.audit import AuditSource
+from app.core.business_audit import (
     BusinessAuditActionSpec,
     BusinessAuditActor,
     BusinessAuditActorType,
-    BusinessAuditEvent,
     BusinessAuditFacts,
     BusinessAuditOutcome,
-    BusinessAuditWriter,
 )
-from app.database import SessionFactory
+from app.db.base import Base
+from app.db.postgres import SessionFactory
+from app.models.business_audit import BusinessAuditEvent
+from app.services import business_audit
+from app.services.business_audit import BusinessAuditWriter
 
 ACTION = "project.settings.update"
 SPEC = BusinessAuditActionSpec(

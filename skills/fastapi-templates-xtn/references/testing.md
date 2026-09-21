@@ -83,7 +83,7 @@ order cannot affect results.
 - Run migration upgrade from an empty database and from supported prior revisions.
 - Inspect generated OpenAPI and prove that no public path, tag, operation ID,
   application title, response schema, or error code contains `rbac`. Internal
-  packages such as `app.rbac` are outside this assertion.
+  database, audit, and asset names are outside this assertion.
 - Assert that every authorization-management route uses only `GET` or `POST` and
   that no `PUT`, `PATCH`, `DELETE`, or legacy `/rbac` alias is registered.
 
@@ -444,8 +444,44 @@ tests do not require these settings.
 
 ## Completion Evidence
 
-Use the repository's normal commands. A typical project may run tests, formatting,
-linting, type checking, and migration checks, but do not invent tool requirements
-that the project did not adopt. Report exact commands and failures. A generated
-template is not complete if it was only inspected; at minimum import the app,
-exercise the ASGI client, and run its authorization tests.
+Verify the changed code boundary using the repository's existing commands.
+Run relevant format, lint, type, contract, authorization, migration, and
+concurrency checks; report exact commands, results, and unavailable checks.
+Import and exercise generated code rather than only inspecting it. Production
+capacity certification, rolling releases, and cluster exercises are outside
+ordinary coding scope.
+
+For connection pools, timeouts, or shared process state, read
+[Capacity and availability](application-capacity-and-availability.md).
+Select the existing boundary tests that apply:
+
+- Database network deadlines: use the controllable forwarding proxy against
+  disposable PostgreSQL to withhold replies while sockets remain open. Cover
+  checkout and active commands, bounded safe `503001`, bad-connection retirement,
+  healthy-peer preservation, and fresh access after recovery.
+- Transaction/cancellation behavior: preflight opens no explicit transaction,
+  cancellation propagates, and connection retirement does not wait for network
+  cleanup. Unrelated business timeouts remain ordinary application failures.
+  Lost commit replies must not cause automatic replay or assumed rollback.
+- Shared sessions and quotas: use independent processes with shared real
+  PostgreSQL/Redis when changing that behavior; in-process ASGI clients alone
+  cannot establish process isolation.
+- Redis connection modes or Lua slot changes: set `TEST_REDIS_SERVER` to a local
+  Redis 7 executable and run `pytest tests/test_redis_topology_live.py`. The helper
+  creates private loopback instances with random ports, credentials, and empty
+  temporary directories; it does not use configured business Redis URLs.
+  Verify standalone, Sentinel discovery and controlled primary switch, Cluster
+  routing, session atomicity, CAPTCHA single-use refresh, and concurrent quotas.
+  Without the executable these tests explicitly skip. TLS configuration
+  tests do not prove a TLS handshake; this harness is not a production quorum,
+  replica failover, or network-partition certification.
+- Buffered logging: when changing it, preserve safe snapshots, event-loop
+  progress under a blocked sink, bounded queues, loss counters, and bounded
+  shutdown. See [Operational logging](operational-logging.md).
+- Load tooling: test count/time exclusivity, finite bounds, launch cutoff, and
+  bounded samples when modifying the tool. Using it is optional for requested
+  performance work; results describe the tested workload only.
+
+A driver-command deadline is not a total HTTP-request budget. Functional tests
+do not certify production capacity or cluster failover. State these evidence
+limits without making extra infrastructure or deployment work a delivery gate.

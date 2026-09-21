@@ -8,13 +8,20 @@
 
 ## 当前状态
 
-`v0.6.2` 是最新正式标签；唯一权威版本值位于
+`v0.7.0` 是当前发布版本；唯一权威版本值位于
 [`skills/fastapi-templates-xtn/VERSION`](skills/fastapi-templates-xtn/VERSION)。
 需要当前不可变基线时应安装此标签。
 
-本次已完成的修复范围和逐项验收状态记录在
-[`V0.6.1_OPTIMIZATION_PLAN.zh-CN.md`](V0.6.1_OPTIMIZATION_PLAN.zh-CN.md)；
-发布证据记录在 `RELEASE_CHECKLIST.zh-CN.md`。
+`v0.7.0` 保持新项目简单：默认一台单机 PostgreSQL 和一台共用的单机 Redis。
+Sentinel、Cluster、读写分离和独立 Redis 都按需启用。本版增加职责分目录、
+有界连接和超时、更可靠的并发与日志处理，以及经过测试的 Redis 客户端和脚本适配；
+集群部署维护仍由运维负责。详情见[更新日志](CHANGELOG.zh-CN.md)，发布证据记录在
+`RELEASE_CHECKLIST.zh-CN.md`；此前的
+[`v0.6.1 优化计划`](V0.6.1_OPTIMIZATION_PLAN.zh-CN.md)保留为历史修复记录。
+
+只更新 Skill 不会影响正在运行的网站。只有把新版会话代码部署到已有项目时，
+原来已登录的用户才需要重新登录，变更后的限流键也会重新开始一个计数窗口。
+用户账号数据和 PostgreSQL 表结构不变，不需要新增 Alembic 迁移。
 
 `v0.6.0` 增加了项目级“管理员重置密码模式”。默认 `direct`：管理员设置的
 新密码立即成为正式密码，用户拿到后可以直接登录；可选 `temporary`：用户必须先
@@ -82,7 +89,7 @@
   可信 IP，登录后的接口按操作者用户 ID；**没有全站总额度、跨业务共享额度、
   匿名用户名额度或覆盖整个 `/api/` 的 IP 总桶**。真实超限返回 `429001` 和
   `Retry-After`；Redis 或可信 IP 无法判断时拒绝操作并返回 `503001`。次数在
-  `app/settings.py` 和 `.env.example` 中集中配置；生成具体项目时展示默认值，
+  `app/core/config.py` 和 `.env.example` 中集中配置；生成具体项目时展示默认值，
   让使用者按业务需要调整。
 - 普通 JSON 响应统一有数字 `code`、`message`、`data`、服务端生成的
   `request_id`，响应头也带同一个 `X-Request-ID`。运行日志、只追加的
@@ -115,7 +122,7 @@
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.2/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.7.0/skills/fastapi-templates-xtn
 ```
 
 安装器不会覆盖已经安装的 Skill，不能把它描述成更新工具。已有安装请按照
@@ -134,9 +141,29 @@ FastAPI 请求不会自动选中它。维护者和下载使用者可以先看
 同一条规则通过有意义的参数共用实现；简单的单次操作保持内联；安全、事务、资源清理
 和框架适配需要的独立函数仍然保留，避免重复代码和无意义封装。
 
+空目录从零搭建、尚无既定框架时，可默认[先按职责分目录](skills/fastapi-templates-xtn/references/project-structure.md)：
+`api`、`core`、`db`、`dependencies`、`models`、`repositories`、`schemas`、
+`services`；业务增加时，在这些目录内再按用户、订单等业务分文件或包。
+只有实际需要时才增加 Worker、工具模块；简单查询不必经过只转发参数的 Service。
+这是一种可选默认方案。已有项目沿用自己的框架、目录、调用约定和基础设施，
+把所需功能接入原有位置；不能因为调用本 Skill 就大改架构或用模板覆盖项目。
+只有使用者明确要求重构时，才在约定范围内调整。
+
+本 Skill 以代码规范和正确实现为核心。不停机更新、集群运维、生产容量和恢复演练
+由使用者按项目需要决定，不作为普通编码任务或交付前置条件。调整连接池、超时、
+多进程共享状态或排查实际性能问题时，再读
+[容量与可用性规范](skills/fastapi-templates-xtn/references/application-capacity-and-availability.md)：
+新项目默认使用一个单机 PostgreSQL 和一个单机 Redis，分别填写 `DATABASE_URL`
+和 `REDIS_URL`；登录状态、验证码、限流默认共用该 Redis，不强制选择集群或另搭
+一台 Redis。已有项目保留原拓扑。仅在使用者明确需要时，才接入数据库集群、
+Redis Sentinel／Cluster、读写分离或独立限流 Redis，按
+[连接配置](skills/fastapi-templates-xtn/references/redis-connections.md)填写运维提供的
+地址及认证信息即可接入。已有可靠性代码、并发测试和可选 GET 压测工具
+继续保留，不因此要求使用者搭建生产平台。
+
 官方验证环境固定为 Python 3.12、PostgreSQL 17、Redis 7。具体项目可以自行验证
 其他版本，但本仓库不会把未测试的组合写成已经验证。`GET /health/live` 只表示程序
-进程还活着；`GET /health/ready` 要求 PostgreSQL 只有一个 Alembic head 且为
+进程还活着；`GET /health/ready` 要求 PostgreSQL 为可写主库，只有一个 Alembic head 且为
 `0004_password_auth`，并能读取 `rbac_state(scope='global')`。活跃 JTI Redis 和
 限流 Redis 都必须通过 `PING` 以及 Lua 写入、读取、删除探测；探测使用随机的非敏感
 Key，并设置五秒兜底 TTL。所有检查都有短超时，对外只返回整体就绪或不可用，带
@@ -166,8 +193,8 @@ python -B scripts/validate_release.py
 这些精确版本只能有意重新生成；修改后必须重新运行依赖漏洞扫描和完整测试。
 
 只可对**全新且确认可丢弃**的 PostgreSQL/Redis 测试目标运行迁移及并发测试，
-绝不能用装着实际业务数据的库。生成的项目要在目标部署环境完成检查，才能称为
-生产就绪。发布新标签前参阅 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)。
+绝不能用装着实际业务数据的库。如实报告代码验证结果，生产部署验收由使用者
+负责。发布新标签前参阅 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)。
 
 ## 维护与许可
 

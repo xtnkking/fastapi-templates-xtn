@@ -143,7 +143,7 @@ from typing import Annotated, Literal
 
 from fastapi import Depends
 
-from app.errors import forbidden
+from app.core.errors import forbidden
 
 
 class PermissionKey(StrEnum):
@@ -195,8 +195,8 @@ whether prefixed or UUIDv4:
 ```python
 from fastapi import Request
 
-from app.api_contract import ApiResponse, BusinessCode, api_response
-from app.errors import not_found
+from app.core.api_contract import ApiResponse, BusinessCode, api_response
+from app.core.errors import not_found
 
 
 ProjectReadAccess = Annotated[
@@ -299,8 +299,9 @@ route-level check cannot replace the transaction-local decision.
   guarded audited offline handover script, never an HTTP command.
 - Keep the public authorization API on neutral `/api/v1` resource paths. Do not
   expose `rbac` in public paths or OpenAPI metadata, and use only `GET` and
-  action-specific `POST` for the baseline administration contract. Internal
-  packages may retain `app.rbac`.
+  action-specific `POST` for the baseline administration contract. Internal code
+  follows [Project structure](project-structure.md); database and audit names
+  are outside the public naming rule.
 
 ## Avoid Authorization Bypasses
 

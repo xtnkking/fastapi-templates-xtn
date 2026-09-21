@@ -4,13 +4,13 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy.dialects.postgresql.base import PGDialect
 
-from app.audit import (
+from app.core.audit import (
     sanitize_audit_state,
     validate_audit_action,
     validate_audit_reason,
     validate_audit_request_id,
 )
-from app.rbac.models import RbacAuditEvent
+from app.models.access import RbacAuditEvent
 
 
 @pytest.mark.parametrize("field", ["before_state", "after_state"])

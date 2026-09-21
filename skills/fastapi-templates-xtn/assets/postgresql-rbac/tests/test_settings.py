@@ -3,14 +3,21 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from app.security_policies import SecurityPolicies
-from app.settings import Settings
+from app.core.config import RedisEndpoint, Settings
+from app.core.security.policies import SecurityPolicies
 
 EXAMPLE_ENV = Path(__file__).parents[1] / ".env.example"
 VALID_TEST_SECRET = "D7vL3qN9xR2mK8pT5sW1cF6hJ4yB0uGz"
 VALID_RATE_LIMIT_SECRET = "R8qM4vK2zT7pN5xC9sW1dF6hJ3yB0uGa"
 SETTINGS_ENV_NAMES = (
     "DATABASE_URL",
+    "DATABASE_POOL_SIZE",
+    "DATABASE_MAX_OVERFLOW",
+    "DATABASE_POOL_TIMEOUT_SECONDS",
+    "DATABASE_CONNECT_TIMEOUT_SECONDS",
+    "DATABASE_COMMAND_TIMEOUT_SECONDS",
+    "DATABASE_STATEMENT_TIMEOUT_MS",
+    "DATABASE_LOCK_TIMEOUT_MS",
     "REDIS_URL",
     "RATE_LIMIT_REDIS_URL",
     "APP_ENVIRONMENT",
@@ -18,6 +25,8 @@ SETTINGS_ENV_NAMES = (
     "SERVICE_VERSION",
     "LOG_LEVEL",
     "LOG_INCLUDE_EXCEPTION_DETAILS",
+    "LOG_QUEUE_CAPACITY",
+    "LOG_SHUTDOWN_TIMEOUT_SECONDS",
     "JWT_SECRET",
     "RATE_LIMIT_HMAC_KEY",
     "MAX_ACTIVE_SESSIONS_PER_USER",
@@ -29,6 +38,7 @@ SETTINGS_ENV_NAMES = (
     "RATE_LIMIT_NAMESPACE",
     "REDIS_CONNECT_TIMEOUT_SECONDS",
     "REDIS_SOCKET_TIMEOUT_SECONDS",
+    "REDIS_MAX_CONNECTIONS",
     "READINESS_TIMEOUT_SECONDS",
     "SQL_ECHO",
 )
@@ -51,6 +61,33 @@ def settings_for_test(**overrides: object) -> Settings:
 
 def settings_with_secret(secret: str) -> Settings:
     return settings_for_test(jwt_secret=SecretStr(secret))
+
+
+def test_log_buffer_defaults_and_explicit_bounds() -> None:
+    settings = settings_for_test()
+    assert settings.log_queue_capacity == 1000
+    assert settings.log_shutdown_timeout_seconds == 2
+    settings = settings_for_test(
+        log_queue_capacity=10000, log_shutdown_timeout_seconds=0
+    )
+    assert settings.log_queue_capacity == 10000
+    assert settings.log_shutdown_timeout_seconds == 0
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("log_queue_capacity", 0),
+        ("log_queue_capacity", 10001),
+        ("log_shutdown_timeout_seconds", -1),
+        ("log_shutdown_timeout_seconds", 31),
+        ("log_shutdown_timeout_seconds", float("inf")),
+        ("log_shutdown_timeout_seconds", float("nan")),
+    ],
+)
+def test_log_buffer_rejects_unbounded_configuration(name: str, value: float) -> None:
+    with pytest.raises(ValidationError):
+        settings_for_test(**{name: value})
 
 
 @pytest.mark.parametrize("rate_limit_enabled", [True, False])
@@ -274,6 +311,62 @@ def test_readiness_timeout_is_short_bounded_and_configurable() -> None:
         settings_for_test(readiness_timeout_seconds=10.1)
 
 
+@pytest.mark.parametrize(
+    ("name", "invalid_value"),
+    [
+        ("database_pool_size", 0),
+        ("database_pool_size", True),
+        ("database_max_overflow", -1),
+        ("database_pool_timeout_seconds", 0),
+        ("database_pool_timeout_seconds", float("inf")),
+        ("database_connect_timeout_seconds", float("nan")),
+        ("database_connect_timeout_seconds", False),
+        ("database_command_timeout_seconds", 0),
+        ("database_command_timeout_seconds", -1),
+        ("database_command_timeout_seconds", float("nan")),
+        ("database_command_timeout_seconds", float("inf")),
+        ("database_command_timeout_seconds", True),
+        ("database_statement_timeout_ms", 0),
+        ("database_statement_timeout_ms", 2_147_483_648),
+        ("database_lock_timeout_ms", 0),
+        ("database_lock_timeout_ms", 1.5),
+        ("redis_max_connections", 0),
+        ("redis_max_connections", True),
+    ],
+)
+def test_connection_limits_reject_unbounded_or_invalid_values(
+    name: str,
+    invalid_value: object,
+) -> None:
+    with pytest.raises(ValidationError, match=name):
+        settings_for_test(**{name: invalid_value})
+
+
+def test_connection_limits_are_configurable_without_unlimited_pool_modes() -> None:
+    settings = settings_for_test(
+        database_pool_size=3,
+        database_max_overflow=0,
+        database_pool_timeout_seconds=0.25,
+        database_connect_timeout_seconds=1.5,
+        database_command_timeout_seconds=4.0,
+        database_statement_timeout_ms=2_000,
+        database_lock_timeout_ms=500,
+        redis_max_connections=7,
+    )
+
+    assert settings.database_pool_size == 3
+    assert settings.database_max_overflow == 0
+    assert settings.database_pool_timeout_seconds == 0.25
+    assert settings.database_connect_timeout_seconds == 1.5
+    assert settings.database_command_timeout_seconds == 4.0
+    assert settings.database_statement_timeout_ms == 2_000
+    assert settings.database_lock_timeout_ms == 500
+    assert settings.redis_max_connections == 7
+
+    with pytest.raises(ValidationError, match="must not exceed"):
+        settings_for_test(database_statement_timeout_ms=1_000)
+
+
 def test_session_limit_must_be_positive_and_explicit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -417,3 +510,145 @@ def test_optional_token_scope_has_a_bounded_length(field: str) -> None:
             jwt_issuer=issuer,
             jwt_audience=audience,
         )
+
+
+@pytest.mark.parametrize("mode", ["sentinel", "cluster"])
+def test_rate_limit_inherits_complete_redis_topology(mode: str) -> None:
+    endpoint: dict[str, object] = {
+        "mode": mode,
+        "nodes": [{"host": "redis-node.example.test", "port": 26379}],
+        "username": "data-user",
+        "password": "private-data-password",
+        "tls": True,
+    }
+    if mode == "sentinel":
+        endpoint.update(
+            sentinel_master="auth-primary",
+            sentinel_username="discovery-user",
+            sentinel_password="private-discovery-password",
+            sentinel_tls=True,
+        )
+    settings = settings_for_test(
+        redis_url=None, redis_connection=endpoint, rate_limit_redis_url=None
+    )
+    assert settings.effective_rate_limit_redis_connection == settings.redis_connection
+    assert settings.effective_redis_connection.mode == mode
+    assert settings.effective_redis_connection.username == "data-user"
+    with pytest.raises(ValueError, match="does not use a single URL"):
+        _ = settings.effective_rate_limit_redis_url
+
+
+def test_rate_limit_may_use_independent_cluster_while_auth_uses_standalone() -> None:
+    settings = settings_for_test(
+        rate_limit_redis_url=None,
+        rate_limit_redis_connection={
+            "mode": "cluster",
+            "nodes": [{"host": "redis-cluster.example.test", "port": 6379}],
+        },
+    )
+    assert settings.effective_redis_connection.mode == "standalone"
+    assert settings.effective_rate_limit_redis_connection.mode == "cluster"
+
+
+def test_nested_redis_connection_can_be_filled_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("RATE_LIMIT_REDIS_URL", raising=False)
+    monkeypatch.setenv("REDIS_CONNECTION__MODE", "sentinel")
+    monkeypatch.setenv(
+        "REDIS_CONNECTION__NODES", '[{"host":"redis.example.test","port":26379}]'
+    )
+    monkeypatch.setenv("REDIS_CONNECTION__SENTINEL_MASTER", "primary")
+    monkeypatch.setenv("REDIS_CONNECTION__PASSWORD", "private-data-password")
+    monkeypatch.setenv("REDIS_CONNECTION__SENTINEL_PASSWORD", "private-node-password")
+    monkeypatch.setenv("REDIS_CONNECTION__DB", "2")
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    endpoint = settings.effective_redis_connection
+    assert endpoint.mode == "sentinel"
+    assert endpoint.db == 2
+    assert endpoint.sentinel_master == "primary"
+    assert endpoint.password is not None
+    assert endpoint.password.get_secret_value() == "private-data-password"
+    assert endpoint.sentinel_password is not None
+    assert endpoint.sentinel_password.get_secret_value() == "private-node-password"
+    assert settings.effective_rate_limit_redis_connection == endpoint
+    assert "private-data-password" not in repr(settings)
+    assert "private-node-password" not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        {"mode": "cluster"},
+        {"mode": "sentinel", "nodes": [{"host": "node", "port": 26379}]},
+        {"mode": "cluster", "nodes": [{"host": "node", "port": 6379}], "db": 1},
+        {"mode": "standalone", "url": "redis://node/0", "db": 1},
+        {"mode": "standalone", "url": "redis://node/0", "tls": True},
+        {"mode": "cluster", "nodes": [{"host": "redis://node", "port": 6379}]},
+        {"mode": "cluster", "nodes": [{"host": "user:secret@node", "port": 6379}]},
+        {"mode": "cluster", "nodes": [{"host": "node", "port": 65536}]},
+        {"mode": "cluster", "nodes": [{"host": "node", "port": True}]},
+        {"mode": "cluster", "nodes": [{"host": "node", "port": 6379}], "db": True},
+        {"mode": "standalone", "url": "redis://node/0", "sentinel_master": "master"},
+        {"mode": "standalone", "url": "redis://node/0", "unknown_option": True},
+        {
+            "mode": "cluster",
+            "nodes": [{"host": "node", "port": 6379}, {"host": "node", "port": 6379}],
+        },
+    ],
+)
+def test_invalid_redis_topologies_fail_at_startup(endpoint: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        RedisEndpoint.model_validate(endpoint)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "redis://user:private-password@node/0?socket_timeout=0",
+        "redis://user:private-password@node/0?retry_on_timeout=True",
+        "redis://user:private-password@node/0?ssl_cert_reqs=none",
+        "redis://user:private-password@node/invalid",
+        "redis://user:private-password@node:99999/0",
+    ],
+)
+def test_redis_url_cannot_override_client_safety_options_or_leak_secrets(
+    url: str,
+) -> None:
+    with pytest.raises(ValidationError) as caught:
+        settings_for_test(redis_url=url)
+    assert "private-password" not in str(caught.value)
+
+
+def test_connection_url_and_topology_cannot_be_accidentally_mixed() -> None:
+    connection = {"mode": "standalone", "url": "redis://node/0"}
+    with pytest.raises(ValidationError, match="exactly one"):
+        settings_for_test(redis_connection=connection)
+    with pytest.raises(ValidationError, match="not both"):
+        settings_for_test(rate_limit_redis_connection=connection)
+
+
+def test_redis_tls_files_require_tls_and_complete_client_certificate(
+    tmp_path: Path,
+) -> None:
+    certificate = tmp_path / "test.crt"
+    certificate.touch()
+    with pytest.raises(ValidationError, match="TLS to be enabled"):
+        RedisEndpoint(url="redis://node/0", ca_file=certificate)
+    with pytest.raises(ValidationError, match="configured together"):
+        RedisEndpoint(url="rediss://node/0", cert_file=certificate)
+    with pytest.raises(ValidationError, match="does not exist"):
+        RedisEndpoint(url="rediss://node/0", ca_file=tmp_path / "missing.crt")
+    assert (
+        RedisEndpoint(url="rediss://node/0", ca_file=certificate).ca_file == certificate
+    )
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan"), True, 0])
+@pytest.mark.parametrize(
+    "field", ["redis_connect_timeout_seconds", "redis_socket_timeout_seconds"]
+)
+def test_redis_timeouts_are_finite_positive_numbers(field: str, value: object) -> None:
+    with pytest.raises(ValidationError):
+        settings_for_test(**{field: value})

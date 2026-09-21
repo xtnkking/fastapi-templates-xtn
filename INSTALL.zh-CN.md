@@ -9,16 +9,20 @@
 ## 首次安装
 
 只有目标目录不存在时才使用 `$skill-installer`。应安装不可变的正式标签，而不是
-持续变化的分支。目前最新正式版是 `v0.6.2`：
+持续变化的分支。目前最新正式版是 `v0.7.0`：
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.2/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.7.0/skills/fastapi-templates-xtn
 ```
 
 `$skill-installer` 会主动拒绝覆盖已有目录，它不是更新工具。
 
 ## 从已检出的正式版本安全更新
+
+更新 Skill 不会改动已有网站的代码或登录状态。只有以后把 `v0.7.0` 的新版会话
+实现部署到已有项目时，原用户才需要重新登录，变更后的限流键也会重新开始一个
+计数窗口。本版不改变 PostgreSQL 表结构，不需要新增 Alembic 迁移。
 
 先把准确的正式标签检出到独立仓库目录。在该仓库根目录确认安装目标，先执行
 `--dry-run`，确认显示的源和目标都正确后再正式更新。

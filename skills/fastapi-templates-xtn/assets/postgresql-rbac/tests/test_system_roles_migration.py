@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import pytest
 from sqlalchemy.engine import Connection
 
-from app.rbac.domain import RESERVED_ROLE_KEYS, SYSTEM_ROLE_KEYS
+from app.core.security.domain import RESERVED_ROLE_KEYS, SYSTEM_ROLE_KEYS
 from tests.migration_helpers import load_migration
 
 

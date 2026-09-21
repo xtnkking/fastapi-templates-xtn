@@ -10,15 +10,15 @@ from redis.asyncio import Redis
 from sqlalchemy import delete, select, text
 
 from alembic import command
-from app.database import SessionFactory, engine
-from app.main import app
-from app.rbac.domain import (
+from app.core.config import get_settings
+from app.core.security.domain import (
     PermissionKey,
     SystemRoleKey,
 )
-from app.rbac.models import Permission, Role, RolePermission, User, UserRole
-from app.rbac.security import issue_access_token
-from app.settings import get_settings
+from app.core.security.tokens import issue_access_token
+from app.db.postgres import SessionFactory, engine
+from app.main import app
+from app.models.access import Permission, Role, RolePermission, User, UserRole
 from tests.integration.safety import (
     require_actual_database,
     verify_empty_redis_targets,
@@ -39,6 +39,7 @@ class World:
 @pytest.fixture(scope="session", autouse=True)
 def verified_redis_targets() -> None:
     settings = get_settings()
+    assert settings.redis_url is not None  # This fixture owns standalone test targets.
     verify_empty_redis_targets(
         settings.redis_url,
         settings.effective_rate_limit_redis_url,
@@ -54,6 +55,7 @@ def migrated_database(verified_redis_targets: None) -> None:
 @pytest_asyncio.fixture(autouse=True)
 async def clean_database(migrated_database: None) -> AsyncIterator[None]:
     settings = get_settings()
+    assert settings.redis_url is not None
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
     try:
         async with engine.begin() as connection:
@@ -128,11 +130,11 @@ async def clean_database(migrated_database: None) -> AsyncIterator[None]:
         keys = [
             key
             async for key in redis.scan_iter(
-                match=f"auth:access:v1:{settings.app_environment}:*"
+                match=f"auth:sessions:v2:{settings.app_environment}:*"
             )
         ]
-        if keys:
-            await redis.delete(*keys)
+        for key in keys:
+            await redis.delete(key)
         yield
     finally:
         await redis.aclose()

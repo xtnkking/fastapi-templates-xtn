@@ -1,6 +1,6 @@
 import pytest
 
-from app.rbac.provisioning import normalize_identity
+from app.core.security.identity import normalize_identity
 
 
 @pytest.mark.parametrize(

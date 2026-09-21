@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 from redis.exceptions import ConnectionError
 
-from app.rate_limit import (
+from app.core.security.rate_limit import (
     FIXED_WINDOW_SCRIPT,
     INSPECT_FIXED_WINDOW_SCRIPT,
     RateLimitPolicy,
@@ -47,7 +47,7 @@ def test_key_is_private_and_separated_by_business() -> None:
         subject="203.0.113.9",
         key_secret=KEY_SECRET,
     )
-    assert first.startswith("rl:v2:{example}:login:ip:")
+    assert first.startswith("rl:v2:example:login:ip:")
     assert first != second
     assert "203.0.113.9" not in first
     assert len(first.rsplit(":", maxsplit=1)[-1]) == 64

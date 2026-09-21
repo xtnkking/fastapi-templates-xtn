@@ -5,11 +5,11 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
-from app.authentication_service import LocalAuthenticationService
-from app.database import SessionFactory
-from app.password_models import AccountSecurityAuditEvent
-from app.passwords import DUMMY_PASSWORD_HASH
-from app.rbac.models import User, UserRole
+from app.core.security.passwords import DUMMY_PASSWORD_HASH
+from app.db.postgres import SessionFactory
+from app.models.access import User, UserRole
+from app.models.account_security import AccountSecurityAuditEvent
+from app.services.authentication import LocalAuthenticationService
 from tests.integration.conftest import World
 
 pytestmark = pytest.mark.postgresql

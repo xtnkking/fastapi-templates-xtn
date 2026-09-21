@@ -9,14 +9,14 @@ from alembic.config import Config
 from sqlalchemy import select
 
 from alembic import command
-from app.database import SessionFactory, engine
-from app.rbac.domain import (
+from app.core.security.domain import (
     PERMISSION_CATALOG,
     SUPER_ADMIN_PERMISSION_KEYS,
     SYSTEM_ROLE_SPECS,
     SystemRoleKey,
 )
-from app.rbac.models import (
+from app.db.postgres import SessionFactory, engine
+from app.models.access import (
     Permission,
     RbacState,
     Role,

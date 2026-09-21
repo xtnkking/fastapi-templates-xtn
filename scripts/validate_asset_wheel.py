@@ -16,8 +16,8 @@ REQUIRED_SUFFIXES = (
     "/licenses/LICENSE",
     "/licenses/NOTICE",
     "/licenses/THIRD_PARTY_NOTICES.md",
-    "/app/locales/en.json",
-    "/app/locales/zh-CN.json",
+    "/app/assets/locales/en.json",
+    "/app/assets/locales/zh-CN.json",
 )
 
 
@@ -87,6 +87,35 @@ def validate_wheel(asset_root: Path, version_file: Path) -> None:
                     "Wheel metadata version does not match Skill VERSION: "
                     f"{metadata.get('Version')!r} != {expected_version!r}"
                 )
+
+            installed = output / "installed"
+            archive.extractall(installed)
+
+        # Import from the built artifact, outside the checkout, so source-tree
+        # imports cannot hide missing packages or a broken locale resource path.
+        subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                (
+                    "import importlib, pathlib, sys; "
+                    "root = pathlib.Path(sys.argv[1]); sys.path.insert(0, str(root)); "
+                    "modules = [importlib.import_module(name) for name in "
+                    "('app.core.i18n', 'app.models.access', "
+                    "'app.models.account_security', 'app.models.business_audit', "
+                    "'app.repositories.access', 'app.db.redis', "
+                    "'app.core.security.tokens', 'app.core.security.captcha')]; "
+                    "assert all(pathlib.Path(m.__file__).is_relative_to(root) "
+                    "for m in modules); "
+                    "assert set(modules[0].CATALOGS) == {'zh-CN', 'en'}"
+                ),
+                str(installed),
+            ],
+            cwd=output,
+            check=True,
+        )
 
     print(f"Asset wheel is valid for Skill version {expected_version}.")
 

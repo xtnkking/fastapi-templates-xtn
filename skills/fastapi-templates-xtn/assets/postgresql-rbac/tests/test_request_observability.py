@@ -14,8 +14,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import Message, Receive, Scope, Send
 
 import app.main as main_module
-from app.api_contract import ApiResponse, BusinessCode, api_response
-from app.i18n import MessageKey
+from app.core.api_contract import ApiResponse, BusinessCode, api_response
+from app.core.errors import RbacError, forbidden
+from app.core.i18n import MessageKey
+from app.core.observability import current_request_id
 from app.main import (
     RequestObservabilityMiddleware,
     handle_access_error,
@@ -24,8 +26,6 @@ from app.main import (
     handle_request_validation_error,
     handle_unexpected_error,
 )
-from app.observability import current_request_id
-from app.rbac.errors import RbacError, forbidden
 
 
 class CaptureHandler(logging.Handler):
@@ -127,7 +127,12 @@ def build_test_app() -> FastAPI:
 
     @test_app.get("/database")
     async def database_failure() -> None:
-        raise OperationalError("controlled statement", {}, RuntimeError("offline"))
+        raise OperationalError(
+            "controlled statement",
+            {},
+            RuntimeError("offline"),
+            connection_invalidated=True,
+        )
 
     @test_app.get("/stream")
     async def stream() -> StreamingResponse:

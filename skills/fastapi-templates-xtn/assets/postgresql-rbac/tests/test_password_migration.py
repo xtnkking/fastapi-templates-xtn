@@ -1,4 +1,4 @@
-from app.rbac.domain import PERMISSION_CATALOG, PermissionKey
+from app.core.security.domain import PERMISSION_CATALOG, PermissionKey
 from tests.migration_helpers import MIGRATION_VERSIONS, load_migration
 
 

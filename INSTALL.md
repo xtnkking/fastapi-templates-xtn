@@ -10,17 +10,22 @@ release validation rejects inconsistent asset or documentation versions.
 
 Use `$skill-installer` only when the destination does not already exist. Install
 an immutable published tag, not a moving branch. The latest published release is
-currently `v0.6.2`:
+currently `v0.7.0`:
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.2/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.7.0/skills/fastapi-templates-xtn
 ```
 
 `$skill-installer` intentionally refuses to overwrite an existing directory. It
 is not the update mechanism.
 
 ## Safe Update From A Checked-Out Release
+
+Updating the Skill does not modify an existing application's code or sessions.
+If an application later deploys the `v0.7.0` session implementation, its users
+must log in again and changed rate-limit keys start fresh windows once. This
+release changes no PostgreSQL schema and needs no new Alembic migration.
 
 Check out the exact release tag in a separate repository directory. From that
 repository root, resolve the exact installed target and run a dry run first.

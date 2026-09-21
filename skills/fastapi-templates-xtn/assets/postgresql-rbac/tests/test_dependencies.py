@@ -1,5 +1,4 @@
 import uuid
-from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Literal, cast
 from unittest.mock import AsyncMock, Mock
@@ -9,31 +8,39 @@ from fastapi.security import HTTPAuthorizationCredentials
 from httpx import ASGITransport, AsyncClient, Response
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app.api_contract import BusinessCode
-from app.database import get_session
-from app.main import app
-from app.rate_limit import RateLimitResult
-from app.rate_limit_dependencies import RateLimitExceeded
-from app.rbac.dependencies import (
-    get_authorization_context,
-    get_current_principal,
-    require_permissions,
-)
-from app.rbac.domain import (
+from app.core.api_contract import BusinessCode
+from app.core.config import get_settings
+from app.core.errors import RbacError, not_found, unauthenticated, unavailable
+from app.core.security.domain import (
     AuthoritySnapshot,
     AuthorizationContext,
     PermissionKey,
     Principal,
     RoleGrant,
 )
-from app.rbac.errors import RbacError, not_found, unauthenticated, unavailable
-from app.rbac.models import RbacState
-from app.rbac.security import AccessTokenClaims, issue_access_token
-from app.settings import get_settings
+from app.core.security.rate_limit import RateLimitExceeded, RateLimitResult
+from app.core.security.tokens import AccessTokenClaims, issue_access_token
+from app.dependencies.authentication import (
+    get_authorization_context,
+    get_current_principal,
+    require_permissions,
+)
+from app.main import app
+from app.models.access import RbacState
+
+
+@pytest.fixture
+def authorization_session(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    session = AsyncMock(spec=AsyncSession)
+    session.__aenter__.return_value = session
+    monkeypatch.setattr(
+        "app.dependencies.authentication.SessionFactory", Mock(return_value=session)
+    )
+    return session
 
 
 def assert_error_response(response: Response, expected_code: BusinessCode) -> None:
@@ -130,7 +137,7 @@ async def test_post_permission_denial_attempts_an_audit(
     )
     write_audit = AsyncMock()
     monkeypatch.setattr(
-        "app.rbac.dependencies._write_permission_denial_audit",
+        "app.dependencies.authentication._write_permission_denial_audit",
         write_audit,
     )
 
@@ -175,6 +182,7 @@ def test_missing_authoritative_state_maps_to_service_unavailable() -> None:
 
 
 async def test_disappearing_authenticated_user_remains_a_401(
+    authorization_session: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     principal = Principal(
@@ -184,25 +192,25 @@ async def test_disappearing_authenticated_user_remains_a_401(
         issued_at=0,
         expires_at=1,
     )
-    session = AsyncMock()
+    session = authorization_session
     session.scalar.return_value = RbacState(scope="global", epoch=0)
 
     async def missing_authority(*_args: object, **_kwargs: object) -> AuthoritySnapshot:
         raise not_found("user_not_found")
 
     monkeypatch.setattr(
-        "app.rbac.dependencies.load_authority_snapshot",
+        "app.dependencies.authentication.load_authority_snapshot",
         missing_authority,
     )
     revoke = AsyncMock()
     monkeypatch.setattr(
-        "app.rbac.dependencies._best_effort_revoke_invalid_principal",
+        "app.dependencies.authentication._best_effort_revoke_invalid_principal",
         revoke,
     )
     request = Request({"type": "http", "headers": []})
 
     with pytest.raises(RbacError) as caught:
-        await get_authorization_context(request, principal, session, get_settings())
+        await get_authorization_context(request, principal, get_settings())
 
     assert caught.value.status_code == 401
     assert caught.value.business_code == BusinessCode.INVALID_AUTHENTICATION
@@ -213,7 +221,9 @@ async def test_disappearing_authenticated_user_remains_a_401(
     )
 
 
-async def test_postgresql_authority_failure_maps_to_service_unavailable() -> None:
+async def test_postgresql_authority_failure_maps_to_service_unavailable(
+    authorization_session: AsyncMock,
+) -> None:
     principal = Principal(
         user_id=uuid.uuid4(),
         token_version=0,
@@ -221,19 +231,97 @@ async def test_postgresql_authority_failure_maps_to_service_unavailable() -> Non
         issued_at=0,
         expires_at=1,
     )
-    session = AsyncMock()
-    session.scalar.side_effect = SQLAlchemyError("database unavailable")
+    session = authorization_session
+    session.scalar.side_effect = OperationalError(
+        "SELECT authority",
+        {},
+        RuntimeError("database unavailable"),
+        connection_invalidated=True,
+    )
 
     with pytest.raises(RbacError) as caught:
         await get_authorization_context(
             Request({"type": "http", "headers": []}),
             principal,
-            session,
             get_settings(),
         )
 
     assert caught.value.status_code == 503
     assert caught.value.business_code == BusinessCode.SERVICE_UNAVAILABLE
+
+
+async def test_authorization_programming_error_is_not_disguised_as_outage(
+    authorization_session: AsyncMock,
+) -> None:
+    context = authorization_context()
+    error = ProgrammingError("invalid query", {}, RuntimeError("syntax error"))
+    authorization_session.scalar.side_effect = error
+
+    with pytest.raises(ProgrammingError) as caught:
+        await get_authorization_context(
+            Request({"type": "http", "headers": []}),
+            context.principal,
+            get_settings(),
+        )
+
+    assert caught.value is error
+    authorization_session.__aexit__.assert_awaited_once()
+
+
+async def test_authorization_releases_connection_before_redis_actor_admission(
+    authorization_session: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = authorization_context()
+    authorization_session.scalar.return_value = RbacState(scope="global", epoch=7)
+    monkeypatch.setattr(
+        "app.dependencies.authentication.load_authority_snapshot",
+        AsyncMock(return_value=context.authority),
+    )
+
+    async def actor_admission(*_args: object) -> None:
+        authorization_session.__aexit__.assert_awaited_once()
+
+    monkeypatch.setattr(
+        "app.dependencies.authentication.enforce_principal_rate_limit",
+        actor_admission,
+    )
+    result = await get_authorization_context(
+        Request({"type": "http", "headers": []}),
+        context.principal,
+        get_settings(),
+    )
+
+    assert result.authority is context.authority
+    assert result.authorization_epoch == 7
+
+
+async def test_inactive_identity_releases_connection_before_jti_cleanup(
+    authorization_session: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = authorization_context()
+    authorization_session.scalar.return_value = RbacState(scope="global", epoch=0)
+    monkeypatch.setattr(
+        "app.dependencies.authentication.load_authority_snapshot",
+        AsyncMock(side_effect=not_found("user_not_found")),
+    )
+
+    async def cleanup(**_kwargs: object) -> None:
+        authorization_session.__aexit__.assert_awaited_once()
+
+    monkeypatch.setattr(
+        "app.dependencies.authentication._best_effort_revoke_invalid_principal",
+        cleanup,
+    )
+    with pytest.raises(RbacError) as caught:
+        await get_authorization_context(
+            Request({"type": "http", "headers": []}),
+            context.principal,
+            get_settings(),
+        )
+
+    assert caught.value.status_code == 401
 
 
 async def test_bearer_size_limit_runs_before_redis_lookup() -> None:
@@ -254,7 +342,9 @@ async def test_bearer_size_limit_runs_before_redis_lookup() -> None:
     redis.eval.assert_not_awaited()
 
 
-async def test_redis_outage_prevents_postgresql_authority_query() -> None:
+async def test_redis_outage_prevents_postgresql_authority_query(
+    authorization_session: AsyncMock,
+) -> None:
     redis = AsyncMock()
     redis.eval.return_value = 1
     settings = get_settings()
@@ -266,13 +356,9 @@ async def test_redis_outage_prevents_postgresql_authority_query() -> None:
     )
     redis.reset_mock()
     redis.eval.side_effect = RedisConnectionError("registry unavailable")
-    session = AsyncMock()
-
-    async def override_session() -> AsyncIterator[AsyncSession]:
-        yield cast(AsyncSession, session)
+    session = authorization_session
 
     app.state.redis = redis
-    app.dependency_overrides[get_session] = override_session
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -281,7 +367,6 @@ async def test_redis_outage_prevents_postgresql_authority_query() -> None:
                 headers={"Authorization": f"Bearer {token}"},
             )
     finally:
-        app.dependency_overrides.pop(get_session, None)
         del app.state.redis
 
     assert response.status_code == 503
@@ -290,15 +375,13 @@ async def test_redis_outage_prevents_postgresql_authority_query() -> None:
     session.scalar.assert_not_awaited()
 
 
-async def test_forged_token_is_rejected_before_redis_and_postgresql() -> None:
+async def test_forged_token_is_rejected_before_redis_and_postgresql(
+    authorization_session: AsyncMock,
+) -> None:
     redis = AsyncMock()
-    session = AsyncMock()
-
-    async def override_session() -> AsyncIterator[AsyncSession]:
-        yield cast(AsyncSession, session)
+    session = authorization_session
 
     app.state.redis = redis
-    app.dependency_overrides[get_session] = override_session
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -307,7 +390,6 @@ async def test_forged_token_is_rejected_before_redis_and_postgresql() -> None:
                 headers={"Authorization": "Bearer not-a-signed-jwt"},
             )
     finally:
-        app.dependency_overrides.pop(get_session, None)
         del app.state.redis
 
     assert response.status_code == 401
@@ -317,6 +399,7 @@ async def test_forged_token_is_rejected_before_redis_and_postgresql() -> None:
 
 
 async def test_postgresql_snapshot_rejects_stale_redis_token_version(
+    authorization_session: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     principal = Principal(
@@ -334,7 +417,7 @@ async def test_postgresql_snapshot_rejects_stale_redis_token_version(
         authz_version=0,
         roles=(),
     )
-    session = AsyncMock()
+    session = authorization_session
     session.scalar.return_value = RbacState(scope="global", epoch=0)
 
     async def current_authority(
@@ -344,17 +427,17 @@ async def test_postgresql_snapshot_rejects_stale_redis_token_version(
         return authority
 
     monkeypatch.setattr(
-        "app.rbac.dependencies.load_authority_snapshot",
+        "app.dependencies.authentication.load_authority_snapshot",
         current_authority,
     )
     revoke = AsyncMock()
     actor_limit = AsyncMock()
     monkeypatch.setattr(
-        "app.rbac.dependencies._best_effort_revoke_invalid_principal",
+        "app.dependencies.authentication._best_effort_revoke_invalid_principal",
         revoke,
     )
     monkeypatch.setattr(
-        "app.rbac.dependencies.enforce_principal_rate_limit",
+        "app.dependencies.authentication.enforce_principal_rate_limit",
         actor_limit,
     )
     request = Request({"type": "http", "headers": []})
@@ -363,7 +446,6 @@ async def test_postgresql_snapshot_rejects_stale_redis_token_version(
         await get_authorization_context(
             request,
             principal,
-            session,
             get_settings(),
         )
 
@@ -373,6 +455,7 @@ async def test_postgresql_snapshot_rejects_stale_redis_token_version(
 
 
 async def test_exhausted_actor_window_is_rejected_before_postgresql(
+    authorization_session: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     principal = Principal(
@@ -382,7 +465,7 @@ async def test_exhausted_actor_window_is_rejected_before_postgresql(
         issued_at=0,
         expires_at=1,
     )
-    session = AsyncMock()
+    session = authorization_session
     precheck = AsyncMock(
         side_effect=RateLimitExceeded(
             policy_name="get_my_access",
@@ -391,11 +474,11 @@ async def test_exhausted_actor_window_is_rejected_before_postgresql(
     )
     actor_limit = AsyncMock()
     monkeypatch.setattr(
-        "app.rbac.dependencies.precheck_principal_rate_limit",
+        "app.dependencies.authentication.precheck_principal_rate_limit",
         precheck,
     )
     monkeypatch.setattr(
-        "app.rbac.dependencies.enforce_principal_rate_limit",
+        "app.dependencies.authentication.enforce_principal_rate_limit",
         actor_limit,
     )
     request = Request({"type": "http", "headers": []})
@@ -404,7 +487,6 @@ async def test_exhausted_actor_window_is_rejected_before_postgresql(
         await get_authorization_context(
             request,
             principal,
-            session,
             get_settings(),
         )
 
@@ -413,7 +495,9 @@ async def test_exhausted_actor_window_is_rejected_before_postgresql(
     actor_limit.assert_not_awaited()
 
 
-async def test_exhausted_private_captcha_scene_skips_postgresql() -> None:
+async def test_exhausted_private_captcha_scene_skips_postgresql(
+    authorization_session: AsyncMock,
+) -> None:
     principal = Principal(
         user_id=uuid.uuid4(),
         token_version=4,
@@ -447,14 +531,13 @@ async def test_exhausted_private_captcha_scene_skips_postgresql() -> None:
         },
         receive,
     )
-    session = AsyncMock()
+    session = authorization_session
     settings = get_settings().model_copy(update={"rate_limit_enabled": True})
 
     with pytest.raises(RateLimitExceeded) as caught:
         await get_authorization_context(
             request,
             principal,
-            session,
             settings,
         )
 
@@ -464,7 +547,9 @@ async def test_exhausted_private_captcha_scene_skips_postgresql() -> None:
     assert ":captcha_create_admin_reset:actor:" in key
 
 
-async def test_text_plain_rejection_limit_skips_postgresql() -> None:
+async def test_text_plain_rejection_limit_skips_postgresql(
+    authorization_session: AsyncMock,
+) -> None:
     principal = Principal(
         user_id=uuid.uuid4(),
         token_version=4,
@@ -498,14 +583,13 @@ async def test_text_plain_rejection_limit_skips_postgresql() -> None:
         },
         receive,
     )
-    session = AsyncMock()
+    session = authorization_session
     settings = get_settings().model_copy(update={"rate_limit_enabled": True})
 
     with pytest.raises(RateLimitExceeded) as caught:
         await get_authorization_context(
             request,
             principal,
-            session,
             settings,
         )
 
@@ -516,6 +600,7 @@ async def test_text_plain_rejection_limit_skips_postgresql() -> None:
 
 
 async def test_database_rejected_jti_is_revoked_before_redis_rejects_its_next_use(
+    authorization_session: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = get_settings()
@@ -539,18 +624,22 @@ async def test_database_rejected_jti_is_revoked_before_redis_rejects_its_next_us
     )
     actor_limit = AsyncMock()
     monkeypatch.setattr(
-        "app.rbac.dependencies.decode_access_token",
+        "app.dependencies.authentication.decode_access_token",
         Mock(return_value=token_claims),
     )
-    monkeypatch.setattr("app.rbac.dependencies.require_active_jti", require_jti)
-    monkeypatch.setattr("app.rbac.dependencies.revoke_active_jti", revoke_jti)
-    monkeypatch.setattr("app.rbac.dependencies.get_redis", Mock(return_value=object()))
     monkeypatch.setattr(
-        "app.rbac.dependencies.load_authority_snapshot",
+        "app.dependencies.authentication.require_active_jti", require_jti
+    )
+    monkeypatch.setattr("app.dependencies.authentication.revoke_active_jti", revoke_jti)
+    monkeypatch.setattr(
+        "app.dependencies.authentication.get_redis", Mock(return_value=object())
+    )
+    monkeypatch.setattr(
+        "app.dependencies.authentication.load_authority_snapshot",
         load_authority,
     )
     monkeypatch.setattr(
-        "app.rbac.dependencies.enforce_principal_rate_limit",
+        "app.dependencies.authentication.enforce_principal_rate_limit",
         actor_limit,
     )
     credentials = HTTPAuthorizationCredentials(
@@ -559,14 +648,13 @@ async def test_database_rejected_jti_is_revoked_before_redis_rejects_its_next_us
     )
     first_request = Request({"type": "http", "headers": []})
     principal = await get_current_principal(first_request, credentials, settings)
-    session = AsyncMock()
+    session = authorization_session
     session.scalar.return_value = RbacState(scope="global", epoch=0)
 
     with pytest.raises(RbacError) as first_denial:
         await get_authorization_context(
             first_request,
             principal,
-            session,
             settings,
         )
 
@@ -585,6 +673,7 @@ async def test_database_rejected_jti_is_revoked_before_redis_rejects_its_next_us
 
 
 async def test_inactive_jti_cleanup_failure_preserves_401_and_skips_actor_limit(
+    authorization_session: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     principal = Principal(
@@ -602,29 +691,29 @@ async def test_inactive_jti_cleanup_failure_preserves_401_and_skips_actor_limit(
         authz_version=0,
         roles=(),
     )
-    session = AsyncMock()
+    session = authorization_session
     session.scalar.return_value = RbacState(scope="global", epoch=0)
     actor_limit = AsyncMock()
     log = Mock()
     monkeypatch.setattr(
-        "app.rbac.dependencies.load_authority_snapshot",
+        "app.dependencies.authentication.load_authority_snapshot",
         AsyncMock(return_value=authority),
     )
     monkeypatch.setattr(
-        "app.rbac.dependencies.get_redis",
+        "app.dependencies.authentication.get_redis",
         Mock(return_value=object()),
     )
     monkeypatch.setattr(
-        "app.rbac.dependencies.revoke_active_jti",
+        "app.dependencies.authentication.revoke_active_jti",
         AsyncMock(side_effect=RuntimeError("controlled cleanup failure")),
     )
     monkeypatch.setattr(
-        "app.rbac.dependencies.enforce_principal_rate_limit",
+        "app.dependencies.authentication.enforce_principal_rate_limit",
         actor_limit,
     )
-    monkeypatch.setattr("app.rbac.dependencies.safe_log", log)
+    monkeypatch.setattr("app.dependencies.authentication.safe_log", log)
     monkeypatch.setattr(
-        "app.rbac.dependencies.safe_exception_metadata",
+        "app.dependencies.authentication.safe_exception_metadata",
         Mock(
             return_value={"error_id": "cleanup-test", "exception_type": "RuntimeError"}
         ),
@@ -634,7 +723,6 @@ async def test_inactive_jti_cleanup_failure_preserves_401_and_skips_actor_limit(
         await get_authorization_context(
             Request({"type": "http", "headers": []}),
             principal,
-            session,
             get_settings(),
         )
 

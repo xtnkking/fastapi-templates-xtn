@@ -4,6 +4,53 @@
 
 Use this checklist for the first public preview and subsequent releases.
 
+## Prepare v0.7.0
+
+Release readiness: `DRAFT`
+
+Target date: `2026-09-21`. Keep this block `DRAFT` until the pre-tag evidence is
+verified for the current candidate. Historical `v0.6.2` results do not establish
+readiness for this version. Record the actual candidate commit and successful CI
+run before marking `READY`; final branch and tag CI must pass before publication.
+
+Scope: responsibility-based source directories; one standalone PostgreSQL and
+one shared standalone Redis by default; opt-in Sentinel/Cluster clients and
+configuration; bounded connections, deadlines, concurrent work, runtime logging,
+and supporting tests. Cluster deployment and management remain operator-owned.
+Updating only the Skill does not alter a running application. Deploying the new
+session implementation requires existing users to log in again and changed
+quota keys start fresh windows once; no PostgreSQL migration is added.
+
+### Pre-tag evidence
+
+- [ ] `VERSION`, package metadata, current links, bilingual release notes and
+  architecture/migration notes consistently identify `0.7.0`; published migration
+  revisions remain byte-for-byte unchanged.
+- [ ] Current Skill/release validators, updater and country-validator tests,
+  Ruff, strict mypy, and the full isolated PostgreSQL 17/Redis 7 suite pass.
+- [ ] Disposable standalone, Sentinel promotion and Cluster tests verify client
+  configuration, session/CAPTCHA atomicity and per-subject limits. Record any
+  untested connection boundary, including real TLS certificate handshakes.
+- [ ] Python 3.12/Linux candidate CI verifies dependency closure, `pip check`,
+  `pip-audit`, and all applicable tests with no unrecorded vulnerability exception.
+- [ ] The `0.7.0` wheel passes isolated import validation and contains both locale
+  catalogs plus all three legal notices.
+- [ ] Safe-update tests and a dry run verify the intended local Skill target;
+  the final reviewed diff preserves attribution and the simple standalone default.
+- [ ] Record the candidate commit and successful branch CI for this release;
+  verify that no credentials, private configuration, caches or test databases
+  enter the release tree.
+
+### Post-release verification
+
+- [ ] Verify final branch CI, create immutable `v0.7.0`, and wait for tag CI.
+- [ ] Publish a non-draft, non-prerelease GitHub Release marked latest.
+- [ ] Verify the public archive, tagged installation URL and `VERSION`; safely
+  update the local Skill, retain its backup, and compare its complete manifest
+  with the tagged Skill.
+
+Only this current `Prepare v0.7.0` block participates in automated readiness.
+
 ## Prepare v0.6.2
 
 Release readiness: `READY`
@@ -40,7 +87,7 @@ and tag CI before publishing.
 - [ ] Verify the public archive, tagged installation URL and `VERSION`; safely
   update the local Skill and verify its complete file manifest against the tag.
 
-Only this current `Prepare v0.6.2` block participates in automated readiness.
+The `Prepare v0.6.2` block is retained as a historical record.
 
 ## Prepare v0.6.1
 

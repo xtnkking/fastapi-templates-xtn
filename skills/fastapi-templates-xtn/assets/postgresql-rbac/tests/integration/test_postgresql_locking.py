@@ -5,10 +5,10 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select, text, update
 
-from app.database import SessionFactory
-from app.rbac.domain import AuthorizationContext, PermissionKey, Principal
-from app.rbac.errors import RbacError
-from app.rbac.models import (
+from app.core.errors import RbacError
+from app.core.security.domain import AuthorizationContext, PermissionKey, Principal
+from app.db.postgres import SessionFactory
+from app.models.access import (
     Permission,
     RbacState,
     Role,
@@ -16,13 +16,13 @@ from app.rbac.models import (
     User,
     UserRole,
 )
-from app.rbac.queries import (
+from app.repositories.access import (
     load_authority_snapshot,
     lock_rbac_state,
     lock_roles,
     lock_users,
 )
-from app.rbac.service import RbacService
+from app.services.access import RbacService
 from tests.integration.conftest import World
 from tests.integration.query_capture import capture_selects
 

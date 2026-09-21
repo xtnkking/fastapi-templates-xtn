@@ -7,22 +7,25 @@ import pytest
 from fastapi.routing import APIRoute
 from starlette.requests import Request
 
-import app.rate_limit_dependencies as dependency_module
-from app.api_contract import BusinessCode
-from app.authentication_api import authentication_routers
-from app.rate_limit import RateLimitResult, RateLimitUnavailable
-from app.rate_limit_dependencies import (
+import app.dependencies.rate_limit as dependency_module
+from app.api.access import router as access_router
+from app.api.authentication import authentication_routers
+from app.core.api_contract import BusinessCode
+from app.core.config import Settings, get_settings
+from app.core.errors import RbacError
+from app.core.security.domain import Principal
+from app.core.security.rate_limit import (
+    RateLimitExceeded,
+    RateLimitResult,
+    RateLimitUnavailable,
+)
+from app.dependencies.rate_limit import (
     AUTHENTICATED_RATE_LIMIT_EXEMPT_OPERATIONS,
     AUTHENTICATED_RATE_LIMIT_RULES,
-    RateLimitExceeded,
     actor_policy_for,
     enforce_principal_rate_limit,
     precheck_principal_rate_limit,
 )
-from app.rbac.api import router as access_router
-from app.rbac.domain import Principal
-from app.rbac.errors import RbacError
-from app.settings import Settings, get_settings
 
 
 def enabled_settings() -> Settings:
@@ -188,9 +191,7 @@ async def test_allowed_actor_check_hides_user_id_in_redis_key() -> None:
     )
     await enforce_principal_rate_limit(request, actor, settings)
     key = redis_mock.eval.await_args.args[2]
-    assert key.startswith(
-        f"rl:v2:{{{settings.rate_limit_namespace}}}:get_my_access:actor:"
-    )
+    assert key.startswith(f"rl:v2:{settings.rate_limit_namespace}:get_my_access:actor:")
     assert str(actor.user_id) not in key
     assert request.state.actor_rate_limit_result.remaining == 599
 

@@ -6,13 +6,13 @@ import pytest
 import pytest_asyncio
 from redis.asyncio import Redis
 
-from app.rate_limit import (
+from app.core.config import get_settings
+from app.core.security.rate_limit import (
     RateLimitPolicy,
     RateLimitUnavailable,
     build_rate_limit_key,
     check_rate_limit,
 )
-from app.settings import get_settings
 
 pytestmark = pytest.mark.postgresql
 KEY_SECRET = b"integration-rate-limit-secret-is-isolated"

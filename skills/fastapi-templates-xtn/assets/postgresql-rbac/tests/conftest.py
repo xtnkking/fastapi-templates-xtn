@@ -4,7 +4,7 @@ import uuid
 import pytest
 from sqlalchemy.engine import make_url
 
-from app.rbac.domain import AuthoritySnapshot, AuthorizationContext, Principal
+from app.core.security.domain import AuthoritySnapshot, AuthorizationContext, Principal
 
 test_database_url = os.environ.get(
     "TEST_DATABASE_URL",

@@ -3,7 +3,7 @@ from contextlib import contextmanager
 
 from sqlalchemy import event
 
-from app.database import engine
+from app.db.postgres import engine
 
 
 @contextmanager

@@ -10,27 +10,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.api_contract import BusinessCode
-from app.i18n import (
-    CATALOGS,
-    DEFAULT_LOCALE,
-    SUPPORTED_LOCALES,
-    MessageKey,
-    apply_language_headers,
-    select_locale,
-)
-from app.main import (
-    app,
-    handle_access_error,
-    handle_database_unavailable,
-    handle_http_error,
-    handle_rate_limit_exceeded,
-    handle_request_validation_error,
-    handle_unexpected_error,
-)
-from app.rate_limit import RateLimitResult
-from app.rate_limit_dependencies import RateLimitExceeded
-from app.rbac.errors import (
+from app.core.api_contract import BusinessCode
+from app.core.errors import (
     RbacError,
     conflict,
     forbidden,
@@ -40,6 +21,24 @@ from app.rbac.errors import (
     stale_resource_version,
     unauthenticated,
     unavailable,
+)
+from app.core.i18n import (
+    CATALOGS,
+    DEFAULT_LOCALE,
+    SUPPORTED_LOCALES,
+    MessageKey,
+    apply_language_headers,
+    select_locale,
+)
+from app.core.security.rate_limit import RateLimitExceeded, RateLimitResult
+from app.main import (
+    app,
+    handle_access_error,
+    handle_database_unavailable,
+    handle_http_error,
+    handle_rate_limit_exceeded,
+    handle_request_validation_error,
+    handle_unexpected_error,
 )
 
 
@@ -321,7 +320,12 @@ async def test_domain_rate_limit_database_and_unexpected_errors_translate() -> N
     )
     unavailable = await handle_database_unavailable(
         request,
-        OperationalError("private statement", {}, RuntimeError("offline")),
+        OperationalError(
+            "private statement",
+            {},
+            RuntimeError("offline"),
+            connection_invalidated=True,
+        ),
     )
     unexpected = await handle_unexpected_error(request, RuntimeError("private"))
 
@@ -473,7 +477,7 @@ async def test_framework_404_and_405_are_localized_without_contract_changes() ->
 
 
 async def test_unhandled_500_keeps_language_headers() -> None:
-    from app.rbac.dependencies import get_authorization_context
+    from app.dependencies.authentication import get_authorization_context
 
     async def explode() -> None:
         raise RuntimeError("private-unhandled-failure")

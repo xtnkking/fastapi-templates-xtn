@@ -10,8 +10,8 @@ also be allowed to manage the target, the proposed result, and every user
 indirectly affected by the change.
 
 The complete PostgreSQL example implements these rules in
-[`app/rbac/policy.py`](../assets/postgresql-rbac/app/rbac/policy.py) and
-[`app/rbac/service.py`](../assets/postgresql-rbac/app/rbac/service.py), including
+[`app/core/security/policy.py`](../assets/postgresql-rbac/app/core/security/policy.py) and
+[`app/services/access.py`](../assets/postgresql-rbac/app/services/access.py), including
 user and custom-role lifecycle, immutable system roles, and offline-only
 super-admin handover boundary.
 

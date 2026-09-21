@@ -11,14 +11,14 @@ from argon2.low_level import Type
 from httpx import AsyncClient
 from sqlalchemy import select, text
 
-from app.authentication_service import LocalAuthenticationService
-from app.database import SessionFactory
+from app.core.config import get_settings
+from app.core.errors import RbacError
+from app.core.security.passwords import PasswordManager, password_manager
+from app.db.postgres import SessionFactory
 from app.main import app
-from app.password_models import AccountSecurityAuditEvent
-from app.passwords import PasswordManager, password_manager
-from app.rbac.errors import RbacError
-from app.rbac.models import Role, User, UserRole
-from app.settings import get_settings
+from app.models.access import Role, User, UserRole
+from app.models.account_security import AccountSecurityAuditEvent
+from app.services.authentication import LocalAuthenticationService
 from tests.integration.conftest import World
 
 PASSWORD = "correct horse battery staple 47"

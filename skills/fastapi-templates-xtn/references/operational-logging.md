@@ -22,8 +22,8 @@ Implement request observation as pure ASGI middleware around `receive` and
 `send`. `BaseHTTPMiddleware` and the return of `call_next` are not final response
 boundaries: streaming bodies and response background work may still fail.
 
-Every HTTP request emits exactly one `http.request.completed` event. Record it
-only after one of these terminal outcomes is known:
+Every HTTP request attempts to emit exactly one `http.request.completed` event.
+Construct and submit it only after one of these terminal outcomes is known:
 
 | Outcome | Completion fields |
 | --- | --- |
@@ -51,6 +51,9 @@ unexpected exception escapes before response start, the ASGI observer records
 one effective `500` completion and re-raises it to the framework's server-error
 handler. The handler must not record it again. This keeps one completion even
 though the fallback response is produced outside ordinary application routing.
+This is an event-ownership guarantee, not guaranteed log delivery: the bounded
+writer may discard a runtime event under the conditions below. Database audit
+records have their own transaction contract and never use this queue.
 
 The completion event contains only:
 
@@ -194,6 +197,45 @@ entire `logger.log` call. A defensive handler also contains formatter, queue, an
 stream failures. It may increment an in-process metric, but that fallback must
 not recursively log through the failing pipeline.
 
+## Bounded Background Output
+
+The bundled application formats each accepted event with `SafeJsonFormatter` in
+the emitting thread. This creates a safe immutable JSON string and snapshots
+the current request identity before its context can be cleared or reused. Only
+that final string enters the bounded process-local queue; never enqueue a raw
+mutable `LogRecord`, exception, request, or arbitrary object for later formatting.
+One background writer per process writes those strings to stdout. Slow stdout
+must not hold the application's event loop inside `write` or `flush`.
+
+The settings live in `app/core/config.py` and `.env.example`:
+
+| Setting | Default | Boundary |
+| --- | ---: | --- |
+| `LOG_QUEUE_CAPACITY` | 1000 | Positive event count, at most 10000, per process |
+| `LOG_SHUTDOWN_TIMEOUT_SECONDS` | 2 | Finite drain wait from 0 through 30 seconds |
+
+Each safe JSON event is capped at 16 KiB. An oversized event, a full queue, or an
+emit after shutdown begins is discarded and counted. A sink write/flush failure
+is counted without recursive logging. There is no synchronous fallback, unbounded
+queue, retry spool, or public diagnostics API. Internal code/tests can inspect
+`app.state.log_handler.snapshot()` for loss/output counters. Queue capacity and
+memory costs multiply with worker count; increasing the queue postpones pressure
+but cannot fix a persistently slower sink.
+
+The application lifespan creates and closes its own handler per process.
+Shutdown removes the handler and stops accepting events, then allows at most the
+configured drain interval for queued output. On timeout, pending events are
+discarded. A stdout call already blocked inside the daemon writer cannot be
+forcibly interrupted; it may finish if the OS recovers, and process exit can
+lose that final event. This bounds application-level draining, not Python's
+final stdout flush or an OS-level stalled pipe; deployments still need an
+external process termination deadline. Do not describe this queue as durable or guaranteed
+delivery. Durable RBAC, account-security, and business audits remain in PostgreSQL
+and retain their transaction/failure rules.
+
+Formatting still runs in the emitting thread and must remain bounded. Measure
+its CPU cost separately from sink latency before adding further machinery.
+
 ## Third-Party Loggers
 
 Do not attach the safe application formatter to the root logger and then forward
@@ -251,10 +293,18 @@ Use deterministic tests and controlled ASGI apps/handlers. Cover at least:
 - background-task and cleanup failure after a completed response;
 - client disconnect, task cancellation, response-start send failure, body send
   failure, and application return without a final body;
-- exactly one `http.request.completed` in every path and a separate post-response
-  event only when appropriate;
+- exactly one attempted `http.request.completed` in every path and a separate
+  post-response event only when appropriate; with a healthy drained sink, exactly
+  one corresponding completion line;
 - formatter, handler, queue, and stdout failure without a changed status, body,
   transaction result, or propagated logging exception;
+- a controlled sink blocked in `write` or `flush` while an event-loop callback
+  and another request can still progress; use synchronization events rather than
+  assuming a short sleep proves independence;
+- full queue, oversized event, sink failure, and emit-after-close counters;
+  no synchronous fallback and no recursive logging;
+- safe request-ID and mutable-field snapshots taken before enqueue, bounded
+  shutdown, pending-event discard on timeout, and clean normal drain;
 - concurrent request context, thread-pool propagation, streaming context,
   post-response clearing, and detached-task isolation;
 - no actor on every `401`, and actor presence on an authenticated `403`;

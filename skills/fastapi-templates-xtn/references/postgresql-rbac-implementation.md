@@ -51,9 +51,10 @@ not contain `rbac`. Use resource names such as `permissions`, `roles`, `users`,
 and `system`; use the neutral numeric denial code `403001`. Do not retain
 `/rbac` as a compatibility alias because an alias still exposes the mechanism.
 
-The internal package and asset directory may remain `app.rbac` and
-`assets/postgresql-rbac`; database and audit internals are not public API. Keep
-internal policy reason codes out of responses.
+The asset follows [Project structure](project-structure.md): access endpoints,
+policy, repositories, models, and services live in their respective responsibility
+directories. The `assets/postgresql-rbac` directory and database/audit internals
+are not public API. Keep internal policy reason codes out of responses.
 
 All public administration routes in this baseline use only `GET` and `POST`.
 Do not introduce `PUT`, `PATCH`, or `DELETE` aliases. Action-specific `POST`
@@ -62,53 +63,53 @@ weaken authentication, authorization, idempotency, or concurrency requirements.
 
 ## Included Code
 
-- [`app/rbac/models.py`](../assets/postgresql-rbac/app/rbac/models.py) defines
+- [`app/models/access.py`](../assets/postgresql-rbac/app/models/access.py) defines
   users, the singleton authorization guard, roles, permissions, role grants,
   user-role assignments, and audit events.
-- [`app/observability.py`](../assets/postgresql-rbac/app/observability.py)
+- [`app/core/observability.py`](../assets/postgresql-rbac/app/core/observability.py)
   configures safe structured process/request logging, context propagation, and
   defensive redaction.
-- [`app/audit.py`](../assets/postgresql-rbac/app/audit.py) validates stable audit
+- [`app/core/audit.py`](../assets/postgresql-rbac/app/core/audit.py) validates stable audit
   labels and converts bounded allowlisted before/after state to safe JSON.
-- [`app/i18n.py`](../assets/postgresql-rbac/app/i18n.py) defines the closed
+- [`app/core/i18n.py`](../assets/postgresql-rbac/app/core/i18n.py) defines the closed
   runtime `MessageKey` catalog, bounded `Accept-Language` selection, validation
   message mapping, translation lookup, and language response headers.
-- [`app/locales/zh-CN.json`](../assets/postgresql-rbac/app/locales/zh-CN.json) and
-  [`app/locales/en.json`](../assets/postgresql-rbac/app/locales/en.json) provide
+- [`app/assets/locales/zh-CN.json`](../assets/postgresql-rbac/app/assets/locales/zh-CN.json) and
+  [`app/assets/locales/en.json`](../assets/postgresql-rbac/app/assets/locales/en.json) provide
   complete, equal-key Simplified Chinese and English runtime message catalogs.
   [`app/main.py`](../assets/postgresql-rbac/app/main.py) resolves a request-local
   language and localizes framework errors, while
-  [`app/api_contract.py`](../assets/postgresql-rbac/app/api_contract.py) renders
+  [`app/core/api_contract.py`](../assets/postgresql-rbac/app/core/api_contract.py) renders
   route, service, and error `MessageKey` values into the standard envelope.
 - [`tests/test_i18n.py`](../assets/postgresql-rbac/tests/test_i18n.py) verifies
   catalog parity, language negotiation, localized success/error/validation
   responses, headers, hostile input, and concurrent request isolation. The
   complete call flow and extension rules are in
   [API internationalization](api-internationalization.md).
-- [`app/rbac/domain.py`](../assets/postgresql-rbac/app/rbac/domain.py) defines
+- [`app/core/security/domain.py`](../assets/postgresql-rbac/app/core/security/domain.py) defines
   immutable principals, the permission catalog, system-role specifications, and
   complete multi-role authority snapshots.
-- [`app/rbac/queries.py`](../assets/postgresql-rbac/app/rbac/queries.py) resolves
+- [`app/repositories/access.py`](../assets/postgresql-rbac/app/repositories/access.py) resolves
   effective permissions and implements canonical locking queries.
-- [`app/rbac/policy.py`](../assets/postgresql-rbac/app/rbac/policy.py) contains
+- [`app/core/security/policy.py`](../assets/postgresql-rbac/app/core/security/policy.py) contains
   strict manageability, system-role, and anti-self-elevation decisions. Each
   user-administration entry point fixes its capability before calling the shared
   decision.
-- [`app/rbac/projections.py`](../assets/postgresql-rbac/app/rbac/projections.py)
+- [`app/services/access_projections.py`](../assets/postgresql-rbac/app/services/access_projections.py)
   builds shared read/write response snapshots from already-authorized data
   without querying or changing visibility.
-- [`app/rbac/dependencies.py`](../assets/postgresql-rbac/app/rbac/dependencies.py)
+- [`app/dependencies/authentication.py`](../assets/postgresql-rbac/app/dependencies/authentication.py)
   validates bearer claims, requires the Redis active-JTI record, loads current
   PostgreSQL user and RBAC authority, compares `users.token_version`, removes an
   exact JTI rejected by current database state on a best-effort basis, rejects
   an already exhausted per-operation actor window before PostgreSQL without
   incrementing it, charges the quota only for a live identity, and centralizes
   exact permission checks.
-- [`app/rbac/service.py`](../assets/postgresql-rbac/app/rbac/service.py) implements
+- [`app/services/access.py`](../assets/postgresql-rbac/app/services/access.py) implements
   user status changes, custom-role lifecycle, role creation and update,
   permission and role bind/unbind commands, administrator session revocation,
   rollback-before-denial-audit, and the common locking protocol.
-- [`app/rbac/api.py`](../assets/postgresql-rbac/app/rbac/api.py) exposes neutral
+- [`app/api/access.py`](../assets/postgresql-rbac/app/api/access.py) exposes neutral
   application-level resource endpoints with privileged fields excluded from
   bodies.
 - [`sql/bootstrap_super_admin.sql`](../assets/postgresql-rbac/sql/bootstrap_super_admin.sql)
@@ -668,12 +669,14 @@ The main product-specific decisions are:
    decisions, transaction services, audit actions, and negative/concurrency
    tests. Reuse the lifecycle columns and scenarios, but do not mistake them for
    already registered public endpoints.
-6. Set `SERVICE_NAME` and immutable `SERVICE_VERSION` from deployment, connect
-   stdout JSON to the product's log platform, and define operational-log and
-   audit preservation/access policies. Keep exception details off until their
-   content and readers are reviewed. Add domain-specific audit tables only for
-   explicitly identified security or regulated business events; do not broaden
-   `rbac_audit_events` into a generic activity dump.
+6. Set `SERVICE_NAME` and immutable `SERVICE_VERSION` through configuration.
+   Preserve safe structured stdout and transactional audit behavior; reuse any
+   existing logging integration. Log platforms and retention/access policy are
+   owner/operations choices, not required additions to ordinary code generation.
+   Keep exception details off until their content and readers are reviewed.
+   Add domain-specific audit tables only for explicitly identified security or
+   regulated business events; do not broaden `rbac_audit_events` into a generic
+   activity dump.
 
 Do not ask the user to choose basic table topology, multi-role semantics,
 hierarchy direction, the three system roles, the 10-live-role limit,
@@ -682,5 +685,4 @@ grant bounds, default denial, public administration routes, lock order, or
 ordinary self-management behavior unless the existing application explicitly
 contradicts this baseline.
 
-Do not call a deployment production-ready until its required Redis and
-PostgreSQL checks pass in the target environment.
+Report relevant code tests without treating them as production certification.

@@ -2,7 +2,7 @@ from typing import cast
 
 from sqlalchemy import Table
 
-from app.rbac.models import RbacAuditEvent, RbacState
+from app.models.access import RbacAuditEvent, RbacState
 
 
 def test_rbac_state_model_uses_clear_database_names() -> None:

@@ -3,9 +3,9 @@ from collections.abc import Awaitable, Callable
 import pytest
 from httpx import AsyncClient
 
-from app.database import SessionFactory
-from app.rbac.domain import PermissionKey
-from app.rbac.models import Role, RolePermission, User, UserRole
+from app.core.security.domain import PermissionKey
+from app.db.postgres import SessionFactory
+from app.models.access import Role, RolePermission, User, UserRole
 from tests.integration.conftest import World
 from tests.integration.query_capture import capture_selects
 

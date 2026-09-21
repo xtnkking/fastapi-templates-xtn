@@ -9,13 +9,23 @@ structured logging, and separate durable audits.
 
 ## Status
 
-`v0.6.2` is the latest published tag; the authoritative version value is in
+`v0.7.0` is the current release; the authoritative version value is in
 [`skills/fastapi-templates-xtn/VERSION`](skills/fastapi-templates-xtn/VERSION).
 Install this immutable tag for the current baseline.
 
-The completed repair scope and item-by-item status are recorded in the Chinese
-[`v0.6.1 optimization plan`](V0.6.1_OPTIMIZATION_PLAN.zh-CN.md), with release
-evidence in `RELEASE_CHECKLIST.md`.
+`v0.7.0` keeps new projects simple: one standalone PostgreSQL and one shared
+standalone Redis. Sentinel, Cluster, read/write splitting, and separate backends
+remain opt-in. It adds responsibility-based source directories, bounded
+connections and timeouts, safer concurrent work and logging, and tested Redis
+client/script adaptations. Infrastructure deployment remains operator-owned.
+See [the changelog](CHANGELOG.md) for details and `RELEASE_CHECKLIST.md` for
+release evidence; the earlier [v0.6.1 optimization plan](V0.6.1_OPTIMIZATION_PLAN.zh-CN.md)
+is retained as a historical repair record.
+
+Updating this Skill alone does not change a running application. Deploying its
+new session implementation to an existing application requires users to log in
+again, and the changed rate-limit keys start fresh windows once. Account data
+and PostgreSQL schema are unchanged; no new Alembic migration is needed.
 
 `v0.6.0` adds a project-wide administrator password-reset choice. The
 default `direct` mode makes the administrator-supplied value the permanent
@@ -103,7 +113,7 @@ maintained and are not affiliated with or endorsed by upstream. Preserve
   actor's immutable user ID. There are **no global or cross-business quotas**,
   no anonymous username buckets, and no shared `/api/` IP bucket. A valid
   over-limit decision is `429001` with `Retry-After`; Redis/IP authority
-  failure is fail-closed `503001`. All settings are editable in `app/settings.py`
+  failure is fail-closed `503001`. All settings are editable in `app/core/config.py`
   and `.env.example`; defaults are listed below and must be shown to the
   project owner before generating a service.
 - Every ordinary JSON API response has `code` (six-digit number), `message`,
@@ -141,7 +151,7 @@ Install the immutable latest published release for a new destination:
 
 ```text
 Use $skill-installer to install the skill from
-https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.6.2/skills/fastapi-templates-xtn
+https://github.com/xtnkking/fastapi-templates-xtn/tree/v0.7.0/skills/fastapi-templates-xtn
 ```
 
 The installer does not overwrite an installed Skill and must not be described as
@@ -164,11 +174,36 @@ For code changes, the [reuse and abstraction rules](skills/fastapi-templates-xtn
 explain when to share a parameterized implementation, keep simple code inline,
 or retain a function that owns a security, transaction, or framework boundary.
 
+For an empty project without an established framework, the optional default is
+the [responsibility-first layout](skills/fastapi-templates-xtn/references/project-structure.md):
+`api`, `core`, `db`, `dependencies`, `models`, `repositories`, `schemas`, and
+`services`. As businesses grow, add modules or packages inside these layers.
+Create workers and utilities only for actual implementations; a simple query
+does not need a forwarding Service method.
+Existing applications retain their framework, directories, and call conventions;
+integrate the requested feature into them. Using this Skill does not authorize
+a rewrite or wholesale template replacement. Reorganization requires an explicit
+request for that scope.
+
+This Skill focuses on code conventions and correctness. Zero-downtime updates,
+cluster operations, production sizing, and recovery exercises are project-owner
+choices, not default implementation tasks or delivery gates. For connection
+pools, timeouts, shared process state, or a measured bottleneck, load
+[Capacity and availability](skills/fastapi-templates-xtn/references/application-capacity-and-availability.md).
+New projects default to one standalone PostgreSQL and one standalone Redis,
+configured through `DATABASE_URL` and `REDIS_URL`; login state, CAPTCHA, and
+quotas share Redis. Existing projects retain their current topology. Cluster,
+read/write splitting, and separate Redis backends require an explicit need;
+there is no mandatory cluster-selection step. Redis also supports Sentinel and native Cluster through
+[connection settings](skills/fastapi-templates-xtn/references/redis-connections.md);
+the application connects to infrastructure supplied by operations. Existing runtime safeguards, concurrency tests, and
+the optional GET load tool remain available; no production platform is required.
+
 The official verification environment is Python 3.12, PostgreSQL 17, and
 Redis 7. A generated project may support other versions only after that project
 tests them; this repository does not claim those combinations are verified.
 `GET /health/live` reports only that the process is alive. `GET /health/ready`
-requires PostgreSQL to report exactly Alembic head `0004_password_auth` and a
+requires PostgreSQL to report a writable primary, exactly Alembic head `0004_password_auth`, and a
 readable `rbac_state(scope='global')` row. It also requires both the active-JTI
 and rate-limit Redis targets to pass `PING` plus a Lua write/read/delete probe
 using a random, non-secret key with a five-second TTL. Checks use bounded
@@ -205,8 +240,8 @@ do not change them without rerunning the dependency audit and full suite.
 
 Run PostgreSQL/Redis migration, concurrency, authentication, CAPTCHA, and
 quota tests against **fresh disposable targets only**. Never aim the test suite
-at a database containing real project data. A generated project is not
-production-ready until its target deployment and integration behaviors pass.
+at a database containing real project data. Report code-test evidence accurately;
+production deployment validation remains the adopter's responsibility.
 See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) before publishing a new tag.
 
 ## Governance And License

@@ -98,7 +98,7 @@ authoritative for the existing user row and current RBAC state, which the reques
 already loads after the Redis check.
 
 A signed Access Token is accepted only while its JTI has the exact expected Redis
-record. Missing, expired, evicted, malformed, or mismatched keys deny safely,
+record. Missing, expired, evicted, malformed, or mismatched records deny safely,
 although unexpected eviction reduces availability. JTI validation enables
 targeted revocation; it does not make an Access Token one-time or stop replay
 while its JTI remains active. Protect bearer tokens with TLS, narrow
@@ -107,21 +107,37 @@ device monitoring.
 
 - Generate each JTI as UUIDv4 inside the trusted issuer. Never accept or reuse a
   client-supplied JTI.
-- Namespace a key by environment and a SHA-256 digest of a stable internal
-  service name plus `NUL` plus `jti`. Do not derive the Redis namespace from the
-  optional public `iss` claim: enabling, disabling, or migrating that claim must
-  be an explicit Token-contract change rather than a hidden registry-key change.
-  Store no raw JWT. The value binds canonical `sub`, literal `access` type, `iat`,
-  `exp`, and the server-side `users.token_version` read during login.
+- Use three per-user keys under `auth:sessions:v2:<environment>:{<user_digest>}`:
+  `records` is a hash, `order` is a sorted login-order index, and `expires` is a
+  sorted per-session expiry index. `user_digest` is SHA-256 of the stable
+  internal service name plus `NUL` plus canonical user ID. The hash tag places
+  one user's three keys in the same Cluster slot while different users can
+  spread across slots. Every Lua call declares all three keys; never dynamically
+  construct other keys inside the script.
+- Store a JTI under a hash field derived from SHA-256 of service name plus `NUL`
+  plus JTI. Store no raw JWT. Its exact JSON value binds canonical `sub`, literal
+  `access` type, `iat`, `exp`, and the server-side `users.token_version` read
+  during login. The optional `iss` claim never controls this namespace.
 - Validate an exact schema and exact `sub`, type, `iat`, and `exp` match. After loading
   the current PostgreSQL user, compare the Redis-bound user version with
   `users.token_version`. The version remains server-side and never enters JWT.
-- Activate with one Redis 5.0+ Lua operation: read server `TIME`, reject an
-  already expired deadline, create with `SET ... NX EX <remaining_seconds>`,
-  then set the exact JWT deadline with `PEXPIREAT <exp * 1000>` before returning
-  success. A duplicate JTI is an issuance conflict; make one bounded retry with
-  a fresh UUIDv4 or fail issuance. Redis expiry must never outlive JWT expiry,
-  and reads must never extend it. Unknown script results fail closed.
+- Activate with one Redis 7 Lua operation: check server `TIME`, reject an expired
+  deadline or a version older than the hash's `_version`, remove expired
+  sessions, and register with `HSETNX` plus both indexes. A duplicate JTI is an
+  issuance conflict; retry once with a fresh UUIDv4 or fail issuance. An increased
+  version atomically replaces older-version sessions. Unknown results fail closed.
+- A session becomes invalid exactly at its own `exp`, checked against Redis
+  server time on read and list. To support Redis 7.0, do not require newer
+  hash-field TTL commands: expired fields are removed on access, listing, or issuance, and may physically
+  remain until then or until the container expires. The three containers use
+  `PEXPIREAT` with the maximum of their previously retained deadline and the new
+  session's deadline, tracked from `records` with `PEXPIRETIME`. A shorter new
+  login must never expire a longer existing login. Reads never extend deadlines.
+- Preserve `_version` in `records` through that maximum deadline, including
+  after replacement or the last logout. This rejects a delayed older-version
+  issuance while earlier issued lifetimes could still be relevant. The watermark
+  may expire with the container; PostgreSQL user-version comparison remains
+  mandatory and authoritative.
 - Only the trusted login or token-issuance path activates a JTI. Never recreate a
   missing entry from a presented JWT; doing so reactivates a revoked credential.
 - Maintain a per-user active-login index with login timestamps in Redis. The
@@ -140,6 +156,9 @@ device monitoring.
 
 The key/value and async Redis code are in
 [JWT implementation shapes](jwt-session-implementation.md).
+Standalone, Sentinel, and Cluster use this same registry implementation. Moving
+from the previous `v1` per-JTI-key layout to `v2` invalidates old logins: users must
+log in again. Do not read the old layout as a fallback or reconstruct it from JWTs.
 
 ## Authentication Order And Failures
 
@@ -182,24 +201,27 @@ Use this fail-closed issuance order:
 1. Authenticate credentials and load the current active user plus
    `users.token_version` from PostgreSQL.
 2. Generate a fresh UUIDv4 JTI and the minimal claims, then sign the Access Token.
-3. Create the exact Redis record with the atomic Redis 5.0+ activation script,
+3. Create the exact Redis record with the atomic Redis 7 activation script,
    binding `sub`, type, `iat`, `exp`, and the user version observed in step 1.
 4. Return the Token only after Redis confirms creation. On a duplicate JTI, retry
    once with a newly generated JTI; on Redis failure, return `503` and no Token.
 
-If the response is lost after Redis activation, the unused entry is harmless and
-expires at `exp`. Never lazily activate a JTI on first API use. If an external
+If the response is lost after Redis activation, its session remains registered
+and can consume a login slot until eviction or expiry; the caller receives no
+Token. Do not blindly replay a write whose result is unknown. The session is
+invalid at `exp`. Never lazily activate a JTI on first API use. If an external
 identity provider owns login, enforce the same Redis registration before this API
 returns or accepts the resulting application Token.
 
-For logout, atomically compare the stored value and delete the JTI key. Return
+For logout, atomically compare the stored value and remove that JTI hash field
+and its two index entries, retaining the version watermark. Return
 success only after Redis confirms deletion of the exact active record. A missing
 or mismatched record is `401`; a Redis error or ambiguous deletion outcome is
-`503`. Never claim logout succeeded after a failed `DEL` or compare-and-delete.
+`503`. Never claim logout succeeded after a failed compare-and-delete.
 The client may retry when the outcome is unknown. Confirmed deletion prevents
 later gate checks, but cannot cancel a request that already passed the gate.
 
-Redis failover may restore an older snapshot and revive a recently deleted key.
+Redis failover may restore an older snapshot and revive a recently deleted session.
 Choose persistence, replication, and failover guarantees for the product's risk,
 and document the residual window. This lighter Redis-only gate must not be
 described as PostgreSQL-grade linearizable revocation.
@@ -207,8 +229,9 @@ described as PostgreSQL-grade linearizable revocation.
 For administrator-forced logout of a strictly lower user, password compromise,
 or identity disablement, increment
 `users.token_version` in the authoritative PostgreSQL transaction. Existing
-Redis records may remain until their `exp`, but every later request compares their
-bound version with the current user row and rejects them. User status transitions
+Redis records can remain physically until cleanup or container expiry, but every
+later request compares their bound version with the current user row and rejects
+them. User status transitions
 that must revoke existing Tokens also increment this version. No Token-record
 cleanup outbox is required for correctness.
 
@@ -264,9 +287,11 @@ The active-JTI gate materially limits, but does not erase, signing-key risk:
   `iat`, expiry, and every unexpected extra claim.
 - Assert the configured default is 86,400 seconds, alternate business-approved
   values work, and project documentation tells users to review the value.
-- Prove every issuance has a distinct JTI, duplicate `SET NX` fails, no Token is
-  returned before successful Redis registration, Redis expiry equals `exp`, and
-  no Redis value or log contains raw credentials.
+- Prove every issuance has a distinct JTI, duplicate `HSETNX` registration fails,
+  and no Token is returned before successful registration. Verify exact logical
+  expiry at each `exp`, mixed-lifetime containers, expired-session cleanup,
+  concurrent login limits and oldest eviction, monotonic version watermarks,
+  fixed same-slot keys, and absence of raw JWTs or secrets in records and logs.
 - Redis miss, expiry, malformed data, or `sub`/type/`iat`/`exp` mismatch is `401`;
   Redis timeout/error is `503`, and the protected handler is not called.
 - Compare the Redis-bound user version with current `users.token_version`. Test
@@ -274,7 +299,11 @@ The active-JTI gate materially limits, but does not erase, signing-key risk:
   expiry, and user suspension.
 - Test compare-and-delete success, mismatch, missing key, Redis failure, and an
   ambiguous outcome. Only a confirmed exact deletion returns logout success;
-  also test one request already past the gate and a failover restoration case.
+  also test one request already past the gate and restoration of old JTI state.
+  Simulating restored state in an isolated test checks security semantics, not
+  infrastructure failover. Actual switch testing uses an operations-provided,
+  explicitly selected isolated topology within the authorized scope; ordinary
+  JWT work does not require provisioning or switching a cluster.
 - Reject weak/example startup secrets and oversized input and output Tokens.
   Prove that an oversized encoded Token creates no Redis record. Test
   account-wide logout with two independently issued Tokens: both must fail after
@@ -297,8 +326,8 @@ revocation through `users.token_version`. Startup rejects weak/example HS256
 secrets, and input/output Tokens are bounded to 4096 bytes. It adds no
 individual PostgreSQL Token or session table.
 
-Adopters must still supply deployment secrets, choose the simultaneous-login
-maximum, configure Redis durability and isolation, and run the required
-PostgreSQL/Redis checks for their target deployment. Do not describe an
-unverified deployment as production-ready merely because the bundled tests or
-reference implementation exist.
+Adopters supply secrets through configuration and choose the simultaneous-login
+maximum. Verify the relevant authentication behavior with PostgreSQL/Redis tests.
+Production Redis durability, isolation, and recovery are owner/operations choices;
+they are not extra product questions or deployment tasks required for ordinary
+code generation. Bundled tests do not certify an actual deployment.

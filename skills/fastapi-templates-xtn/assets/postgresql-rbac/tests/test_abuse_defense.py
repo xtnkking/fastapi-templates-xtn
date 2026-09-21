@@ -3,11 +3,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import app.abuse_defense as abuse_module
-from app.abuse_defense import AbuseDefenseService, canonical_client_ip
-from app.rate_limit import RateLimitPolicy, RateLimitResult, RateLimitUnavailable
-from app.rate_limit_dependencies import RateLimitExceeded
-from app.settings import get_settings
+import app.core.security.abuse_defense as abuse_module
+from app.core.config import get_settings
+from app.core.security.abuse_defense import AbuseDefenseService, canonical_client_ip
+from app.core.security.rate_limit import (
+    RateLimitExceeded,
+    RateLimitPolicy,
+    RateLimitResult,
+    RateLimitUnavailable,
+)
 
 
 def service() -> AbuseDefenseService:

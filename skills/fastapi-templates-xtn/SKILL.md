@@ -10,8 +10,11 @@ description: Build or harden a single-project FastAPI service that explicitly ad
 
 ## Scope And Workflow
 
-This is one coherent, opinionated baseline for a single project's authorization
-boundary. Before changing code, inspect the repository's Python and dependency
+This Skill defines code conventions and a coherent single-project authorization
+baseline. Keep the deliverable within the requested coding task. Production
+sizing, zero-downtime releases, cluster operations, and recovery drills are
+user-owned choices, not default features, completion gates, or a backlog of
+Skill defects. Before changing code, inspect the repository's Python and dependency
 versions, settings, identity contract, database and migrations, transaction
 ownership, Redis clients, routes, tests, and deployment model. Preserve an
 existing intentional choice unless the owner requests a migration.
@@ -37,10 +40,34 @@ keep simple one-use code inline unless a clear boundary justifies extraction.
 For new abstractions or repeated flows, read
 [Reuse and abstraction](references/reuse-and-abstraction.md).
 
+For a genuinely new service with no established framework, use the optional
+default layout: `api`, `core`, `db`, `dependencies`, `models`, `repositories`,
+`schemas`, and `services`, with business modules inside them. Honor an explicitly
+chosen alternative. In an existing project, follow its architecture, naming,
+layers, and infrastructure; place the requested feature in its existing homes.
+An empty subdirectory in that project is not a greenfield service. Using this
+Skill or asking for a feature, fix, or optimization does not authorize broad
+framework replacement or directory reorganization. Read
+[Project structure](references/project-structure.md) when placing or reorganizing
+code. Directory structure must not introduce empty modules or forwarding layers.
+
+For a new project, default to one standalone PostgreSQL instance and one
+standalone Redis instance, configured by `DATABASE_URL` and `REDIS_URL`.
+Login state, CAPTCHA, and quotas share that Redis by default. Do not ask a
+mandatory cluster-selection question or add a second Redis service. Sentinel,
+Cluster, read/write splitting, and separate backends are opt-in requirements;
+load their configuration guidance only for an explicit request or an existing
+topology that must be preserved. Keep bounded connections, cleanup, and safe
+transactions in all modes. When a cluster is requested, connect to the supplied
+service; operations owns its deployment and management.
+
 Treat [the PostgreSQL asset](assets/postgresql-rbac/) as output source, not as
 instructions to load wholesale. Copy it as one directory for a matching
-greenfield service. When adapting it, inspect only the target symbol, direct
-dependencies, and matching tests with `rg`.
+greenfield service. Never overwrite an existing application's tree with the
+asset. When adapting it, inspect only the target symbol, direct dependencies,
+and matching tests with `rg`, and integrate the needed behavior into the host
+project's components. Reorganize architecture only within an explicitly
+requested scope; do not ask again when that scope is already authorized.
 
 ## Read By Task
 
@@ -48,6 +75,9 @@ dependencies, and matching tests with `rg`.
 | --- | --- |
 | Chinese maintainer/download-user overview | [Chinese architecture overview](references/architecture-overview.zh-CN.md) |
 | FastAPI, Pydantic, SQLAlchemy, settings, lifecycle | [Modern stack](references/modern-fastapi-stack.md) |
+| Connection pools, timeouts, shared process state, or measured performance issues | [Capacity and availability](references/application-capacity-and-availability.md) |
+| Explicitly requested or existing Redis Sentinel/Cluster, separate backend, custom TLS, or client/script changes | [Redis connections](references/redis-connections.md); ordinary standalone setup needs only `.env.example` |
+| New project layout, module placement, or requested directory reorganization | [Project structure](references/project-structure.md) |
 | Similar functions, shared helpers, service/repository layers, refactoring | [Reuse and abstraction](references/reuse-and-abstraction.md) |
 | JSON envelopes, business codes, request IDs, pagination | [API response](references/api-response-standard.md) |
 | Runtime API messages, `Accept-Language`, validation text, new locale | [API internationalization](references/api-internationalization.md) |
@@ -164,6 +194,6 @@ Run the smallest relevant matrix from [Testing](references/testing.md), includin
 format, lint, strict typing, contract, policy/IDOR, secret scans, migrations, and
 real PostgreSQL/Redis concurrency where the changed boundary requires them.
 Integration tests may use only newly created, empty, disposable targets whose
-isolation guards pass. Report unavailable services and skipped assumptions; do
-not call a result production-ready without the required database, Redis,
-migration, and concurrency evidence.
+isolation guards pass. Report actual code verification and unavailable checks.
+Ordinary coding tasks do not require production capacity certification or
+deployment exercises; passing code tests does not certify production readiness.

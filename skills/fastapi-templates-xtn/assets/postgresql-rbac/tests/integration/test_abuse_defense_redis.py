@@ -5,10 +5,13 @@ import pytest
 import pytest_asyncio
 from redis.asyncio import Redis
 
-from app.abuse_defense import AbuseDefenseService
-from app.rate_limit import RateLimitPolicy, build_rate_limit_key
-from app.rate_limit_dependencies import RateLimitExceeded
-from app.settings import get_settings
+from app.core.config import get_settings
+from app.core.security.abuse_defense import AbuseDefenseService
+from app.core.security.rate_limit import (
+    RateLimitExceeded,
+    RateLimitPolicy,
+    build_rate_limit_key,
+)
 
 pytestmark = pytest.mark.postgresql
 

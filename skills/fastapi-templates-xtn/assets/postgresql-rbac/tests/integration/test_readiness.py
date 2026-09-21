@@ -1,6 +1,9 @@
 """Exercise readiness against guarded disposable PostgreSQL and Redis targets."""
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import cast
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -9,11 +12,13 @@ import pytest
 from httpx import AsyncClient
 from redis.asyncio import Redis
 from redis.asyncio.client import Monitor
-from sqlalchemy import event
+from sqlalchemy import event, text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.api_contract import BusinessCode
-from app.database import engine
-from app.settings import get_settings
+import app.main as main_module
+from app.core.api_contract import BusinessCode
+from app.core.config import get_settings
+from app.db.postgres import engine
 
 pytestmark = pytest.mark.postgresql
 
@@ -68,6 +73,7 @@ async def test_readiness_uses_real_postgresql_and_both_redis_targets(
     ) -> None:
         statements.append(" ".join(statement.split()))
 
+    assert settings.redis_url is not None
     active_jti_observer = Redis.from_url(settings.redis_url, decode_responses=True)
     rate_limit_observer = Redis.from_url(
         settings.effective_rate_limit_redis_url,
@@ -117,6 +123,8 @@ async def test_readiness_uses_real_postgresql_and_both_redis_targets(
         and "WHERE version_num =" in statement
         and "FROM rbac_state" in statement
         and "scope = 'global'" in statement
+        and "NOT pg_is_in_recovery()" in statement
+        and "current_setting('transaction_read_only') = 'off'" in statement
         for statement in statements
     )
     assert active_jti_commands.result() == _EXPECTED_REDIS_COMMANDS
@@ -157,3 +165,25 @@ async def test_readiness_uses_real_postgresql_and_both_redis_targets(
                     "readiness response leaked a connection detail",
                     pytrace=False,
                 )
+
+
+async def test_readiness_rejects_a_read_only_postgresql_connection(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @asynccontextmanager
+    async def read_only_connection() -> AsyncIterator[AsyncConnection]:
+        async with engine.connect() as connection:
+            await connection.execute(text("SET TRANSACTION READ ONLY"))
+            yield connection
+
+    monkeypatch.setattr(
+        main_module, "engine", SimpleNamespace(connect=read_only_connection)
+    )
+
+    response = await client.get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json()["code"] == int(BusinessCode.SERVICE_UNAVAILABLE)
+    assert response.json()["data"] is None
+    assert "read_only" not in response.text
