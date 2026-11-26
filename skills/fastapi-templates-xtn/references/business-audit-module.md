@@ -3,10 +3,10 @@
 Read this reference when a product needs durable evidence for important business
 actions such as refunds, balance adjustments, approvals, sensitive exports,
 destructive lifecycle changes, or security-relevant configuration changes. This
-Skill already includes the `business_audit_events` table, SQLAlchemy model,
-append-only controls, sanitizer, and catalog-backed writer as reusable baseline
-infrastructure. That does not enable an audit event for any product action by
-itself. Add call sites only for actions the project has explicitly placed in a
+Skill retains the optional `business_audit_events` model, append-only control
+examples, sanitizer and catalog-backed writer as reviewed source resources.
+They are excluded from default project export and default model registration.
+Add them and their call sites only for actions the project explicitly places in a
 reviewed event catalog; never audit ordinary CRUD merely because the writer and
 table exist.
 
@@ -17,7 +17,7 @@ Use progressive loading:
 | Decide whether and what to audit; define the catalog, safe fields, outcomes, and transaction behavior | This file only |
 | Implement or change the PostgreSQL model, migration, writer, or caller-owned transaction | This file, then [Business audit PostgreSQL](business-audit-postgresql.md) |
 | Add an audit review API, export, retention, partitioning, legal hold, alerts, backups, or recovery | This file, then [Business audit operations](business-audit-operations.md) |
-| Audit an RBAC control-plane action | [RBAC audit module](audit-module.md), not this file |
+| Audit an account/permission operation | [Operation audit module](audit-module.md), not this file |
 | Promise immediate authorization revocation for a protected business write | This file, [Business audit PostgreSQL](business-audit-postgresql.md), then [Atomic authorization consistency](atomic-consistency.md) |
 
 Do not load both detailed references unless the task spans both concerns. The
@@ -32,12 +32,12 @@ Keep the three evidence channels separate:
 | Channel | Purpose | Persistence contract |
 | --- | --- | --- |
 | Operational logs | Diagnose requests, exceptions, dependencies, and performance | Operational telemetry; not durable business evidence |
-| `rbac_audit_events` | Access-control administration and relevant authorization decisions | Append-only RBAC evidence under the RBAC catalog |
+| Default `operation_audit_events` | Account security and permission administration | Append-only evidence under the account/permission catalogs |
 | Business audit | Important domain actions and their committed or rejected outcomes | Append-only domain evidence under an explicit business catalog |
 
-Never put business activity into `rbac_audit_events`. Never use operational logs
+Never put unrelated business activity into `operation_audit_events`. Never use operational logs
 as a substitute for a required business audit row. A request can produce both an
-RBAC event and a business event only when they describe different facts, for
+permission event and a business event only when they describe different facts, for
 example a suspicious authorization decision and a refund command. Correlate them
 with the same server request ID and do not duplicate the same fact.
 
@@ -55,9 +55,9 @@ or ownership. Do not create one table per resource for naming preference. See
 or legal-hold classes in one partitioned table.
 
 Business audit also does not represent login activity or authentication state.
-When account security events need different readers or retention, give them a
-separate catalog and table such as `account_security_audit_events`. Do not store
-authentication material in any audit table.
+Default account security belongs to `operation_audit_events`, not another table.
+Do not store authentication material in any audit table. Only a separately
+requested product/retention boundary justifies splitting the default table.
 
 ## Decide What To Audit
 
@@ -87,7 +87,7 @@ Before implementation, create a version-controlled catalog. Every entry states:
 - exact `action`, owning domain, and accountable product owner;
 - trigger point and canonical resource type;
 - allowed outcomes and stable reason codes;
-- actor rules and required authorization capability;
+- operation-source rules and required authorization capability;
 - safe before/after/context field allowlists;
 - whether the event is mandatory for transaction success;
 - retention, read, export, and alert policy; and
@@ -100,33 +100,49 @@ versions.
 
 ## Core Event Contract
 
-The default table exposes these logical fields. Concrete PostgreSQL types,
+This optional table exposes these logical fields. Concrete PostgreSQL types,
 constraints, indexes, and migration rules live in
 [Business audit PostgreSQL](business-audit-postgresql.md).
 
 | Field | Contract |
 | --- | --- |
-| `id` | Non-sequential event ID; UUIDv4 in the bundled PostgreSQL profile |
+| `id` | `BA` + `YYMMDDHHMMSSmm` + six random characters; 22 characters total |
 | `domain` | Stable lowercase catalog domain such as `payment` |
 | `action` | Stable `[domain].[resource].[verb]` catalog key |
 | `outcome` | Exactly `succeeded`, `failed`, or `denied` |
 | `reason_code` | Catalog-owned lowercase machine reason, 2 to 80 characters |
-| `actor_type` | `user`, `service`, `system`, `job`, or `operator` |
-| `actor_id` | Canonical non-PII actor ID; required except for `system` |
-| `resource_type` | Stable lowercase canonical resource type |
-| `resource_id` | Canonical non-sequential affected resource ID |
-| `source` | `http`, `service`, `job`, `operator`, or `migration` |
+| `source_type` | Who started the operation: `user`, `service`, `system`, `job`, or `maintenance` |
+| `user_id` | 操作人: authenticated user's 15-character `U` ID; required only for `source_type="user"` |
+| `source_id` | Stable non-personal service/job/maintenance ID; null for user and system operations |
+| `target_user_id` | 被操作人: affected user's 15-character `U` ID, or null when no user is affected |
+| `target_type` | Stable lowercase type of the affected object, such as `user` or `refund` |
+| `target_id` | Canonical non-sequential ID of that object |
+| `entrypoint` | Execution entry: `http`, `service`, `job`, `operator`, or `migration` from `AuditSource` |
 | `schema_version` | Positive payload version for the action |
 | `before_state` | Minimal allowlisted state before the attempt or change, or null |
 | `after_state` | Minimal allowlisted state after a committed success, or null |
 | `context` | Small action-specific, server-owned allowlisted object |
-| `request_id` | Server request ID or safe non-HTTP operation correlation ID |
+| `request_id` | Server request ID or safe non-HTTP operation correlation ID, read automatically from the bound execution context |
 | `created_at` | Database-generated insertion time |
 
-Actor and resource IDs can be canonical UUIDs or validated prefixed business
-IDs. They identify entities without copying email, username, display name, or
-other presentation identity. Do not use cascading foreign keys from live users
-or business resources; audit meaning must survive their lifecycle changes.
+`user_id` answers “谁操作”, and `target_user_id` answers “操作了谁”. For a user
+changing their own data, both IDs may be equal. For a refund, `target_type` is
+`refund` and `target_id` is the refund ID; `target_user_id` can independently
+identify the affected account holder. When `target_type="user"`, require a
+non-null `target_user_id` equal to `target_id`.
+
+For `source_type="user"`, require `user_id` and leave `source_id` null. For
+`source_type="system"`, leave both null. Service, job and maintenance operations
+require a stable `source_id` and leave `user_id` null; never put a person's
+username or ID into `source_id`. `source_type` says who or what started the work;
+`entrypoint` says how it entered the application. `AuditSource.OPERATOR` remains
+the existing offline execution entry, not a user object or identity field.
+
+User IDs follow the shared `U` + 14 uppercase letters/digits format. Other target
+IDs follow their owning business's validated non-sequential policy. These IDs
+identify entities without copying email, username, display name, or other
+presentation identity. Do not use cascading foreign keys from live users or
+business resources; audit meaning must survive their lifecycle changes.
 
 ## Outcome Semantics
 
@@ -175,20 +191,22 @@ Never place IDs, route paths, free text, or localized messages in `action`.
 
 ## Example Events
 
-A committed refund approval:
+A committed refund approval shows both the approver and the affected account holder:
 
 ```json
 {
-  "id": "65205d26-c48f-4f94-9852-f83670c5d24c",
+  "id": "BA26101016301532317130",
   "domain": "payment",
   "action": "payment.refund.approve",
   "outcome": "succeeded",
   "reason_code": "approval_recorded",
-  "actor_type": "user",
-  "actor_id": "U7Q2M9PK4DX",
-  "resource_type": "refund",
-  "resource_id": "RF8J6K2N5XQ",
-  "source": "http",
+  "source_type": "user",
+  "user_id": "U7Q2M9PK4DX8N6A",
+  "source_id": null,
+  "target_user_id": "U5N9B2LK7QR4X6D",
+  "target_type": "refund",
+  "target_id": "RF8J6K2N5XQ9M3A",
+  "entrypoint": "http",
   "schema_version": 1,
   "before_state": {
     "status": "pending_review",
@@ -215,16 +233,18 @@ A denied adjustment contains no protected state snapshot:
 
 ```json
 {
-  "id": "45e0e53d-9d8c-498c-b535-f39dffb14f4f",
+  "id": "BA26101016344190582174",
   "domain": "ledger",
   "action": "ledger.balance.adjust",
   "outcome": "denied",
   "reason_code": "target_outside_scope",
-  "actor_type": "user",
-  "actor_id": "U4W8R6K3ZQM",
-  "resource_type": "account",
-  "resource_id": "AC7P5J9N2VT",
-  "source": "http",
+  "source_type": "user",
+  "user_id": "U4W8R6K3ZQM9P2A",
+  "source_id": null,
+  "target_user_id": "U5N9B2LK7QR4X6D",
+  "target_type": "account",
+  "target_id": "AC7P5J9N2VT8Q4B",
+  "entrypoint": "http",
   "schema_version": 1,
   "before_state": null,
   "after_state": null,
@@ -242,15 +262,17 @@ Expose a typed application-owned writer, never a generic client-facing write
 endpoint. Route bodies cannot submit audit fields. Construct each field from a
 trusted source:
 
-- resolve `actor_type` and `actor_id` from authenticated server context;
+- resolve `source_type`, `user_id` and `source_id` from authenticated server
+  context or the trusted non-user execution context;
 - select action, outcomes, reason codes, and schema version from the compiled
   catalog;
-- load resource type and ID from the authoritative domain object, not only an
-  unverified request body;
-- derive source from the trusted HTTP, service, job, operator, or migration
+- load `target_type`, `target_id` and any `target_user_id` from the authoritative
+  domain object, not only an unverified request body;
+- derive `entrypoint` from the trusted HTTP, service, job, offline or migration
   adapter;
-- use the server-generated request ID, or generate an equally safe operation ID
-  for non-HTTP work;
+- let the audit constructor read the request ID from the execution context;
+  HTTP middleware binds the server-generated ID once, and a non-HTTP entrypoint
+  generates and binds one safe operation ID before work;
 - project snapshots from post-lock authoritative state through an action-specific
   allowlist; and
 - let PostgreSQL generate `created_at`.
@@ -259,6 +281,12 @@ Use enums or literal types for catalog fields and one typed constructor per even
 family. A repository may accept a fully validated event object, but not an
 arbitrary dictionary assembled in a route. The writer may flush; only the caller
 that owns the business transaction commits.
+
+`BusinessAuditFacts` contains business facts only, with no `request_id` field.
+The writer calls the no-argument `core/audit.py::get_audit_request_id()` while
+constructing the persisted row. Missing or inactive context raises `RuntimeError`
+instead of inventing a different correlation ID. Non-HTTP entrypoints deactivate
+and reset their bound context in `finally`, even when resource cleanup fails.
 
 Retries preserve the logical command and request ID. Generate the event ID once
 per logical command and reuse it across fresh transaction retries. A
@@ -295,7 +323,7 @@ sanitizer will discover every unsafe value inside it.
 Never store direct personal data or presentation identity such as email,
 username, display name, phone number, postal address, precise location, IP
 address, user agent, free-form customer text, or unbounded notes. Canonical
-internal actor and resource IDs are allowed only because they preserve event
+internal user, source and target IDs are allowed only because they preserve event
 meaning; do not copy their identity attributes.
 
 Never store passwords or hashes, authorization headers, cookies, JWTs, JTIs, any
@@ -345,8 +373,9 @@ Verify the policy and event construction independently of PostgreSQL details:
 - the catalog includes each required high-value action and excludes routine CRUD;
 - every action has one domain owner, resource meaning, trigger point, outcome set,
   reason-code set, state/context allowlist, retention class, and schema version;
-- actor, resource, source, action, reason, and request ID come from trusted server
-  state rather than client-supplied audit fields;
+- source type, operation user, non-user source, target user/object, entrypoint,
+  action, reason and request ID come from trusted server state rather than
+  client-supplied audit fields;
 - exact action and outcome semantics hold across HTTP, service, job, operator,
   and migration entry points;
 - safe projections reject fields outside their action allowlist;

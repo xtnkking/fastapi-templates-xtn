@@ -6,6 +6,148 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Centralize username bounds, allowed characters, reserved names and validation
+  in `core/security/user_name.py`. Reuse them in request/query validation, ORM
+  constraints and bilingual errors, including numeric/underscore variants of
+  reserved names. Use the direct name `validate_user_name` throughout generated
+  projects and maintained consumers.
+- Exclude local agent configuration, installation backups, real environment
+  files and private maintenance records from source uploads. Public navigation
+  links only to distributable documentation; remove the obsolete CI step for
+  the retired Redis topology test.
+- Make generated file histories discard misplaced source-history rows as well
+  as the normal record block. Align regression fixtures and type annotations
+  with current user IDs, permission dependencies and repository contracts.
+
+- Make route contracts readable without tracing dependencies: all 31 business
+  endpoint docstrings now separate access conditions from required permissions,
+  name exact `resource:action` permissions where applicable, and explain when no
+  management permission is required. Explain `status_code`, `response_model`,
+  `operation_id`, `responses` and `dependencies` next to the five route modules,
+  including that OpenAPI response declarations do not execute authorization or
+  rate limiting.
+- Make rate limiting mandatory in every environment. Remove the enable switch,
+  bypass branches, fixed operation-ID registry, old authentication-guard owner
+  and compatibility shims. Put authenticated quotas beside their 26 handlers
+  with `@actor_rate_limit(...)`; `RateLimitService` owns business checks, the
+  HTTP dependency owns subject extraction, and the fixed-window primitive and
+  policy definitions retain their narrower responsibilities.
+- Keep CAPTCHA verification separate from quotas. The explicitly named
+  `verify_and_consume_captcha` dependency delegates to `CaptchaService` and
+  invalidates each CAPTCHA after its first answer, whether correct or incorrect;
+  CAPTCHA issuance quotas still go through `RateLimitService`.
+- Group the single Settings entrypoint by application, PostgreSQL, Redis,
+  logging, JWT/session, rate limiting and probes. Move Redis node/endpoint
+  profiles to `core/redis_config.py`, reuse the session Redis client for CAPTCHA
+  and limits by default, and create a second client only when an independent
+  limiter endpoint is explicitly configured. Hide the PostgreSQL URL from
+  settings representations.
+- Enforce a non-optional 1 MiB request-body ceiling against both declared and
+  streamed size, returning HTTP 413 and business code `413001`, and add mandatory
+  baseline security response headers. Focused offline verification covered 152
+  route tests; 277 rate-limit/CAPTCHA tests with one live-Redis skip; 134
+  configuration/middleware tests; 250 overlapping combined regressions; 10
+  generator tests; and 22 release-validator tests. The release validator checked
+  263 files successfully. The complete offline suite passed 863 tests with eight
+  isolated-Redis skips, and strict mypy checked 156 source files. A freshly
+  generated project passed its three starter tests, Ruff and strict mypy across
+  82 files. PostgreSQL and Redis were not connected, and no migration, DDL,
+  release, commit or push was performed.
+
+- Use direct business names consistently across authentication routes, schemas,
+  dependencies and `AuthService`. Rename shared response, logging, username,
+  route-validation, CAPTCHA and user-creation owners to match their work. Replace
+  the callback-based authentication guard wrapper with visible route steps:
+  per-business limit, CAPTCHA, authentication or registration, then login-token
+  issuance. Align authentication operation IDs with their handler names; use
+  direct user-creation names and a single optional username in password policy
+  checks instead of generic identity collections. Preserve paths, methods,
+  request/response data, authorization and storage behavior. Update exporter,
+  tests and current documentation together without compatibility wrappers.
+
+- Keep the application entrypoint focused on lifecycle and explicit assembly.
+  Move request logging, error response conversion and health routes/probes to
+  their own modules. Use a cleanup stack to retain reverse release and cleanup
+  after partial startup or teardown failure; preserve API and model contracts.
+  Update generated reading guidance, tests and source-ownership validation.
+
+- Validate field constraints from their syntax tree so multiline `Field` declarations
+  and Chinese OpenAPI descriptions do not trigger false failures. Keep rejecting
+  hardcoded runtime Chinese messages; add positive and negative coverage for strict
+  integers, required fields, and permission batch bounds.
+
+- Tighten beginner-facing code guidance: require comments to match callback
+  invocation and actual check order, give long endpoint inputs and substantial
+  response/audit mappings individual lines, and document public fields and query
+  inputs in Chinese OpenAPI descriptions. Keep these static descriptions separate
+  from Chinese/English runtime messages. Keep local maintainer guidance private
+  and link public documentation to canonical references; generated projects keep
+  their single README. Correct stale root README readiness revision requirements.
+- Match the demonstrated method layout: keep the receiver and first input on
+  the definition line, align remaining inputs individually and place the closing
+  parenthesis in their column. Preserve keyword-only contracts and readable
+  multi-argument business calls instead of collapsing them to fit 120 columns.
+- Explain the maintained code for backend learners: document exact endpoint
+  permissions and target boundaries, individual permission keys, model/schema
+  fields, class constants, configuration units and meaningful processing steps.
+  Distinguish visibility from write authority and flush from commit; carry the
+  comments into generated projects and add a short reading path to their README.
+  Runtime statements, defaults and API contracts remain unchanged.
+- Align the maintained business chains with the approved auth_pay style plan:
+  PermissionService owns catalog pagination/detail semantics; UserService owns
+  administrator creation and password reset, while authentication owns signup,
+  login and self-password changes. Split models and schemas by business, remove
+  broad access/projection modules, and keep result builders with their owners.
+  Centralize SQL in named repositories without moving transaction, locking or
+  audit boundaries. Assemble the API version prefix once, distinguish authority
+  and quota policy modules, and update generation and navigation documentation.
+- Keep generated project documentation in one concise README. Stop exporting
+  `SKILL_SOURCE.json`, `DATABASE_HANDOFF.md`, `LICENSE`, `NOTICE` and
+  `THIRD_PARTY_NOTICES.md`; retain database prerequisites and necessary copied-code
+  license text in the README, with the latter collapsed. Preserve source History
+  and dependency configuration without creating a sidecar history manifest or
+  assigning an open-source license to the whole application. Existing projects
+  and the maintained Skill/asset legal files are unchanged.
+- Use static GET/POST business routes, `/list` and `/detail` query endpoints,
+  typed GET query parameters and validated JSON target IDs for POST commands.
+  Preserve authorization, CAPTCHA and version preconditions. Group HTTP code
+  into authentication, current account, users, roles and permissions, using
+  concise decorators and readable business calls. Explain root dependency configuration.
+- Add responsibility and dated file-version history to delivered Python files,
+  preserving upstream entries and recording project generation with a supplied
+  author or explicit maintainer role. Preserve valid JSON/legal formats without
+  sidecar history files. Explain business Service/Repository stages, constants, units,
+  query scopes and transaction boundaries in Chinese without changing behavior.
+- Export new projects through a curated generator with application-specific
+  metadata, a concise Chinese setup README, separate development
+  dependencies and focused offline tests. Exclude historical migrations, SQL,
+  operator tools, reference business permissions and caches. Users own migration
+  generation, review, execution and initial database data; expose complete model
+  metadata without connecting or creating tables.
+- Validate new routes' authentication and per-operation quota declarations at
+  startup before external resources. Remove fixed Alembic-head coupling from
+  readiness. Align username/new-password OpenAPI constraints with actual input
+  validation and actionable bilingual errors, keeping existing-password input
+  separate from new-password policy.
+- Align multi-input method parameters on separate lines and indent docstring
+  prose one level inside the quotes. Use conservative autopep8 layout
+  with Ruff lint so formatting preserves this style. Complete class ownership
+  for user provisioning and keep tool caches outside copied project sources.
+- Split HTTP and authorization modules by real business ownership. Use named
+  business services and stateless PostgreSQL repositories, remove SQL from
+  endpoints, and move batched role/user read composition into their services.
+  Replace nested command callbacks with sequential transaction blocks sharing
+  an explicit audit lifetime. Clarify cross-layer naming and existing-project
+  style preservation without adding pass-through layers.
+- Adopt explicit business filenames for services (`*_service.py`) and
+  database-grouped repositories (`repositories/postgres/*_repository.py`) and
+  models (`models/postgres/`). Version-one endpoints are under
+  `api/v1/endpoints/` and assembled by `api/v1/router.py`. Existing projects
+  keep their architecture unless the owner requests a reorganization.
+- Require clear Chinese function docstrings with parameter and return/yield
+  descriptions. Document application callables and their actual transaction,
+  authorization and resource boundaries; preserve existing API and schema behavior.
+
 ## [0.7.0] - 2026-09-21
 
 - Made one standalone PostgreSQL and one shared standalone Redis the explicit

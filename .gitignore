@@ -1,4 +1,15 @@
 .env
+.env.*
+!.env.example
+
+# Local agent configuration, installation backups and private maintenance records.
+.codex/
+.agents/
+skill-backups/
+/AGENTS.md
+/docs/AUTH_PAY_STYLE_ALIGNMENT_PLAN.zh-CN.md
+/docs/STARTER_OUTPUT_OPTIMIZATION_PLAN.zh-CN.md
+
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/

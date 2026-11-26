@@ -11,7 +11,11 @@ existing repository when they are supported and intentional.
 - Prefer Pydantic 2 and `pydantic-settings` 2 for a new service.
 - Prefer SQLAlchemy 2 typed mappings and `async_sessionmaker` for an async SQL
   service. Use the async driver required by the selected database.
-- Use Alembic or the repository's migration system for persistent SQL schemas.
+- Deliver SQLAlchemy models and a database handoff. The user generates,
+  reviews, and executes migrations with Alembic or their chosen migration
+  system; the Skill does not create tables, migration files, or initial data.
+  Read [Model and database handoff](migrations.md) for database-only protections
+  that ORM metadata cannot install automatically.
 - Prefer an application factory when tests or deployment require multiple app
   configurations. Otherwise a clear module-level app is acceptable.
 - For a new service without an established framework, use the optional default
@@ -39,16 +43,19 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        case_sensitive=False,
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
-    database_url: str
+    database_url: str = Field(repr=False)
     secret_key: str
     allowed_origins: list[str] = Field(default_factory=list)
+    request_body_max_bytes: int = Field(default=1024 * 1024, ge=1)
     sql_echo: bool = False
 
 
-@lru_cache
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
 ```
@@ -83,7 +90,7 @@ engine = create_async_engine(settings.database_url, echo=settings.sql_echo)
 SessionFactory = async_sessionmaker(engine, expire_on_commit=False)
 
 
-async def get_session() -> AsyncIterator[AsyncSession]:
+async def get_postgres_session() -> AsyncIterator[AsyncSession]:
     async with SessionFactory() as session:
         try:
             yield session
@@ -95,6 +102,11 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 - Choose one visible transaction boundary. A service may use
   `async with session.begin()`, or a request dependency may commit after a
   successful mutation. Do not mix both approaches accidentally.
+- In this Skill's default project, read routes use
+  `db: Annotated[AsyncSession, Depends(get_postgres_session)]` directly. The request
+  dependency closes the session and never commits; protected write Services
+  open and commit their own transactions after the authorization read session
+  has closed. Do not hide the database dependency in `dependencies/auth.py`.
 - Avoid committing inside generic repositories; callers need to compose several
   writes atomically.
 - Roll back failed transactions and dispose the engine during application
@@ -151,14 +163,26 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 - Use FastAPI lifespan context for resources the process owns. Do not call
   imaginary `connect()` or `disconnect()` functions on an engine abstraction.
-- Provide separate liveness and readiness behavior when deployment needs them;
-  readiness may check critical dependencies without leaking their details.
+- Never run migration commands, `metadata.create_all()`, DDL, or seed/repair
+  operations from startup or ordinary test fixtures. A missing schema is a
+  user-owned setup requirement; report it without silently changing the database.
+- Default projects include no liveness or readiness endpoint. Add them only
+  when the adopter explicitly requests deployment probes, and restrict access
+  to an internal network or trusted probes. Separate process liveness from
+  dependency readiness, use bounded timeouts and avoid leaking dependency
+  details. Checks must not create or repair database state or depend on a fixed
+  migration revision.
 - Configure structured logs and request correlation at the application boundary.
   Never log authorization headers, cookies, passwords, or secret settings. Read
   [Operational logging](operational-logging.md) when implementing this boundary.
-- Put trusted-proxy, host, HTTPS, payload-limit, timeout, and CORS configuration
-  under deployment-aware policy instead of pretending one default fits all.
-- The bundled Redis factory supports standalone, Sentinel, and Cluster; choose
-  the supplied topology through [Redis connections](redis-connections.md).
-  Preserve same-slot multi-key Lua and primary reads when adapting it. An async
-  application or successful load test does not by itself prove production HA.
+- Enforce a small configurable request-body limit in a pure ASGI middleware
+  before routes execute. Check both `Content-Length` and actual streamed bytes;
+  the XTN starter defaults to 1 MiB and returns the bilingual `41301` envelope.
+- Add baseline security response headers centrally: `X-Content-Type-Options`,
+  `X-Frame-Options`, `Referrer-Policy`, and `Permissions-Policy`. Keep
+  trusted-proxy, host, HTTPS, timeout, and CORS choices deployment-aware instead
+  of pretending one default fits all products.
+- The bundled Redis factory supports one standalone URL and, when explicitly
+  configured, a second standalone URL for quotas. See
+  [Redis connections](redis-connections.md). Cluster clients and failover are
+  not bundled; an async application or load test does not prove production HA.

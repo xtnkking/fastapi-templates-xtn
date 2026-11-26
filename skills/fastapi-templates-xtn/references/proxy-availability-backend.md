@@ -329,7 +329,7 @@ outbound destination. Before decrypting credentials or constructing the client:
 
 An invalid protocol/host/port/credential shape is a completed safe diagnostic
 failure and is cached. A syntactically valid destination forbidden by network
-policy is instead HTTP `422` with a registered numeric code such as `422002`;
+policy is instead HTTP `422` with a registered numeric code such as `42202`;
 it makes no HTTP-client call and is not cached.
 
 ## Service And Route Boundary
@@ -358,65 +358,75 @@ connection checked out during the external request. Use this sequence:
    with PostgreSQL `FOR SHARE`, or the project's equivalent lock that conflicts
    with connection edits and deletion. Re-read `connection_version`. If the row
    disappeared or changed, do not cache or return the stale result; use the
-   concealed `404001` or registered `409003` proxy-changed outcome.
+   concealed `40401` or registered `40903` proxy-changed outcome.
 7. While retaining that short row lock, atomically persist only if this is still
    the most recently started attempt and no newer configuration is cached. If
-   superseded, return registered `409004`. Retry an ambiguous
+   superseded, return registered `40904`. Retry an ambiguous
    Redis write only with the exact same attempt and serialized result; never
    repeat the outbound request. Bound Redis I/O so the row lock cannot be held
    indefinitely. If retry and read-back cannot resolve whether Redis committed,
-   return registered `503002` and make no claim about the stored
+   return registered `50302` and make no claim about the stored
    value, then release the transaction.
 
-The route exposes only the shared discriminated result:
+The route exposes only the shared discriminated result. For this optional
+module, define a stateless `proxy_availability_service` instance in
+`app/services/proxy_availability_service.py` and import it directly. Keep
+request identity and row-policy context in `ProxyCheckAccess`; database sessions
+and outbound clients retain the lifetimes described above.
 
 ```python
 from uuid import UUID
 
 from fastapi import APIRouter, Request
 
-from app.core.api_contract import ApiResponse, BusinessCode, api_response
-from .dependencies import ProxyCheckAccess, ProxyAvailabilityServiceDependency
+from app.core.i18n.messages import MessageKey
+from app.core.response import ApiResponse, api_response
+from app.schemas.common import RequestBase
+from app.services.proxy_availability_service import proxy_availability_service
+
+from .dependencies import ProxyCheckAccess
 from .schemas import ProxyCheckFailure, ProxyCheckResponse, ProxyCheckSuccess
 
 
-router = APIRouter(prefix="/api/v1/proxies", tags=["proxies"])
+router = APIRouter(prefix="/proxies")
 
 
-@router.post(
-    "/{proxy_id}/availability-check",
-    response_model=ApiResponse[ProxyCheckResponse],
-)
-async def check_proxy_availability(
-    request: Request,
-    proxy_id: UUID,
-    access: ProxyCheckAccess,
-    service: ProxyAvailabilityServiceDependency,
-) -> ApiResponse[ProxyCheckResponse]:
-    result: ProxyCheckSuccess | ProxyCheckFailure = await service.check(
-        proxy_id=proxy_id,
-        access=access,
+class ProxyCheckRequest(RequestBase):
+    proxy_id: UUID
+
+
+@router.post("/availability-check", response_model=ApiResponse[ProxyCheckResponse])
+async def check_proxy_availability(request: Request,
+                                   body: ProxyCheckRequest,
+                                   access: ProxyCheckAccess
+                                   ) -> ApiResponse[ProxyCheckResponse]:
+    """
+        经权限与限流校验后，检测指定代理并保存最新诊断结果。
+
+    :param request: 当前请求，用于统一响应与请求 ID。
+    :param body: 严格 JSON 请求模型，只接收代理 ID，不接收代理凭据。
+    :param access: 已认证且持有检测权限的操作者和对象策略上下文。
+    :return: 本次成功或失败的安全诊断结果。
+    """
+    # Service 仍需按当前操作者核对目标可见性，不能信任请求体中的 ID。
+    result: ProxyCheckSuccess | ProxyCheckFailure = await proxy_availability_service.check(
+        proxy_id=body.proxy_id, access=access,
     )
-    return api_response(
-        request,
-        code=BusinessCode.OK,
-        message="检测完成",
-        data=result,
-    )
+    return api_response(request, message_key=MessageKey.COMMON_OPERATION_SUCCESS, data=result)
 ```
 
 Register optional module codes centrally without changing the base meanings:
-`422002` for a forbidden destination, `409003` for a configuration change,
-`409004` for a superseded check, and `503002` when Redis write outcome remains
+`42202` for a forbidden destination, `40903` for a configuration change,
+`40904` for a superseded check, and `50302` when Redis write outcome remains
 unknown. The frontend branches on these integers, not internal symbolic names or
 localized messages.
 
-`ProxyCheckAccess` must carry the authenticated actor and any row-policy context
+`ProxyCheckAccess` must carry the authenticated current user and any row-policy context
 required by the existing application. The service applies that context before
 loading or decrypting the proxy; the dependency is not merely a route-level
 capability check.
 
-Apply a server-side per-operation, per-actor rate limit and a bounded outbound
+Apply a server-side per-operation, per-current user rate limit and a bounded outbound
 concurrency budget; never add an all-user or cross-business request quota.
 Five browser workers are not a server concurrency limit. Bound
 queue wait and release semaphore slots in `finally`; do not retry provider `429`,
@@ -424,21 +434,18 @@ timeouts, or connection failures inside one explicit check.
 
 ## Redis Latest-Result Cache
 
-Use these two same-slot keys for each globally unique canonical proxy ID:
+Use these two keys for each globally unique canonical proxy ID:
 
 ```text
 proxy:latency:{proxy_id}
 proxy:latency:sequence:{proxy_id}
 ```
 
-The braces are Redis Cluster hash tags, so one proxy's conditional-write script
-can access both keys. A list page spans many tags, so native Redis Cluster cannot
-run one cross-slot `MGET`. The required list behavior therefore needs
-standalone/Sentinel Redis or an existing cluster-aware wrapper that groups keys
-by slot and performs bounded `MGET` fan-out. Surface an unsupported topology
-instead of silently adding N+1 `GET` calls or changing the required result key.
+The bundled implementation uses standalone Redis. The conditional-write script
+accesses both keys atomically; a list page can fetch authorized result keys with
+one bounded `MGET`. Do not silently add N+1 `GET` calls.
 
-Centralize key construction so both keys retain the same literal hash tag:
+Centralize key construction so both keys retain the same proxy ID:
 
 ```python
 from uuid import UUID
@@ -613,7 +620,7 @@ no check is in flight; do not reset the counter opportunistically.
 Redis acknowledgement loss makes the write outcome ambiguous: the script may
 have completed even when the client saw an I/O error. Retry the script a bounded
 number of times with the same keys, attempt number, version, and byte-identical
-JSON; this is idempotent. If it still errors, use one same-slot Lua read-back that
+JSON; this is idempotent. If it still errors, use one atomic Lua read-back that
 atomically reads both the result and sequence watermark:
 
 ```lua
@@ -650,9 +657,9 @@ return 0
 ```
 
 Pass the expected attempt and byte-identical JSON as `ARGV[1..2]`. Result `1`
-confirms success, `2` maps to business code `409004`, and `0`/`-1` is a definite
+confirms success, `2` maps to business code `40904`, and `0`/`-1` is a definite
 unconfirmed write failure after retries. If the atomic read-back itself remains
-unavailable, return `503002`; do not claim the old value
+unavailable, return `50302`; do not claim the old value
 was preserved and do not launch another proxy request. Checking only the result
 JSON is insufficient because a newer attempt may already have advanced the
 watermark without writing its result yet.
@@ -722,7 +729,7 @@ For each authorized list page:
 
 On a Redis read outage, do not add a fifth envelope field or extra pagination
 metadata and do not claim `未检测`. Fail the list request with the registered
-cache-specific HTTP `503` / business code `503002`; the UI then shows
+cache-specific HTTP `503` / business code `50302`; the UI then shows
 `检测结果暂不可用`. A definite or unresolved Redis write failure from a check uses
 the same infrastructure code. In an unresolved case the new value may already
 exist, so the frontend should reload rather than infer either the old or new
@@ -740,8 +747,9 @@ snapshot.
   `Cookie`, tracing baggage, or arbitrary user headers.
 - Authorize before proxy lookup and decrypt only after destination approval. Do
   not reveal whether a deliberately concealed proxy ID exists.
-- Rate-limit checks per actor and across the application, and use a process/distributed capacity
-  control appropriate to deployment. Audit initiation only when needed, without
+- Rate-limit checks per operation and authenticated current user, never across all
+  application users. Use a process/distributed outbound capacity control
+  appropriate to deployment. Audit initiation only when needed, without
   credentials. This display diagnostic is not an RBAC control-plane write.
 - Treat no-TTL exit-IP and location data as retained operational data. Document
   access and deletion, and do not copy it into indefinite logs or analytics.

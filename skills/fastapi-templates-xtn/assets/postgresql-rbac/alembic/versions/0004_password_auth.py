@@ -1,3 +1,15 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# 说明:
+#    保留第四版本地密码和账号安全审计历史迁移，说明密码状态、审计保护及重置权限变更。
+#    历史注册开关和字段命名保持原文，迁移执行与回退仍由项目使用者管理。
+# History:
+# Date          Author    Version       Modification
+# --------------------------------------------------------------------------------------------------
+# 2026/10/13    XTN       V1.000        完善历史密码迁移函数的通俗说明与步骤注释
+# --------------------------------------------------------------------------------------------------
+
 """Add user-local password state and account-security audit.
 
 Revision ID: 0004_password_auth
@@ -25,15 +37,30 @@ PASSWORD_RESET_SYSTEM_ROLES = ("admin", "super_admin")
 
 
 def _permission_id(key: str) -> uuid.UUID:
+    """
+        沿用历史权限 ID 规则，为密码重置权限计算稳定标识。
+
+    :param key: 完整权限键，本版本用于 users:password:reset。
+    :return: 固定命名空间和权限前缀计算出的 UUID，不访问数据库。
+    """
+    # 相同权限键始终得到同一个 ID，便于按键更新已有目录记录。
     return uuid.uuid5(uuid.NAMESPACE_URL, f"fastapi-rbac-permission:{key}")
 
 
 def upgrade() -> None:
+    """
+        应用第四版历史迁移，增加本地密码状态、账号安全审计及管理员密码重置权限。
+        保留这个版本当时的注册开关和字段定义；变更使用 Alembic 外层事务，不自行提交。
+
+    :return: 无返回值；成功时密码字段、审计表及保护、重置授权和关联权限版本已更新。
+    """
+    # 先锁全局授权状态，后续授予固定角色新权限和提升版本在同一迁移事务中完成。
     connection = op.get_bind()
     connection.execute(
         sa.text("SELECT scope FROM rbac_state WHERE scope = 'global' FOR UPDATE")
     )
 
+    # 这是历史版本的注册开关字段，保留其原始定义，不推断当前产品仍有此开关。
     op.add_column(
         "rbac_state",
         sa.Column(
@@ -44,6 +71,7 @@ def upgrade() -> None:
         ),
     )
 
+    # 给已有用户增加可为空的密码状态，再限制密码散列格式、时间一致性和删除后清空密码。
     op.add_column("users", sa.Column("password_hash", sa.String(512), nullable=True))
     op.add_column(
         "users",
@@ -76,6 +104,7 @@ def upgrade() -> None:
         "deleted_at IS NULL OR password_hash IS NULL",
     )
 
+    # 创建账号安全审计，约束操作、来源和操作者字段，防止不完整记录混入审计数据。
     op.create_table(
         "account_security_audit_events",
         sa.Column(
@@ -148,6 +177,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_account_security_audit_events")),
     )
+    # 为按时间、操作者、目标用户、请求和事件结果检索审计建立索引。
     op.create_index(
         "ix_account_security_audit_created",
         "account_security_audit_events",
@@ -175,6 +205,7 @@ def upgrade() -> None:
         "account_security_audit_events",
         ["action", "outcome", "created_at"],
     )
+    # 账号安全审计只追加，数据库触发器分别拦住改删已有记录和整表清空。
     op.execute(
         """
         CREATE FUNCTION reject_account_security_audit_mutation()
@@ -205,6 +236,7 @@ def upgrade() -> None:
         """
     )
 
+    # 写入或恢复密码重置权限目录项，再把它授予本版本指定的两个系统管理角色。
     permission_table = sa.table(
         "permissions",
         sa.column("id", postgresql.UUID(as_uuid=True)),
@@ -231,6 +263,7 @@ def upgrade() -> None:
         )
     )
 
+    # 系统角色授权平时不可修改；迁移在本事务内暂时停用保护，补授权后立即恢复。
     op.execute(
         "ALTER TABLE role_permissions DISABLE TRIGGER "
         "tr_role_permissions_protect_system_roles"
@@ -257,6 +290,7 @@ def upgrade() -> None:
         "ALTER TABLE role_permissions ENABLE TRIGGER "
         "tr_role_permissions_protect_system_roles"
     )
+    # 固定角色及相关用户的权限已变，提升各自版本并推进全局 epoch，标记旧授权状态过期。
     connection.execute(
         sa.text(
             "UPDATE roles SET version = version + 1 "
@@ -281,11 +315,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """
+        回退第四版历史迁移，移除密码状态、密码重置授权和账号安全审计结构。
+        回退会丢弃密码字段及账号安全审计表内的数据；事务由 Alembic 外层管理。
+
+    :return: 无返回值；成功时本版本字段、权限关系和审计保护已移除，关联权限版本已提升。
+    """
+    # 先锁全局状态，再拆除密码约束和字段；避免先变更用户数据产生延迟触发器待处理事件。
     connection = op.get_bind()
     connection.execute(
         sa.text("SELECT scope FROM rbac_state WHERE scope = 'global' FOR UPDATE")
     )
-    # Pending deferred triggers from data changes prevent ALTER TABLE on users.
+    # ALTER TABLE 放在后面的用户版本更新之前，保留历史迁移原有的执行顺序。
     op.drop_constraint(
         op.f("ck_users_deleted_user_no_password"), "users", type_="check"
     )
@@ -295,6 +336,7 @@ def downgrade() -> None:
     op.drop_column("users", "must_change_password")
     op.drop_column("users", "password_hash")
     op.drop_column("rbac_state", "public_registration_enabled")
+    # 撤销重置能力前提升相关用户和固定角色的权限版本，让旧权限状态失效。
     connection.execute(
         sa.text(
             "UPDATE users SET authz_version = authz_version + 1 "
@@ -313,6 +355,7 @@ def downgrade() -> None:
         ),
         {"role_keys": list(PASSWORD_RESET_SYSTEM_ROLES)},
     )
+    # 暂时停用系统角色授权保护，只删除本版本重置权限的关系，然后恢复保护并删除目录项。
     op.execute(
         "ALTER TABLE role_permissions DISABLE TRIGGER "
         "tr_role_permissions_protect_system_roles"
@@ -337,6 +380,7 @@ def downgrade() -> None:
         sa.text("UPDATE rbac_state SET epoch = epoch + 1 WHERE scope = 'global'")
     )
 
+    # 最后按触发器、保护函数、审计表的依赖顺序移除账号安全审计结构。
     op.execute(
         "DROP TRIGGER IF EXISTS trg_account_security_audit_no_truncate "
         "ON account_security_audit_events"

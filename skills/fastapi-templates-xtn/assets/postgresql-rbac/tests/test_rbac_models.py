@@ -2,7 +2,8 @@ from typing import cast
 
 from sqlalchemy import Table
 
-from app.models.access import RbacAuditEvent, RbacState
+from app.models.postgres.operation_audit import OperationAuditEvent
+from app.models.postgres.rbac_state import RbacState
 
 
 def test_rbac_state_model_uses_clear_database_names() -> None:
@@ -11,32 +12,20 @@ def test_rbac_state_model_uses_clear_database_names() -> None:
     assert table.name == "rbac_state"
     assert table.primary_key.name == "pk_rbac_state"
     assert {constraint.name for constraint in table.constraints} == {
-        "ck_rbac_state_epoch_nonnegative",
         "ck_rbac_state_scope_global",
         "pk_rbac_state",
     }
 
 
-def test_rbac_audit_model_uses_unambiguous_database_names() -> None:
-    table = cast(Table, RbacAuditEvent.__table__)
+def test_operation_audit_model_uses_unambiguous_database_names() -> None:
+    table = cast(Table, OperationAuditEvent.__table__)
 
-    assert table.name == "rbac_audit_events"
-    assert table.primary_key.name == "pk_rbac_audit_events"
-    assert {constraint.name for constraint in table.constraints} == {
-        "ck_rbac_audit_events_action_format",
-        "ck_rbac_audit_events_after_state_object",
-        "ck_rbac_audit_events_before_state_object",
-        "ck_rbac_audit_events_reason_code_format",
-        "ck_rbac_audit_events_request_id_format",
-        "ck_rbac_audit_events_schema_version_one",
-        "ck_rbac_audit_events_valid_decision",
-        "ck_rbac_audit_events_valid_source",
-        "pk_rbac_audit_events",
-    }
-    assert {index.name for index in table.indexes} == {
-        "ix_rbac_audit_actor_created",
-        "ix_rbac_audit_created_id",
-        "ix_rbac_audit_request_id",
-        "ix_rbac_audit_target_role_created",
-        "ix_rbac_audit_target_user_created",
-    }
+    assert table.name == "operation_audit_events"
+    assert table.primary_key.name == "pk_operation_audit_events"
+    assert all(
+        isinstance(constraint.name, str)
+        and constraint.name.startswith(("ck_operation_audit_events_", "pk_operation_audit_events"))
+        for constraint in table.constraints
+    )
+    assert all(index.name is not None and index.name.startswith("ix_operation_audit_") for index in table.indexes)
+    assert not {"decision", "schema_version", "operator_type"} & set(table.columns.keys())

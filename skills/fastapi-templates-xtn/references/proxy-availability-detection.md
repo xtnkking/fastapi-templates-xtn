@@ -48,12 +48,16 @@ Redis abstractions merely to copy an example.
 
 Unless the user supplies a conflicting requirement:
 
-- Add `POST /api/v1/proxies/{proxy_id}/availability-check` with no body, adapted
-  only to the repository's route naming. The browser sends only the canonical
-  proxy ID selected under [identifier policy](identifier-policy.md).
+- Add `POST /api/v1/proxies/availability-check` with JSON
+  `{"proxy_id": "<id>"}`, validated by a Pydantic model with `extra="forbid"`.
+  The browser sends only the canonical proxy ID selected under
+  [identifier policy](identifier-policy.md), never stored connection details.
+  For new list/detail reads use `/proxies/list` and `/proxies/detail` with
+  typed query parameters. Preserve existing contracts unless their migration
+  is requested; URL/body placement does not replace authorization.
 - In an RBAC product, require the stable `proxies:check` capability. Query by
   `proxy_id`, apply any independent row policy, and return the same generic `404`
-  for missing and deliberately concealed IDs (`404001` under the XTN envelope).
+  for missing and deliberately concealed IDs (`40401` under the XTN envelope).
 - Keep `protocol`, `host`, `port`, username, and encrypted password or secret
   reference backend-only. Decrypt only after authorization and outbound-policy
   checks. Neither API returns credentials or a complete proxy URL.
@@ -65,7 +69,7 @@ Unless the user supplies a conflicting requirement:
 - Apply one ten-second wall-clock deadline to connect, response streaming, JSON
   parsing, and validation. Measure successful `latency_ms` with a monotonic clock
   from immediately before the request until validation finishes.
-- A completed diagnostic returns HTTP `200` with business code `200000` and the
+- A completed diagnostic returns HTTP `200` with business code `20000` and the
   discriminated result in `data`, even when `data.success=false`. Cache all
   completed transport and provider outcomes, including connection, DNS,
   authentication, timeout, `429`, invalid JSON, `status=fail`, unsupported
@@ -82,7 +86,7 @@ Unless the user supplies a conflicting requirement:
 - List, refresh, pagination, search, filter, and sort operations only hydrate
   cached results; they never trigger detection. A healthy cache miss is
   `未检测`; an unavailable cache fails the list request with registered HTTP
-  `503` / business code `503002`, and the UI shows `检测结果暂不可用`.
+  `503` / business code `50302`, and the UI shows `检测结果暂不可用`.
 - With selected rows, batch-check exactly the deduplicated selection. Without a
   selection, freeze the active filters and collect every matching ID across
   pages of at most 200. Run at most five checks concurrently; one failure never
@@ -106,12 +110,12 @@ cached availability field.
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
+
+from app.core.response import ResponseBase
 
 
-class ProxyCheckSuccess(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class ProxyCheckSuccess(ResponseBase):
     success: Literal[True] = True
     latency_ms: int = Field(ge=0)
     ip_address: str = Field(max_length=64)
@@ -123,9 +127,7 @@ class ProxyCheckSuccess(BaseModel):
     updated_at: datetime
 
 
-class ProxyCheckFailure(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class ProxyCheckFailure(ResponseBase):
     success: Literal[False] = False
     message: str = Field(min_length=1, max_length=160)
     updated_at: datetime
@@ -191,9 +193,8 @@ audit documents.
   transaction during the network call. During finalization, briefly lock and
   recheck the proxy row through the conditional Redis write, so a connection edit
   cannot race between version validation and cache persistence.
-- The exact cache key assumes globally unique IDs. Inspect Redis topology:
-  ordinary Redis Cluster cannot issue one cross-slot `MGET` for many differently
-  tagged proxy keys without a cluster-aware wrapper.
+- The exact cache key assumes globally unique IDs. The bundled cache uses
+  standalone Redis so a list can use one bounded `MGET` for authorized keys.
 - No TTL is an explicit retention policy. Remove result and coordination keys
   after proxy deletion, restrict access to exit-IP/location data, and
   do not duplicate it into indefinite telemetry.

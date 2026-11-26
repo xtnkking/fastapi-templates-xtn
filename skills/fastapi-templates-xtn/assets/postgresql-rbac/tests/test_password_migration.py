@@ -1,4 +1,4 @@
-from app.core.security.domain import PERMISSION_CATALOG, PermissionKey
+from app.core.access.permissions import PermissionKey, get_permission_description
 from tests.migration_helpers import MIGRATION_VERSIONS, load_migration
 
 
@@ -10,7 +10,7 @@ def test_password_migration_extends_the_linear_chain() -> None:
     assert migration.PASSWORD_RESET_PERMISSION_KEY == "users:password:reset"
     assert (
         migration.PASSWORD_RESET_PERMISSION_DESCRIPTION
-        == PERMISSION_CATALOG[PermissionKey.USERS_PASSWORD_RESET]
+        == get_permission_description(PermissionKey.USERS_PASSWORD_RESET.value, locale="en")
     )
     assert migration.PASSWORD_RESET_SYSTEM_ROLES == ("admin", "super_admin")
 

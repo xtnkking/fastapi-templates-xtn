@@ -1,268 +1,100 @@
-# Non-Sequential Identifier Policy
+# Identifier Policy
 
-Read this reference when defining a table, public identifier, JWT subject,
-RBAC entity, audit record, seed, or migration from sequential IDs. The policy
-prevents enumerable identifiers without forcing an established project to
-replace one safe non-sequential scheme with another.
+Read this reference when adding a model, API ID, JWT subject or durable audit
+record. The default project uses prefixed string IDs for business tables and
+UUIDv4 for protocol identifiers. IDs are not secrets and never replace access
+control.
 
-## Decision Rule
+## Default Table Contract
 
-Use this order:
+| Table | Format | Total length |
+| --- | --- | ---: |
+| `users` | `U` + 14 random uppercase letters or digits | 15 |
+| `roles` | `R` + 14 random uppercase letters or digits | 15 |
+| `permissions` | `P` + 14 random uppercase letters or digits | 15 |
+| `user_roles` | `UR` + 13 random uppercase letters or digits | 15 |
+| `role_permissions` | `RP` + 13 random uppercase letters or digits | 15 |
+| `operation_audit_events` | `OA` + `YYMMDDHHMMSSmm` + 6 random characters | 22 |
+| Optional `business_audit_events` | `BA` + `YYMMDDHHMMSSmm` + 6 random characters | 22 |
 
-1. Preserve an existing, consistently enforced non-sequential identifier scheme
-   unless the user requests a migration or repository evidence shows it is
-   unsafe.
-2. For a new project with no established scheme, prefer a typed business ID made
-   from an entity prefix and a cryptographically random uppercase suffix.
-3. Random UUIDv4 remains fully compliant. The bundled PostgreSQL asset uses
-   native UUIDv4 entity IDs because changing a published schema, URLs, JWT
-   subjects, Redis records, resource-version contracts, and foreign keys requires a coordinated
-   versioned migration.
+The random alphabet is `ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789`, generated with
+Python `secrets`, not `random`. Audit time is China local time. The last two time
+digits `mm` are **hundredths of a second**, not three-digit milliseconds. For
+example, `OA26092211414155317130` has prefix `OA`, time
+`26092211414155`, and random suffix `317130`. The six random characters are
+the default, not a claim that collisions are impossible. Use the database
+primary key or unique constraint as the final guard and retry only a recognized
+ID collision, at most a small fixed number of times, in a fresh savepoint or
+transaction. Never pre-query a generated ID for uniqueness. A logical audit
+event keeps one event ID across transaction retries so it can be recognized as
+the same event. Sort by `(created_at, id)`; the ID timestamp does not replace
+the database `created_at` value.
 
-Do not tell a user that UUID is mandatory. Prefix IDs improve recognition in
-logs and support work; UUIDv4 offers broad library and native PostgreSQL support.
-Both are identifiers, not authorization secrets.
+`UserService.create_user` generates new user IDs internally with
+`new_entity_id("U")`; registration and administrator creation do not supply IDs.
+Only a recognized `pk_users` collision regenerates the ID, for at most three
+insertion attempts. Other constraint failures keep their existing error handling.
 
-## Preferred Prefix Format
+`app/core/ids.py` is the single maintenance point for ID lengths and patterns.
+Its `ENTITY_ID_LENGTH` defaults to 15; `AUDIT_RANDOM_LENGTH` defaults to 6 and
+`AUDIT_ID_LENGTH` derives the total audit length. The named `USER_ID_PATTERN`,
+`ROLE_ID_PATTERN`, `PERMISSION_ID_PATTERN`, relationship patterns and audit
+patterns, including `OPERATION_AUDIT_ID_PATTERN`, derive from these constants. Generation and exact validation,
+`schemas/common.py` field types (`UserId`, `RoleId`, `PermissionId`), GET query types, ORM column lengths and
+ORM CHECK expressions reference this same source. Do not repeat literal ID
+regexes or lengths in these consumers. Audit time stays fixed at 14 digits;
+changing its representation requires changing the time formatter too.
 
-For a new business namespace, use:
+Incoming IDs must not
+be silently uppercased. API schemas and query parameters validate the expected
+entity prefix before lookup. An unknown but well-formed ID still receives the
+normal authorization and non-leaking not-found treatment.
 
-```text
-<registered uppercase prefix><random uppercase suffix>
-```
+The entity length is a default, not a universal rule. If an adopter needs a
+different scale, decide before creating tables and adjust `ENTITY_ID_LENGTH`
+in `app/core/ids.py`. The generator, API validators, columns, foreign keys and
+model check expressions derive from it when the application is imported.
+This does not update an existing database: the adopter still reviews and applies
+their own migrations. Existing
+applications with a consistent non-sequential ID scheme need not be rewritten
+just to adopt this default.
 
-Use the Crockford Base32 suffix alphabet:
+## PostgreSQL And Seed Boundary
 
-```text
-0123456789ABCDEFGHJKMNPQRSTVWXYZ
-```
+Store business IDs as `String(15, collation="C")`, audit IDs as
+`String(22, collation="C")`, with exact-format check constraints and primary
+keys. Referencing business-ID columns use matching length and collation.
+`user_roles` and `role_permissions` retain surrogate `UR` and `RP` IDs because
+their soft-deleted relationship episodes have their own history. The default
+asset supplies ORM models only; the adopter generates, reviews and applies
+migrations and initial data. Historical migrations bundled as references are
+not copied into generated projects and are not edited for this change.
 
-It contains digits and unambiguous uppercase letters. Generate the suffix with
-a CSPRNG such as Python `secrets.choice`. Never derive it from a counter,
-timestamp, email, username, phone number, old integer ID, or another business
-value. The prefix identifies the entity type and contributes no random entropy.
+The fixed `rbac_state.scope='global'`, optional country code, stable role keys
+and stable permission keys are not generated business IDs. Do not add prefixes
+to them. The first super administrator still requires the adopter's controlled
+database binding; an ID generator does not create that authority.
 
-Keep a central prefix registry. A reasonable starting registry is:
+## Protocol Boundary
 
-| Entity | Prefix | Example profile |
-| --- | --- | --- |
-| User | `U` | `U` plus the selected suffix length |
-| Role | `R` | `R` plus the selected suffix length |
-| Permission | `P` | `P` plus the selected suffix length |
-| RBAC audit event | `A` | `A` plus the selected suffix length |
+- JWT `user_id` is the exact `U...` user ID. Never use a username, email, role ID or
+  user-role relation ID as the subject. JWT `jti` remains a fresh UUIDv4 for
+  each login and must still match the active Redis session.
+- The server-generated `request_id`, CAPTCHA ID and structured-log `error_id`
+  remain UUIDv4. Ordinary stdout log entries do not each get a new row ID.
+- A business audit event ID is generated once for the logical operation with
+  `new_audit_id("BA")`, passed in `BusinessAuditFacts.event_id`, and reused on
+  any retry. The audit writer does not invent a replacement ID.
+- Do not accept sequential integer IDs as primary, foreign or public lookup
+  IDs. Version, retry count, tier and ordering fields are counters or
+  values, not identifiers.
 
-Add a distinct stable prefix for each business entity, such as `O` for an order.
-Do not reuse one prefix for unrelated types merely because they share a table.
-Keep prefixes short, uppercase, and immutable after public IDs exist.
+## Focused Verification
 
-### Choose Length From Lifetime Volume
-
-Size each namespace by the total number of IDs expected to be generated over
-the product's lifetime, including deleted rows. Do not size it from the current
-row count. Use these defaults so the adopter normally does not need to design a
-scheme:
-
-| Expected lifetime IDs in one prefix namespace | Random suffix | Example user shape |
-| ---: | ---: | --- |
-| Up to `100,000` | `10` characters | `U` + 10 characters |
-| Up to `1,000,000` | `12` characters | `U` + 12 characters |
-| Up to `100,000,000` | `16` characters | `U` + 16 characters |
-| Above `100,000,000` or very high-volume events | `20` characters | `U` + 20 characters |
-
-When volume is unknown, default to a 16-character suffix. A user ID shaped as
-`U` plus 10 random characters is a valid low-volume example, not a universal
-default. The database uniqueness constraint and bounded collision retry remain
-required at every length.
-
-JWT `jti`, request IDs, and other protocol identifiers do not need a business
-prefix. A fresh random UUIDv4 remains the baseline for Access Token JTI values.
-
-## Reusable Python Shape
-
-Centralize generation and validation instead of scattering string construction:
-
-```python
-import re
-import secrets
-from dataclasses import dataclass
-
-ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-
-
-@dataclass(frozen=True, slots=True)
-class BusinessIdSpec:
-    prefix: str
-    suffix_length: int
-
-    def __post_init__(self) -> None:
-        if re.fullmatch(r"[A-Z][A-Z0-9]{0,3}", self.prefix) is None:
-            raise ValueError("prefix must start with A-Z and be 1-4 alphanumerics")
-        if self.suffix_length not in {10, 12, 16, 20}:
-            raise ValueError("suffix length must use an approved volume tier")
-
-    @property
-    def pattern(self) -> re.Pattern[str]:
-        alphabet = re.escape(ALPHABET)
-        return re.compile(
-            rf"{re.escape(self.prefix)}[{alphabet}]{{{self.suffix_length}}}"
-        )
-
-
-USER_ID = BusinessIdSpec(prefix="U", suffix_length=16)
-ROLE_ID = BusinessIdSpec(prefix="R", suffix_length=12)
-PERMISSION_ID = BusinessIdSpec(prefix="P", suffix_length=12)
-AUDIT_ID = BusinessIdSpec(prefix="A", suffix_length=20)
-
-
-def new_business_id(spec: BusinessIdSpec) -> str:
-    suffix = "".join(secrets.choice(ALPHABET) for _ in range(spec.suffix_length))
-    return f"{spec.prefix}{suffix}"
-
-
-def parse_business_id(value: str, spec: BusinessIdSpec) -> str:
-    if spec.pattern.fullmatch(value) is None:
-        raise ValueError("identifier has the wrong prefix, alphabet, or length")
-    return value
-```
-
-Do not silently uppercase or otherwise normalize an incoming ID. Reject a
-non-canonical value so caches, signatures, database lookups, logs, and equality
-checks all use one representation. Use entity-specific types or validators so a
-role ID cannot accidentally be passed where a user ID is required.
-
-## PostgreSQL Shape
-
-Store a prefixed ID as a constrained string with the exact entity format, a
-primary key or unique constraint, and byte-stable collation. For a 16-character
-user suffix:
-
-```python
-from sqlalchemy import CheckConstraint, String
-from sqlalchemy.orm import Mapped, mapped_column
-
-
-class User(Base):
-    __tablename__ = "users"
-    __table_args__ = (
-        CheckConstraint(
-            "id ~ '^U[0-9A-HJKMNP-TV-Z]{16}$'",
-            name="user_id_format",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(
-        String(17, collation="C"),
-        primary_key=True,
-        default=lambda: new_business_id(USER_ID),
-    )
-```
-
-All foreign-key columns use the same type, length, and collation. Give every
-constraint a stable name. An application default is appropriate because a
-business prefix registry belongs to application policy; direct SQL writers must
-either call an approved database generator or provide an already valid ID.
-
-Generate and insert directly. Do not perform a race-prone "check then insert".
-On a collision, retry only when the database error names the expected primary
-key or ID uniqueness constraint, and stop after a small fixed number such as
-three attempts. Re-raise every other integrity failure unchanged.
-
-For pure association tables, prefer a meaningful composite key such as
-`(user_id, role_id)` rather than adding a surrogate ID. If an association later
-needs its own lifecycle or public reference, give it a non-sequential ID under
-the same policy.
-
-Chronological lists need deterministic ordering such as `(created_at, id)`.
-Never treat a random suffix or UUID as creation order. Keep one canonical byte
-order for lock sorting in both Python and PostgreSQL; uppercase ASCII with `C`
-collation makes prefixed-string ordering predictable.
-
-## UUIDv4 Compatibility Profile
-
-When UUIDv4 is selected or already established, use native PostgreSQL `uuid`,
-Python `uuid.UUID`, canonical lowercase hyphenated JSON strings, application
-`uuid.uuid4()` generation, and `gen_random_uuid()` for approved direct database
-writes. Deterministic UUIDv5 is acceptable only for a version-controlled seed
-whose stable source key is already public. It must never encode a private or
-sequential source.
-
-The bundled `assets/postgresql-rbac` implementation intentionally remains on
-this valid UUIDv4 profile. Do not rewrite its published `0001` or `0002`
-migrations merely to adopt prefixes. A deployed conversion requires a new
-versioned migration and coordinated handling of foreign keys, URLs, JWT `sub`,
-Redis active-JTI values, resource-version values, events, logs, and external
-integrations.
-
-## Forbidden Identifier Designs
-
-Do not use:
-
-- `SMALLSERIAL`, `SERIAL`, `BIGSERIAL`, `GENERATED ... AS IDENTITY`, a
-  sequence-backed integer primary key, or application integer autoincrement;
-- `max(id) + 1`, timestamps, short random numbers, array positions, row counts,
-  or another predictable value as an identifier;
-- a hidden sequential internal key exposed through a random alias while the
-  integer remains accepted by a public lookup;
-- an ID derived from an email, username, phone number, business secret, or old
-  integer; or
-- a prefix with an undersized suffix justified only by the presence of a unique
-  constraint.
-
-Integer `management_tier`, `version`, `epoch`, retry count, quantity, and display
-ordering fields are values or counters, not identifiers. A legally required
-invoice number may be sequential only as a separately named display field. It
-must not be the primary key, foreign key, JWT subject, or sole authorization
-lookup.
-
-## JWT And API Boundary
-
-JWT `sub` is the canonical string form of the immutable `users.id` selected by
-the project. For a prefixed profile it is the exact validated `U...` value; for
-the bundled UUID profile it is the canonical UUIDv4 string. Never use email,
-username, a role-assignment ID, or a legacy integer as `sub`.
-
-Validate path, body, event, and token IDs with the entity-specific parser before
-lookup. Do not reveal whether a syntactically valid ID exists before
-authentication, capability checks, and row policy. Non-sequential IDs reduce
-casual enumeration; they do not replace authorization. Preserve non-leaking
-`404` behavior where required, rate limits, audit signals, and IDOR tests across
-detail, list, search, count, export, bulk, and nested operations.
-
-## Migration From Sequential IDs
-
-Migrate deployed IDs only within an explicit migration request. Select the target
-prefix or UUIDv4 profile, preserve a complete old-to-new mapping, and update every
-parent and referencing table without null, duplicate, or orphaned relationships.
-Verify primary/foreign keys, uniqueness, and all query/schema/external consumers,
-including URLs, events, JWT `sub`, and Redis values. Remove old integer lookups and
-sequences only after dependent code/data have been converted and verified.
-
-Follow the owner's migration and rollback plan; an agreed maintenance-window
-conversion does not require dual writes or mixed application versions. Add
-compatibility code only for an explicitly selected online migration, and test
-that code when it is actually present. Do not introduce a rolling-release
-procedure as a default prerequisite to identifier changes.
-
-Keep an explicit old-to-new mapping until verification completes. Treat JWT
-subject conversion as a credential migration: expire or revoke old-subject
-tokens instead of accepting both formats indefinitely.
-
-## Required Verification
-
-- Inspect every application-owned PostgreSQL table and reject integer primary
-  keys, identity properties, `nextval(...)` defaults, and sequential public
-  aliases.
-- For each prefixed namespace, test the exact prefix, alphabet, length,
-  uppercase-only rule, application generation, direct-SQL constraint, foreign
-  keys, uniqueness, and bounded retry on only the named ID constraint.
-- For UUIDv4 namespaces, test version, canonical serialization, database type,
-  uniqueness, and direct-database generation where supported.
-- Test malformed, wrong-prefix, wrong-length, lowercase, random unknown, leaked,
-  concealed, and unauthorized IDs through every lookup variant.
-- For a migration, test empty upgrade, representative-data conversion, complete
-  mappings, constraints, old-token expiry, and removal of old integer lookups.
-  Test compatibility writes and rollback paths only when the agreed migration
-  design includes them; never imply that a data-discarding downgrade is safe.
-
-Use both column and key metadata; checking sequence defaults alone does not find
-an integer key populated manually.
+Verify exact prefix, length and alphabet for all six default ID-bearing tables and any optional business table, including a
+fixed-time test for the 14-digit audit time segment. Verify model columns,
+constraints and foreign keys, request validators, JWT subject and Redis active
+JTI handling. Keep UUIDv4 checks for the four protocol IDs. Verify malformed,
+wrong-prefix, wrong-length and lowercase inputs are rejected. A generated
+project must contain the same ID contract as the canonical asset. A default
+project generation task does not authorize access to PostgreSQL or Redis.

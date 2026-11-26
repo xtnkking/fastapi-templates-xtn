@@ -11,6 +11,17 @@ https://github.com/xtnkking/fastapi-templates-xtn
 XTN is the sole maintainer of the canonical repository. Only XTN decides what
 is committed, merged, tagged, released, or represented as an official version.
 
+For authorized maintenance, follow the canonical
+[Skill](skills/fastapi-templates-xtn/SKILL.md). Change maintained templates before
+syncing installed copies, and review generated output using the
+[comment/layout contract](skills/fastapi-templates-xtn/references/python-comments.md).
+Explain actual behavior, keep public Chinese OpenAPI descriptions separate from
+runtime translations, and run the relevant [checks](skills/fastapi-templates-xtn/references/testing.md).
+Record public behavior and verification in the relevant documentation and
+changelog. Keep local agent configuration, machine paths and private maintenance
+records out of commits; do not copy maintainer guidance or the full regression
+suite into a user's application.
+
 ## Issues are welcome
 
 Bug reports, documentation corrections, and feature requests may be submitted

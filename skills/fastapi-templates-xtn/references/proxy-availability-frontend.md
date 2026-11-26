@@ -44,7 +44,7 @@ export interface ApiResponse<T> {
   request_id: string;
 }
 
-export interface PageData<T> {
+export interface PageResponse<T> {
   items: T[];
   page: number;
   page_size: number;
@@ -55,12 +55,12 @@ export interface PageData<T> {
 Under the XTN response standard, the API client validates the numeric `code` and
 required `request_id`, then returns `data` to feature code. Preserve the request
 ID with a thrown application error so support can correlate it, but never branch
-on localized `message` text. A completed check is `200000` even when its
+on localized `message` text. A completed check is `20000` even when its
 `data.success` is false.
 
 A successful list response with `availability_check=null` renders as `未检测`.
 When the list request fails with cache-specific HTTP `503` / business code
-`503002`, render `检测结果暂不可用` for the list instead of treating rows as cache
+`50302`, render `检测结果暂不可用` for the list instead of treating rows as cache
 misses. A success shows exit IP, country, region, city, latency, and server check
 time; use `--` for optional null location values. A cached failure shows its safe
 backend message. Never reinterpret `检测服务请求频率受限` as a proxy connection or
@@ -105,7 +105,7 @@ function checkOnce(
       setTransportError(proxyId, toSafeUiMessage(error));
       if (
         origin === "row" &&
-        hasBusinessCode(error, 503002)
+        hasBusinessCode(error, 50302)
       ) {
         try {
           await reloadVisibleProxyList();
@@ -130,7 +130,7 @@ The in-flight map suppresses only simultaneous double clicks. It deletes its
 entry in `finally`, so a later explicit click always sends a fresh request. A
 browser-to-backend transport or application error is temporary UI state and must
 not replace the last Redis-backed snapshot or expose raw response content.
-Business code `503002` is special: reload cache-only list data
+Business code `50302` is special: reload cache-only list data
 without retrying detection, because Redis may already contain the observation.
 Batch processing relies on its one final reload instead of reloading per item.
 

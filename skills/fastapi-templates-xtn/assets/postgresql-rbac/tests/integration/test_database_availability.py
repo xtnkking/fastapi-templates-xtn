@@ -1,3 +1,14 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# 说明:
+#    在另行准备的隔离 PostgreSQL 上检查超时配置和数据库故障分类。
+# History:
+# Date          Author    Version       Modification
+# --------------------------------------------------------------------------------------------------
+# 2026/10/02    XTN       V1.000        补充文件职责并改从 PostgreSQL 数据库入口导入故障分类
+# --------------------------------------------------------------------------------------------------
+
 """Database budgets and failure recovery on the guarded disposable database."""
 
 import pytest
@@ -5,8 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from app.core.config import get_settings
-from app.db.errors import database_error_category
-from app.db.postgres import engine
+from app.db.postgres_db import database_error_category, engine
 
 pytestmark = pytest.mark.postgresql
 

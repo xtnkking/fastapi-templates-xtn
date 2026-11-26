@@ -1,3 +1,16 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# 说明:
+#    在使用者准备的数据库中检查业务审计持久化与约束。
+# History:
+# Date          Author    Version       Modification
+# --------------------------------------------------------------------------------------------------
+# 2026/10/10    XTN       V1.000        对齐审计 operator 字段与约束并补充文件职责记录
+# 2026/10/10    XTN       V1.001        区分操作用户、被操作用户及非用户来源并对齐业务审计 ID
+# 2026/10/16    XTN       V1.002        持久化用例显式绑定审计请求上下文
+# --------------------------------------------------------------------------------------------------
+
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -12,14 +25,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.audit import AuditSource
 from app.core.business_audit import (
     BusinessAuditActionSpec,
-    BusinessAuditActor,
-    BusinessAuditActorType,
     BusinessAuditFacts,
     BusinessAuditOutcome,
+    BusinessAuditSourceType,
 )
-from app.db.postgres import SessionFactory, engine
-from app.models.business_audit import BusinessAuditEvent
-from app.services.business_audit import BusinessAuditWriter
+from app.core.ids import new_audit_id, new_entity_id
+from app.db.postgres_db import SessionFactory, engine
+from app.models.postgres.business_audit import BusinessAuditEvent
+from app.services.business_audit_service import BusinessAuditService
 from tests.integration.conftest import World
 
 pytestmark = pytest.mark.postgresql
@@ -28,12 +41,12 @@ ACTION = "subscription.lifecycle.update"
 SPEC = BusinessAuditActionSpec(
     domain="subscription",
     action=ACTION,
-    resource_type="subscription",
+    target_type="subscription",
     allowed_outcomes=frozenset(BusinessAuditOutcome),
     reason_codes=frozenset(
         {"subscription_paused", "policy_denied", "domain_failed", "no_change"}
     ),
-    actor_types=frozenset({BusinessAuditActorType.USER}),
+    source_types=frozenset({BusinessAuditSourceType.USER}),
     before_fields=frozenset({"status"}),
     after_fields=frozenset({"status"}),
     context_fields=frozenset({"policy_code"}),
@@ -44,12 +57,12 @@ TEMP_BUSINESS_RESOURCE_TABLE = "test_business_resources"
 RAW_BUSINESS_AUDIT_INSERT = text(
     """
     INSERT INTO business_audit_events (
-        id, domain, action, outcome, reason_code, actor_type, actor_id,
-        resource_type, resource_id, source, schema_version, before_state,
+        id, domain, action, outcome, reason_code, source_type, user_id, source_id,
+        target_type, target_id, target_user_id, entrypoint, schema_version, before_state,
         after_state, context, request_id
     ) VALUES (
-        CAST(:id AS uuid), :domain, :action, :outcome, :reason_code,
-        :actor_type, :actor_id, :resource_type, :resource_id, :source,
+        :id, :domain, :action, :outcome, :reason_code,
+        :source_type, :user_id, :source_id, :target_type, :target_id, :target_user_id, :entrypoint,
         :schema_version, CAST(:before_state AS jsonb),
         CAST(:after_state AS jsonb), CAST(:context AS jsonb), :request_id
     )
@@ -105,10 +118,8 @@ async def business_resource_store() -> AsyncIterator[BusinessResourceStore]:
             await connection.commit()
 
 
-def writer(
-    session_factory: async_sessionmaker[AsyncSession],
-) -> BusinessAuditWriter:
-    return BusinessAuditWriter(session_factory, {ACTION: SPEC})
+def writer(session_factory: async_sessionmaker[AsyncSession]) -> BusinessAuditService:
+    return BusinessAuditService(session_factory, {ACTION: SPEC})
 
 
 async def business_resource_status(store: BusinessResourceStore) -> str:
@@ -124,10 +135,7 @@ async def business_resource_status(store: BusinessResourceStore) -> str:
     return status
 
 
-async def pause_business_resource(
-    session: AsyncSession,
-    store: BusinessResourceStore,
-) -> None:
+async def pause_business_resource(session: AsyncSession, store: BusinessResourceStore) -> None:
     await session.execute(
         text(
             f"UPDATE {TEMP_BUSINESS_RESOURCE_TABLE} SET status = 'paused' "
@@ -139,16 +147,18 @@ async def pause_business_resource(
 
 def raw_event_params(**overrides: object) -> dict[str, object]:
     params: dict[str, object] = {
-        "id": str(uuid.uuid4()),
+        "id": new_audit_id("BA"),
         "domain": "subscription",
         "action": ACTION,
         "outcome": "succeeded",
         "reason_code": "subscription_paused",
-        "actor_type": "user",
-        "actor_id": str(uuid.uuid4()),
-        "resource_type": "subscription",
-        "resource_id": str(uuid.uuid4()),
-        "source": "http",
+        "source_type": "user",
+        "user_id": new_entity_id("U"),
+        "source_id": None,
+        "target_type": "subscription",
+        "target_id": str(uuid.uuid4()),
+        "target_user_id": None,
+        "entrypoint": "http",
         "schema_version": 1,
         "before_state": None,
         "after_state": None,
@@ -159,26 +169,16 @@ def raw_event_params(**overrides: object) -> dict[str, object]:
     return params
 
 
-def facts(
-    world: World,
-    resource_id: uuid.UUID,
-    *,
-    request_id: str,
-    before_state: dict[str, object] | None,
-    after_state: dict[str, object] | None,
-    reason_code: str,
-) -> BusinessAuditFacts:
+def facts(world: World, resource_id: uuid.UUID, *, before_state: dict[str, object] | None,
+          after_state: dict[str, object] | None, reason_code: str) -> BusinessAuditFacts:
     return BusinessAuditFacts(
-        event_id=uuid.uuid4(),
+        event_id=new_audit_id("BA"),
         action=ACTION,
-        actor=BusinessAuditActor(
-            actor_type=BusinessAuditActorType.USER,
-            id=str(world.users["super_admin"].id),
-        ),
-        resource_id=str(resource_id),
+        source_type=BusinessAuditSourceType.USER,
+        user_id=world.users["super_admin"].user_id,
+        target_id=str(resource_id),
         reason_code=reason_code,
-        source=AuditSource.HTTP,
-        request_id=request_id,
+        entrypoint=AuditSource.HTTP,
         before_state=before_state,
         after_state=after_state,
         context={"policy_code": "subscription_lifecycle"},
@@ -188,8 +188,9 @@ def facts(
 async def test_successful_business_mutation_and_audit_commit_together(
     world: World,
     business_resource_store: BusinessResourceStore,
+    audit_request_context: str,
 ) -> None:
-    request_id = str(uuid.uuid4())
+    request_id = audit_request_context
     audit_writer = writer(business_resource_store.sessions)
     async with business_resource_store.sessions() as session:
         async with session.begin():
@@ -199,7 +200,6 @@ async def test_successful_business_mutation_and_audit_commit_together(
                 facts(
                     world,
                     business_resource_store.resource_id,
-                    request_id=request_id,
                     before_state={"status": "active"},
                     after_state={"status": "paused"},
                     reason_code="subscription_paused",
@@ -216,17 +216,20 @@ async def test_successful_business_mutation_and_audit_commit_together(
     assert await business_resource_status(business_resource_store) == "paused"
     assert persisted is not None
     assert persisted.id == event.id
-    assert persisted.id.version == 4
+    assert persisted.id.startswith("BA")
+    assert len(persisted.id) == 22
     assert persisted.created_at.tzinfo is not None
     assert persisted.domain == "subscription"
-    assert persisted.actor_type == "user"
-    assert persisted.actor_id == str(world.users["super_admin"].id)
+    assert persisted.source_type == "user"
+    assert persisted.user_id == world.users["super_admin"].user_id
+    assert persisted.source_id is None
     assert persisted.action == ACTION
-    assert persisted.resource_type == "subscription"
-    assert persisted.resource_id == str(business_resource_store.resource_id)
+    assert persisted.target_type == "subscription"
+    assert persisted.target_id == str(business_resource_store.resource_id)
+    assert persisted.target_user_id is None
     assert persisted.outcome == "succeeded"
     assert persisted.reason_code == "subscription_paused"
-    assert persisted.source == "http"
+    assert persisted.entrypoint == "http"
     assert persisted.schema_version == 1
     assert persisted.context == {"policy_code": "subscription_lifecycle"}
     assert persisted.request_id == request_id
@@ -235,8 +238,9 @@ async def test_successful_business_mutation_and_audit_commit_together(
 async def test_unsafe_required_audit_rolls_back_business_mutation(
     world: World,
     business_resource_store: BusinessResourceStore,
+    audit_request_context: str,
 ) -> None:
-    request_id = str(uuid.uuid4())
+    request_id = audit_request_context
     with pytest.raises(ValueError, match="non-allowlisted"):
         async with business_resource_store.sessions() as session:
             async with session.begin():
@@ -246,7 +250,6 @@ async def test_unsafe_required_audit_rolls_back_business_mutation(
                     facts(
                         world,
                         business_resource_store.resource_id,
-                        request_id=request_id,
                         before_state={"status": "active"},
                         after_state={"password": "must-never-persist"},
                         reason_code="subscription_paused",
@@ -276,11 +279,12 @@ async def test_non_success_is_written_only_after_business_rollback(
     business_resource_store: BusinessResourceStore,
     outcome: BusinessAuditOutcome,
     reason_code: str,
+    audit_request_context: str,
 ) -> None:
     class BusinessDidNotCommit(Exception):
         pass
 
-    request_id = str(uuid.uuid4())
+    request_id = audit_request_context
     with pytest.raises(BusinessDidNotCommit):
         async with business_resource_store.sessions() as session:
             async with session.begin():
@@ -291,7 +295,6 @@ async def test_non_success_is_written_only_after_business_rollback(
         facts(
             world,
             business_resource_store.resource_id,
-            request_id=request_id,
             before_state={"status": "active"},
             after_state=None,
             reason_code=reason_code,
@@ -316,11 +319,12 @@ async def test_non_success_is_written_only_after_business_rollback(
 async def test_required_denial_commits_after_nested_savepoint_rollback(
     world: World,
     business_resource_store: BusinessResourceStore,
+    audit_request_context: str,
 ) -> None:
     class PolicyDenied(Exception):
         pass
 
-    request_id = str(uuid.uuid4())
+    request_id = audit_request_context
     audit_writer = writer(business_resource_store.sessions)
 
     async with business_resource_store.sessions() as session:
@@ -334,7 +338,6 @@ async def test_required_denial_commits_after_nested_savepoint_rollback(
                 facts(
                     world,
                     business_resource_store.resource_id,
-                    request_id=request_id,
                     before_state={"status": "active"},
                     after_state=None,
                     reason_code="policy_denied",
@@ -355,11 +358,9 @@ async def test_required_denial_commits_after_nested_savepoint_rollback(
     assert persisted.after_state is None
 
 
-async def test_business_audit_rows_are_append_only(
-    world: World,
-    business_resource_store: BusinessResourceStore,
-) -> None:
-    request_id = str(uuid.uuid4())
+@pytest.mark.usefixtures("audit_request_context")
+async def test_business_audit_rows_are_append_only(world: World,
+                                                   business_resource_store: BusinessResourceStore) -> None:
     async with business_resource_store.sessions() as session:
         async with session.begin():
             event = writer(business_resource_store.sessions).add_succeeded(
@@ -367,7 +368,6 @@ async def test_business_audit_rows_are_append_only(
                 facts(
                     world,
                     business_resource_store.resource_id,
-                    request_id=request_id,
                     before_state={"status": "active"},
                     after_state={"status": "active"},
                     reason_code="no_change",
@@ -412,12 +412,28 @@ async def test_business_audit_rows_are_append_only(
         ),
         ({"outcome": "unknown"}, "ck_business_audit_outcome"),
         (
-            {"actor_type": "system", "actor_id": "system-1"},
-            "ck_business_audit_actor_presence",
+            {"source_type": "system", "user_id": None, "source_id": "system-1"},
+            "ck_business_audit_source_identity",
         ),
         (
-            {"actor_type": "user", "actor_id": None},
-            "ck_business_audit_actor_presence",
+            {"source_type": "user", "user_id": None},
+            "ck_business_audit_source_identity",
+        ),
+        (
+            {"user_id": "invalid-user-id"},
+            "ck_business_audit_user_id_format",
+        ),
+        (
+            {"source_type": "service", "user_id": None, "source_id": "person@example.test"},
+            "ck_business_audit_source_id_format",
+        ),
+        (
+            {"target_user_id": "invalid-user-id"},
+            "ck_business_audit_target_user_id_format",
+        ),
+        (
+            {"target_type": "user", "target_id": new_entity_id("U"), "target_user_id": None},
+            "ck_business_audit_user_target",
         ),
         (
             {"outcome": "failed", "after_state": '{"status": "changed"}'},
@@ -435,13 +451,11 @@ async def test_business_audit_rows_are_append_only(
             "ck_business_audit_context_size",
         ),
         ({"reason_code": "x"}, "ck_business_audit_reason_format"),
-        ({"id": str(uuid.uuid1())}, "ck_business_audit_id_uuid4"),
+        ({"id": str(uuid.uuid1())}, "ck_business_audit_id_format"),
     ],
 )
-async def test_database_rejects_invalid_raw_business_audit_events(
-    overrides: dict[str, object],
-    constraint_name: str,
-) -> None:
+async def test_database_rejects_invalid_raw_business_audit_events(overrides: dict[str, object],
+                                                                  constraint_name: str) -> None:
     with pytest.raises(DBAPIError) as exc_info:
         async with SessionFactory() as session:
             async with session.begin():
@@ -454,11 +468,12 @@ async def test_database_rejects_invalid_raw_business_audit_events(
 
 
 async def test_database_accepts_raw_system_business_audit_event() -> None:
-    event_id = uuid.uuid4()
+    event_id = new_audit_id("BA")
     params = raw_event_params(
         id=str(event_id),
-        actor_type="system",
-        actor_id=None,
+        source_type="system",
+        user_id=None,
+        source_id=None,
     )
 
     async with SessionFactory() as session:
@@ -469,5 +484,6 @@ async def test_database_accepts_raw_system_business_audit_event() -> None:
         event = await session.get(BusinessAuditEvent, event_id)
 
     assert event is not None
-    assert event.actor_type == "system"
-    assert event.actor_id is None
+    assert event.source_type == "system"
+    assert event.user_id is None
+    assert event.source_id is None

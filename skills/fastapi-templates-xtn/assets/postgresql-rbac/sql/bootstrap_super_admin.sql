@@ -1,3 +1,16 @@
+-- 说明:
+--    保留旧版 UUID 数据结构的离线超级管理员初始化维护示例，不交付生成项目。
+--    角色绑定和审计同事务完成；先持有全局授权行锁，由使用者自行审阅并执行。
+--    本文件仅供历史结构阅读；表名、ID 和审计字段均不适用当前模型，不得用于当前生成项目。
+--    当前项目须由使用者依据 OperationAuditEvent 和现有用户、角色模型自行准备初始化流程。
+-- History:
+-- Date          Author    Version       Modification
+-- --------------------------------------------------------------------------------------------------
+-- 2026/10/15    XTN       V1.000        移除当前已取消的用户权限版本更新，保留授权锁和审计
+-- 2026/10/16    XTN       V1.001        移除全局授权计数更新，保留显式行锁和初始化审计
+-- 2026/10/16    XTN       V1.002        明确历史结构边界，禁止作为当前项目的初始化脚本
+-- --------------------------------------------------------------------------------------------------
+
 \set ON_ERROR_STOP on
 
 BEGIN;
@@ -228,14 +241,6 @@ BEGIN
     IF assigned_super_admin THEN
         INSERT INTO user_roles (user_id, role_id, assigned_by_user_id)
         VALUES (candidate.id, super_admin_role_id, NULL);
-
-        UPDATE users
-        SET authz_version = authz_version + 1
-        WHERE id = candidate.id;
-
-        UPDATE rbac_state
-        SET epoch = epoch + 1
-        WHERE scope = 'global';
     END IF;
 
     INSERT INTO rbac_audit_events (

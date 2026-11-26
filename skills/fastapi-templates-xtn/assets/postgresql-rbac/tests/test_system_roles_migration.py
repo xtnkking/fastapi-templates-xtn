@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import pytest
 from sqlalchemy.engine import Connection
 
-from app.core.security.domain import RESERVED_ROLE_KEYS, SYSTEM_ROLE_KEYS
+from app.core.access.roles import RESERVED_ROLE_KEYS, SYSTEM_ROLE_KEYS
 from tests.migration_helpers import load_migration
 
 
@@ -30,9 +30,7 @@ def test_fresh_migration_chain_remains_linear() -> None:
         assert migration.down_revision == down_revision
 
 
-def test_system_role_downgrade_removes_every_seeded_role(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_system_role_downgrade_removes_every_seeded_role(monkeypatch: pytest.MonkeyPatch) -> None:
     migration = load_migration("0002_system_roles.py")
     connection = Mock(spec=Connection)
     monkeypatch.setattr(migration.op, "get_bind", lambda: connection)
@@ -65,9 +63,7 @@ def test_system_role_downgrade_removes_every_seeded_role(
     assert not any("UPDATE roles SET key = 'owner'" in item for item in statements)
 
 
-def test_system_role_downgrade_settles_pending_user_constraint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_system_role_downgrade_settles_pending_user_constraint(monkeypatch: pytest.MonkeyPatch) -> None:
     migration = load_migration("0002_system_roles.py")
     connection = Mock(spec=Connection)
     statements: list[str] = []

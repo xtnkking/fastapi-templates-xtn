@@ -90,7 +90,7 @@ Cover these behaviors with unit, integration, and security tests as appropriate:
   arguments is rejected without modifying Redis.
 - For the same version, use barriers to start attempt 1 then attempt 2 and finish
   them in reverse order. Attempt 1 cannot overwrite attempt 2 and receives
-  business code `409004` rather than returning its stale local observation.
+  business code `40904` rather than returning its stale local observation.
 - Start attempt 1, then claim attempt 2 without completing it; prove the attempt
   watermark prevents attempt 1 from writing as the latest result.
 - Edit the proxy during a request; its old-version completion cannot replace a
@@ -100,15 +100,14 @@ Cover these behaviors with unit, integration, and security tests as appropriate:
   read-back resolve a committed value. If a later attempt only advances the
   watermark, the older ambiguous caller is superseded rather than falsely
   successful. An unresolved read returns distinct
-  business code `503002` without claiming which value exists or
+  business code `50302` without claiming which value exists or
   repeating the outbound request.
 - Redis read failure returns the documented cache-specific HTTP `503` / business
-  code `503002`, never a fifth envelope flag or `未检测`.
+  code `50302`, never a fifth envelope flag or `未检测`.
 - A list page builds keys only for authorized returned rows, uses one supported
   `MGET` path, maps values by proxy ID, and makes zero detector calls.
-- Exercise the declared standalone/Sentinel or cluster-aware grouped-`MGET`
-  path against the deployment topology. Assert no N+1 `GET` fallback and no
-  unhandled cross-slot failure.
+- Exercise the standalone Redis `MGET` path against a disposable instance.
+  Assert there is no N+1 `GET` fallback.
 
 ## Frontend Matrix
 
@@ -118,7 +117,7 @@ Use controlled deferred promises rather than sleeps:
   `检测结果暂不可用`; a new failure replaces all older success-only fields.
 - Row state cleans up on success, domain `success=false`, and transport failure.
   A completed click can be run again and sends another request.
-- A row receiving business code `503002` performs one cache-only list
+- A row receiving business code `50302` performs one cache-only list
   reload and never repeats detection; a batch waits for its single final reload.
 - Selected IDs bypass all-page collection. With no selection, 450 rows fetch as
   200, 200, and 50 and every deduplicated ID is checked.

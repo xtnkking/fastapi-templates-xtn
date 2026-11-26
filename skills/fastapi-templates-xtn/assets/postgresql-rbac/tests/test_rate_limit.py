@@ -1,16 +1,29 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# 说明:
+#    验证 Redis 固定窗口限流的私有键、错误回包和计数窗口边界。
+# History:
+# Date          Author    Version       Modification
+# --------------------------------------------------------------------------------------------------
+# 2026/09/29    XTN       V1.000        补充共同回包校验和原错误文案的回归覆盖
+# 2026/10/10    XTN       V1.001        删除只读预查测试，保留原子计数和错误回包覆盖
+# 2026/10/13    XTN       V1.002        验证简化限流键的精确摘要、稳定性及业务和主体隔离
+# --------------------------------------------------------------------------------------------------
+
+import hashlib
+import hmac
 from unittest.mock import AsyncMock
 
 import pytest
 from redis.exceptions import ConnectionError
 
-from app.core.security.rate_limit import (
+from app.core.rate_limit.limiter import (
     FIXED_WINDOW_SCRIPT,
-    INSPECT_FIXED_WINDOW_SCRIPT,
     RateLimitPolicy,
     RateLimitUnavailable,
     build_rate_limit_key,
     check_rate_limit,
-    inspect_rate_limit,
 )
 
 POLICY = RateLimitPolicy(name="login", limit=2, window_seconds=300)
@@ -32,25 +45,70 @@ def test_policy_rejects_unbounded_or_disabled_values(kwargs: dict[str, object]) 
         RateLimitPolicy(**kwargs)  # type: ignore[arg-type]
 
 
-def test_key_is_private_and_separated_by_business() -> None:
+@pytest.mark.parametrize(
+    ("subject_type", "subject", "message"),
+    [
+        ("ip", "203.0.113.9", b"login\x00ip\x00203.0.113.9"),
+        (
+            "user_id",
+            "U00000000000000000000000000",
+            b"login\x00user_id\x00U00000000000000000000000000",
+        ),
+    ],
+)
+def test_key_has_exact_hmac_format_and_is_stable(subject_type: str, subject: str, message: bytes) -> None:
     first = build_rate_limit_key(
-        namespace="example",
         policy=POLICY,
-        subject_type="ip",
-        subject="203.0.113.9",
+        subject_type=subject_type,
+        subject=subject,
         key_secret=KEY_SECRET,
     )
     second = build_rate_limit_key(
-        namespace="example",
-        policy=RateLimitPolicy("register", 5, 3600),
-        subject_type="ip",
-        subject="203.0.113.9",
+        policy=POLICY,
+        subject_type=subject_type,
+        subject=subject,
         key_secret=KEY_SECRET,
     )
-    assert first.startswith("rl:v2:example:login:ip:")
+    expected_digest = hmac.new(KEY_SECRET, message, hashlib.sha256).hexdigest()
+    assert first == f"rate_limit:login:{subject_type}:{expected_digest}"
+    assert first == second
+    assert subject not in first
+
+
+@pytest.mark.parametrize(
+    ("subject_type", "subject", "other_business", "other_subject_type", "other_subject"),
+    [
+        ("ip", "203.0.113.9", "register", "ip", "203.0.113.9"),
+        ("ip", "203.0.113.9", "login", "ip", "203.0.113.10"),
+        ("ip", "203.0.113.9", "login", "user_id", "203.0.113.9"),
+        (
+            "user_id",
+            "U00000000000000000000000001",
+            "login",
+            "user_id",
+            "U00000000000000000000000002",
+        ),
+    ],
+)
+def test_key_separates_business_subject_type_and_subject(
+    subject_type: str, subject: str, other_business: str, other_subject_type: str, other_subject: str
+) -> None:
+    first = build_rate_limit_key(
+        policy=POLICY,
+        subject_type=subject_type,
+        subject=subject,
+        key_secret=KEY_SECRET,
+    )
+    second = build_rate_limit_key(
+        policy=RateLimitPolicy(name=other_business, limit=5, window_seconds=3600),
+        subject_type=other_subject_type,
+        subject=other_subject,
+        key_secret=KEY_SECRET,
+    )
     assert first != second
-    assert "203.0.113.9" not in first
-    assert len(first.rsplit(":", maxsplit=1)[-1]) == 64
+    assert first.rsplit(":", maxsplit=1)[-1] != second.rsplit(":", maxsplit=1)[-1]
+    assert subject not in first
+    assert other_subject not in second
 
 
 @pytest.mark.parametrize(
@@ -71,10 +129,9 @@ def test_key_is_private_and_separated_by_business() -> None:
 async def test_invalid_redis_result_fails_closed(raw: object) -> None:
     redis = AsyncMock()
     redis.eval.return_value = raw
-    with pytest.raises(RateLimitUnavailable):
+    with pytest.raises(RateLimitUnavailable, match="invalid result"):
         await check_rate_limit(
             redis,
-            namespace="example",
             policy=POLICY,
             subject_type="ip",
             subject="203.0.113.9",
@@ -85,11 +142,10 @@ async def test_invalid_redis_result_fails_closed(raw: object) -> None:
 @pytest.mark.asyncio
 async def test_first_window_and_denial_share_original_ttl() -> None:
     redis = AsyncMock()
-    redis.eval.side_effect = ([1, 300000], [2, 200000], [3, 100001])
+    redis.eval.side_effect = ([1, 300000], [2, 20000], [3, 100001])
     results = [
         await check_rate_limit(
             redis,
-            namespace="example",
             policy=POLICY,
             subject_type="ip",
             subject="203.0.113.9",
@@ -113,67 +169,8 @@ async def test_redis_failure_denies_before_protected_work() -> None:
     with pytest.raises(RateLimitUnavailable, match="store is unavailable"):
         await check_rate_limit(
             redis,
-            namespace="example",
             policy=POLICY,
             subject_type="ip",
             subject="203.0.113.9",
-            key_secret=KEY_SECRET,
-        )
-
-
-@pytest.mark.asyncio
-async def test_inspection_does_not_create_or_increment_a_missing_window() -> None:
-    redis = AsyncMock()
-    redis.eval.return_value = [0, -2]
-
-    result = await inspect_rate_limit(
-        redis,
-        namespace="example",
-        policy=POLICY,
-        subject_type="actor",
-        subject="UABC1234567",
-        key_secret=KEY_SECRET,
-    )
-
-    assert result.allowed is True
-    assert result.remaining == POLICY.limit
-    assert result.reset_after_ms == 0
-    assert "INCR" not in INSPECT_FIXED_WINDOW_SCRIPT
-    assert redis.eval.await_args.args[1] == 1
-    assert len(redis.eval.await_args.args) == 3
-
-
-@pytest.mark.asyncio
-async def test_inspection_reports_an_existing_exhausted_window() -> None:
-    redis = AsyncMock()
-    redis.eval.return_value = [2, 2500]
-
-    result = await inspect_rate_limit(
-        redis,
-        namespace="example",
-        policy=POLICY,
-        subject_type="actor",
-        subject="UABC1234567",
-        key_secret=KEY_SECRET,
-    )
-
-    assert result.allowed is False
-    assert result.remaining == 0
-    assert result.retry_after_ms == 2500
-
-
-@pytest.mark.parametrize("raw", ([0, 1000], [1, -2], [3, 300001], ["1", 1000]))
-@pytest.mark.asyncio
-async def test_invalid_inspection_result_fails_closed(raw: object) -> None:
-    redis = AsyncMock()
-    redis.eval.return_value = raw
-
-    with pytest.raises(RateLimitUnavailable):
-        await inspect_rate_limit(
-            redis,
-            namespace="example",
-            policy=POLICY,
-            subject_type="actor",
-            subject="UABC1234567",
             key_secret=KEY_SECRET,
         )

@@ -1,10 +1,24 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# 说明:
+#    在另行准备的隔离数据库上验证连接超时与连接池恢复。
+# History:
+# Date          Author    Version       Modification
+# --------------------------------------------------------------------------------------------------
+# 2026/09/23    XTN       V1.000        连接故障测试直接引用请求日志中间件
+# 2026/09/30    XTN       V1.001        删除依赖自定义借连接重试次数的过时用例
+# 2026/10/02    XTN       V1.002        对齐 PostgreSQL 故障分类模块名称
+# 2026/10/02    XTN       V1.003        从统一数据库入口读取暂不可用异常
+# --------------------------------------------------------------------------------------------------
+
 """Established-connection blackholes, not simulated SQLAlchemy exceptions."""
 
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from time import perf_counter
-from typing import Any, cast
+from typing import cast
 
 import pytest
 from fastapi import FastAPI
@@ -14,18 +28,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 from app.core.config import get_settings
-from app.db.errors import DatabaseUnavailableError
-from app.db.postgres import create_database_engine, engine
-from app.main import RequestObservabilityMiddleware, app
+from app.core.middleware.request_logging import RequestLoggingMiddleware
+from app.db.postgres_db import DatabaseUnavailableError, create_database_engine, engine
+from app.main import app
 from tests.integration.database_proxy import DatabaseFaultProxy
 
 pytestmark = pytest.mark.postgresql
 
 
 @asynccontextmanager
-async def proxied_engine(
-    *, pool_size: int = 1
-) -> AsyncIterator[tuple[AsyncEngine, DatabaseFaultProxy]]:
+async def proxied_engine(*, pool_size: int = 1) -> AsyncIterator[tuple[AsyncEngine, DatabaseFaultProxy]]:
     async with DatabaseFaultProxy() as proxy:
         settings = get_settings().model_copy(
             update={
@@ -44,15 +56,13 @@ async def proxied_engine(
 
 
 @pytest.mark.parametrize("operation", ["query", "commit", "rollback", "checkout"])
-async def test_blackholed_database_returns_safe_503_and_pool_recovers(
-    operation: str,
-) -> None:
+async def test_blackholed_database_returns_safe_503_and_pool_recovers(operation: str) -> None:
     async with proxied_engine() as (test_engine, proxy):
         async with test_engine.connect() as warmup:
             old_pid = await warmup.scalar(text("SELECT pg_backend_pid()"))
         test_app = FastAPI()
         test_app.exception_handlers.update(app.exception_handlers)
-        test_app.add_middleware(RequestObservabilityMiddleware)
+        test_app.add_middleware(RequestLoggingMiddleware)
 
         @test_app.get("/private-timeout-probe")
         async def probe() -> None:
@@ -78,7 +88,7 @@ async def test_blackholed_database_returns_safe_503_and_pool_recovers(
             )
         assert perf_counter() - started < 2
         assert response.status_code == 503
-        assert response.json()["code"] == 503001
+        assert response.json()["code"] == 50301
         assert set(response.json()) == {"code", "message", "data", "request_id"}
         assert response.headers["X-Request-ID"] == response.json()["request_id"]
         assert response.json()["data"] is None
@@ -100,7 +110,7 @@ async def test_lost_commit_reply_does_not_replay_committed_write() -> None:
         async with proxied_engine() as (test_engine, proxy):
             test_app = FastAPI()
             test_app.exception_handlers.update(app.exception_handlers)
-            test_app.add_middleware(RequestObservabilityMiddleware)
+            test_app.add_middleware(RequestLoggingMiddleware)
             calls = 0
 
             @test_app.post("/private-write-probe")
@@ -216,62 +226,3 @@ async def test_command_timeout_preserves_other_healthy_pooled_connections() -> N
             }
         assert healthy_pid in pids
         assert failed_pid not in pids
-
-
-@pytest.mark.parametrize(
-    ("sqlstate", "attempts_per_request"), [("08006", 2), ("57014", 1)]
-)
-async def test_checkout_failures_return_503_with_only_bounded_disconnect_retry(
-    monkeypatch: pytest.MonkeyPatch,
-    sqlstate: str,
-    attempts_per_request: int,
-) -> None:
-    async with engine.connect() as reference:
-        driver = (await reference.get_raw_connection()).driver_connection
-        assert driver is not None
-        driver_type = type(driver)
-    original_execute = driver_type.execute
-    attempts = 0
-
-    class ProbeFailure(Exception):
-        def __init__(self) -> None:
-            super().__init__("private connection details")
-            self.sqlstate = sqlstate
-
-    async def fail_probe(driver: Any, query: str, *args: Any, **kwargs: Any) -> str:
-        nonlocal attempts
-        if query == "SELECT 1":
-            attempts += 1
-            raise ProbeFailure()
-        return cast(str, await original_execute(driver, query, *args, **kwargs))
-
-    async with proxied_engine() as (test_engine, _proxy):
-        test_app = FastAPI()
-        test_app.exception_handlers.update(app.exception_handlers)
-        test_app.add_middleware(RequestObservabilityMiddleware)
-
-        @test_app.get("/private-checkout-probe")
-        async def probe() -> None:
-            async with test_engine.connect():
-                pytest.fail("continuous disconnects must never yield a connection")
-
-        with monkeypatch.context() as patch:
-            patch.setattr(driver_type, "execute", fail_probe)
-            async with AsyncClient(
-                transport=ASGITransport(app=test_app, raise_app_exceptions=False),
-                base_url="http://test",
-            ) as client:
-                for expected_attempts in (
-                    attempts_per_request,
-                    2 * attempts_per_request,
-                ):
-                    response = await asyncio.wait_for(
-                        client.get("/private-checkout-probe"), timeout=3
-                    )
-                    assert response.status_code == 503
-                    assert response.json()["code"] == 503001
-                    assert "private connection details" not in response.text
-                    assert attempts == expected_attempts
-        assert cast(AsyncAdaptedQueuePool, test_engine.pool).checkedout() == 0
-        async with test_engine.connect() as recovered:
-            assert await recovered.scalar(text("SELECT 1")) == 1

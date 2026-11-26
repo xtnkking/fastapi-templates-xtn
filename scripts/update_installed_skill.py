@@ -187,12 +187,78 @@ def _remove_owned_staging(path: Path, parent: Path) -> None:
         shutil.rmtree(path)
 
 
+def _sync_manifest_files(
+    source: Path,
+    target: Path,
+    source_manifest: dict[str, str],
+    target_manifest: dict[str, str],
+) -> None:
+    """Replace changed files individually when Windows locks the Skill directory."""
+    for relative, digest in source_manifest.items():
+        if target_manifest.get(relative) == digest:
+            continue
+        destination = target / relative
+        if destination.is_dir():
+            raise UpdateError(f"Cannot replace a directory with a file: {destination}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}.sync-{uuid.uuid4().hex}")
+        try:
+            shutil.copy2(source / relative, temporary)
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    for relative in target_manifest.keys() - source_manifest.keys():
+        (target / relative).unlink()
+
+
+def _update_locked_directory(
+    staging: Path,
+    target: Path,
+    backup: Path,
+    source_manifest: dict[str, str],
+) -> Path:
+    """Keep a verified backup before a non-atomic, file-level replacement."""
+    old_manifest = _manifest(target)
+    shutil.copytree(target, backup, copy_function=shutil.copy2)
+    if _manifest(backup) != old_manifest or _manifest(target) != old_manifest:
+        raise UpdateError(
+            f"The installed Skill changed during backup; no files were replaced. "
+            f"Backup remains at {backup}"
+        )
+
+    try:
+        _sync_manifest_files(staging, target, source_manifest, old_manifest)
+        if _manifest(target) != source_manifest:
+            raise UpdateError("Installed Skill differs after file-level replacement")
+    except BaseException as replacement_error:
+        try:
+            _sync_manifest_files(backup, target, old_manifest, _manifest(target))
+            if _manifest(target) != old_manifest:
+                raise UpdateError("Rollback did not restore the previous manifest")
+        except BaseException as rollback_error:
+            raise UpdateError(
+                "File-level replacement and rollback both failed. "
+                f"A complete previous Skill backup remains at {backup}; "
+                "the installed directory may be partial."
+            ) from rollback_error
+        raise UpdateError(
+            "File-level replacement failed; the previous Skill was restored "
+            f"and its backup remains at {backup}"
+        ) from replacement_error
+
+    print(f"Installed via file-level replacement: {target}")
+    print(f"Previous installation retained as backup: {backup}")
+    return backup
+
+
 def update_skill(
     *,
     source: Path,
     target: Path,
     backup_dir: Path | None = None,
     dry_run: bool = False,
+    in_place_on_lock: bool = False,
 ) -> Path | None:
     raw_source = _absolute_without_resolving(source)
     raw_target = _absolute_without_resolving(target)
@@ -285,7 +351,14 @@ def update_skill(
         if target.exists():
             backup_root.mkdir(exist_ok=True)
             _reject_linked_path_components(backup_root, label="Backup path")
-            target.rename(backup)
+            try:
+                target.rename(backup)
+            except PermissionError:
+                if not in_place_on_lock:
+                    raise
+                return _update_locked_directory(
+                    staging, target, backup, source_manifest
+                )
             try:
                 staging.rename(target)
             except BaseException as replacement_error:
@@ -345,6 +418,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="validate and print resolved paths without changing files",
     )
+    parser.add_argument(
+        "--in-place-on-lock",
+        action="store_true",
+        help=(
+            "on a Windows directory rename PermissionError, keep a verified copy "
+            "backup and replace files individually; this fallback is not atomic"
+        ),
+    )
     return parser
 
 
@@ -356,6 +437,7 @@ def main(argv: list[str] | None = None) -> int:
             target=args.target,
             backup_dir=args.backup_dir,
             dry_run=args.dry_run,
+            in_place_on_lock=args.in_place_on_lock,
         )
     except (OSError, UnicodeError, UpdateError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

@@ -1,285 +1,264 @@
-# Durable RBAC Audit Module
+# Durable Operation Audit Module
 
-Read this reference when defining audit tables, privileged event coverage,
-before/after snapshots, append-only controls, audit access, retention, export,
-or alerts. Read
-[Atomic authorization consistency](atomic-consistency.md) as well when an audit
-event is tied to an authorization or protected business mutation. Use
-[Operational logging](operational-logging.md) for request and failure telemetry.
-Use [Business audit module](business-audit-module.md) instead for main-business
-or account-security evidence.
+Read for account/permission audit models, safe input/result summaries, action
+coverage and append-only requirements. Add [Atomic consistency](atomic-consistency.md)
+for authorization transactions. [Operational logging](operational-logging.md)
+owns ordinary request telemetry and the shared redaction implementation.
+[Business audit](business-audit-module.md) is an opt-in product extension.
 
-## Audit Is Not Logging
+## Default Owners And Coverage
 
-An audit event is durable security or business evidence. It answers who or what
-attempted an action, what protected target was involved, whether the action was
-allowed or denied, why the policy decided that outcome, and which state changed.
-It is stored under stricter write, read, retention, and integrity controls than
-ordinary logs.
-
-Do not treat an access log, analytics event, message-delivery record, distributed
-trace, or JWT session record as an audit row. Do not use audit storage as a
-debugging dump. Every event type needs a documented owner, trigger,
-actor/target meaning, retention class, and safe field allowlist.
-
-The fixed RBAC baseline keeps one deliberately narrow table:
+The default combines account-security and permission audit into one table and
+one writer:
 
 ```text
-rbac_audit_events
+operation_audit_events
+app/models/postgres/operation_audit.py :: OperationAuditEvent
+app/services/audit_service.py :: AuditService
 ```
 
-It contains only access-control administration and decisions: role lifecycle,
-role-permission changes, user-role binding, protected user status,
-default-role provisioning, offline super-admin bootstrap or handover, and relevant
-denials. It is not a Token, login, proxy, or general application activity table.
-When a product needs account-security or material business audit, follow the
-separate business-audit contract. Do not silently broaden the meaning of
-`rbac_audit_events`.
+Account operations cover registration, administrator creation, own-password
+change and administrator reset. Permission operations cover user status/session
+administration, role lifecycle, role-permission/user-role bindings and meaningful
+denials. Registration and administrator creation each write one account event
+covering the created user and default-role binding; shared creation does not
+write a second permission event. Ordinary queries only write file logs.
+Login/session state and arbitrary CRUD are not automatically audit events.
 
-## `rbac_audit_events` Schema
+Audit is durable business/security evidence. Operational logs help diagnose
+requests and exceptions; they do not replace a required audit insert. Optional
+product events such as refunds have their own reviewed catalog and transaction
+boundary. Their source resources remain in the Skill, excluded from default
+model registration and project export.
 
-The bundled asset uses this PostgreSQL shape:
+## `operation_audit_events` Schema
 
 | Column | Type | Contract |
 | --- | --- | --- |
-| `id` | UUID | Non-sequential event ID; application UUIDv4/default UUIDv4 |
-| `actor_user_id` | UUID | Canonical actor ID; no email or username |
-| `target_user_id` | UUID nullable | Affected user when applicable |
-| `target_role_id` | UUID nullable | Affected role when applicable |
-| `action` | varchar(120) | Stable lowercase machine event such as `role.permissions.bind` |
-| `decision` | varchar(16) | Exactly `allowed` or `denied` |
-| `reason_code` | varchar(80) | Stable internal lowercase reason code; not localized text |
+| `id` | varchar(22) | `OA` + `YYMMDDHHMMSSmm` China time + 6 random characters |
+| `category` | varchar(16) | `account` or `permission`; business ownership, not a second table |
+| `action` | varchar(120) | Stable machine action such as `role.permissions.bind` |
+| `outcome` | varchar(16) | Exactly `succeeded`, `failed` or `denied` |
+| `reason_code` | varchar(80) nullable | Stable internal reason; null when unnecessary; never localized text |
+| `user_id` | varchar(15) nullable | Operation user's `U...` ID; null for anonymous or offline work |
+| `target_user_id` | varchar(15) nullable | Affected user; may equal `user_id` for own-password changes |
+| `target_role_id` | varchar(15) nullable | Affected role; null when no role is targeted |
 | `source` | varchar(16) | `http`, `service`, `job`, `operator`, or `migration` |
-| `schema_version` | smallint | Event payload version, currently exactly `1` |
-| `before_state` | JSONB nullable | Minimal allowlisted state before an allowed change |
-| `after_state` | JSONB nullable | Minimal allowlisted state after an allowed change |
-| `request_id` | varchar(128) | HTTP UUIDv4 or safe non-HTTP operation correlation ID |
-| `created_at` | timestamptz | Database creation time |
+| `request_data` | JSONB nullable | Bounded recursively redacted query/body summary |
+| `response_data` | JSONB nullable | Safe business response snapshot, not delivery confirmation |
+| `password_fingerprint` | varchar(32) nullable | New-password comparison fingerprint; never plaintext/database hash |
+| `before_state` | JSONB nullable | Minimal allowlisted business state before a change |
+| `after_state` | JSONB nullable | Minimal state staged for successful change; null on failure/denial |
+| `request_id` | varchar(128) | Existing HTTP request or non-HTTP operation correlation ID |
+| `created_at` | timestamptz | Database insertion time |
 
-The actor and target UUID columns intentionally do not cascade. Audit history
-must survive later lifecycle changes. If a separately approved product/legal
-exception physically erases users, choose a documented pseudonymization strategy
-that preserves referential audit meaning without retaining unnecessary personal
-data; ordinary runtime deletion remains soft.
+These are the 16 default fields. Do not add `schema_version`, `operator_type`,
+service name or environment fields. Do not cascade live-user/role deletion into
+audit history. Runtime user deletion remains soft. Historical published migrations
+stay unchanged; the user reviews and executes any schema/data migration.
 
-`request_id` equals the server-generated UUIDv4 in the response and
-`X-Request-ID` for HTTP work. A CLI, job, migration, or operator action uses a
-generated operation ID containing no email, username, Token/JTI, or secret.
-`source` distinguishes those cases. Correlation IDs are not authentication or
-idempotency credentials.
+The writer reads the no-argument `core/audit.py::get_audit_request_id()`;
+routes and Services do not forward an ID through every method. HTTP middleware
+binds the server-generated UUIDv4 once, matching the response and `X-Request-ID`.
+A CLI/job binds one safe operation ID and clears its context in `finally`.
+Missing or inactive context raises `RuntimeError`, never a new unrelated ID.
+Correlation IDs contain no username, email, Token/JTI or secret.
 
-Example row:
+## Redacted Request And Response Summaries
 
-```json
+Reuse the file logger's recursive allowlist and redaction owner rather than
+introducing another sanitizer. Capture at most 16 KiB per request/response side;
+safe summaries are limited to 4 KiB each. Non-JSON, incomplete or oversized
+content records its omission reason. Preserve query/body separation, nesting
+and safe identifiers/status/filter values. Unknown fields and free text are
+hidden by default. Passwords, CAPTCHA answers, credentials, Tokens/JTIs,
+Authorization and Cookie values never enter durable storage. The outer response
+`message` may retain ordinary bounded business text under credential filtering;
+nested/request free text remains hidden. These summary fields may contain the
+safe `[REDACTED]` placeholder, never the original secret.
+
+State snapshots retain their stricter reject-on-secret contract. Do not pass
+request summaries through `sanitize_audit_state` or relax snapshot checks to
+make raw request bodies fit. The writer only accepts shared-owner safe summaries
+and validates their persistence shape and size.
+
+For registration, administrator creation, administrator password reset and own
+password change, reuse the independent `LOG_HMAC_KEY` new-password fingerprint:
+
+```python
+HMAC-SHA256(key, b"password\x00" + password_utf8).hexdigest()[:32]
+```
+
+Login/current passwords have no fingerprint. Fingerprints are irreversible
+comparison data, not encryption or database password hashes. Identical input
+under one key produces the same fingerprint; key rotation changes comparability.
+
+`response_data` is the business result known before commit. It is not the exact
+later HTTP envelope or proof that a client received it. Do not add a second
+UPDATE or background response writer; file logs capture actual HTTP completion
+and send failure. Non-HTTP operations keep request/result/fingerprint fields null
+unless an approved adapter provides equivalent safe data. Unavailable request
+bodies remain absent; audit capture does not actively read protected input ahead
+of its dependencies.
+
+Example administrator reset event (JSONC comments explain the stored fields):
+
+```jsonc
 {
-  "id": "fb3a4f75-399d-4460-9e7f-a97658e8e201",
-  "actor_user_id": "9bb60ae3-cad9-4e07-b072-7f4336044f18",
-  "target_user_id": "ea75240c-70a1-4379-813c-54ce7ad9f88e",
-  "target_role_id": "4c922651-7fb8-44b4-846e-13ef3c2c963e",
-  "action": "user.roles.bind",
-  "decision": "allowed",
-  "reason_code": "roles_bound",
-  "source": "http",
-  "schema_version": 1,
-  "before_state": {"role_ids": ["a2a6d28b-65fb-43b7-ae3d-a3e8f37d6316"], "authz_version": 4},
-  "after_state": {"role_ids": ["a2a6d28b-65fb-43b7-ae3d-a3e8f37d6316", "4c922651-7fb8-44b4-846e-13ef3c2c963e"], "authz_version": 5},
-  "request_id": "550e8400-e29b-41d4-a716-446655440000",
-  "created_at": "2026-09-10T08:30:15.321Z"
+  "id": "OA26101614302538172904", // 审计 ID：OA + 北京时间百分秒 + 六位随机字符。
+  "category": "account", // 账号安全业务。
+  "action": "account_security.password.admin_reset", // 稳定动作标识，不翻译。
+  "outcome": "succeeded", // 与业务修改同事务保存，回滚则该行也不存在。
+  "reason_code": null, // 成功无额外原因时为空。
+  "user_id": "U7MQ2J9R4AV8K6N", // 操作管理员。
+  "target_user_id": "U5N9B2LK7QR4X6D", // 被重置密码的用户。
+  "target_role_id": null, // 没有操作角色。
+  "source": "http", // HTTP 入口。
+  "request_data": {
+    "query": {},
+    "body": {
+      "user_id": "U5N9B2LK7QR4X6D",
+      "new_password": "[REDACTED]",
+      "captcha_id": "[REDACTED]",
+      "captcha_answer": "[REDACTED]"
+    }
+  },
+  "response_data": { // 提交前的业务响应，不是实际送达凭据。
+    "code": 20000,
+    "message": "密码重置成功",
+    "data": null, // 密码重置成功，不返回密码或额外的修改标记。
+    "request_id": "fc67559b-44db-472b-a718-99160e46b663"
+  },
+  "password_fingerprint": "9c04e72baf8136d025784a1ef930bc62", // 只比较新密码是否相同。
+  "before_state": null, // 不保存密码或数据库密码哈希。
+  "after_state": null,
+  "request_id": "fc67559b-44db-472b-a718-99160e46b663", // 关联文件请求日志。
+  "created_at": "2026-10-16T14:30:25.380+08:00" // 北京时间展示。
 }
 ```
 
-Do not store a localized message in place of `action` or `reason_code`; those
-fields are query contracts. When the payload shape changes, add a new
-`schema_version` and keep readers able to interpret retained versions. Never
-rewrite historical JSON to make it look as if an old event used a new schema.
+The response code/text above illustrates shape; persisted snapshots use the
+actual operation's business result and locale, without claiming final delivery.
 
 ## Event Construction
 
-Construct events in an application-owned audit writer or service boundary. A
-route must never accept an arbitrary audit event body from a client. The actor,
-decision, source, request ID, target, reason, and snapshots come from trusted
-server state after authentication and policy evaluation.
+Construct fields from trusted server context, authenticated identity, policy
+results and post-lock state. There is no client-facing arbitrary audit-write API.
+Fixed permission actions remain grouped as `RbacAuditAction`, account actions
+as `AccountAuditAction`, in `app/core/audit.py`, with Chinese explanations.
+Callers pass the named enum member itself; `AuditService` derives its category
+and persists the existing string value. Stored action/reason values remain stable.
+Dynamic `api.<route_name>` permission denials keep their existing validated
+fallbacks. Offline commands remain excluded from generated projects.
 
-Use an explicit action catalog. The RBAC baseline includes shapes such as:
+Only two public writer methods are needed:
 
-```text
-user.provision
-user.status.update
-user.roles.bind
-user.roles.unbind
-role.create
-role.update
-role.enable
-role.disable
-role.delete
-role.permissions.bind
-role.permissions.unbind
-super_admin.bootstrap
-super_admin.transfer
-api.protected_write
+- `audit_success(session, action=..., context=..., ...)` stages a successful
+  record in the caller's active transaction. The action enum determines
+  `account`/`permission`; the trusted context determines the operation user and
+  source. Anonymous registration has no operation user. Input summaries,
+  new-password fingerprints and request ID are collected automatically.
+  `message_key`/`data`/`code` supply the safe business response snapshot; the
+  method neither commits nor sends an HTTP response.
+- `await audit_denied(error=error, action=..., context=..., ...)` runs after business
+  rollback. It derives the reason, failure/denial outcome and safe response from
+  the original exception, uses a separate transaction and preserves that error
+  if auditing fails. Server errors (`>=500`) do not become policy denials.
+
+For example, code previously repeated construction and transport metadata:
+
+```python
+session.add(AuditService.build_event(
+    category="account",
+    action=AccountAuditAction.ADMIN_RESET_PASSWORD.value,
+    user_id=context.login_info.user_id,
+    source=context.audit_source,
+    target_user_id=target_user_id,
+    response_data=AuditService.response_snapshot(message_key=MessageKey.AUTH_PASSWORD_RESET_SUCCEEDED),
+))
 ```
 
-An action describes the attempted operation; `decision` and `reason_code`
-describe the outcome. Do not create different action strings by inserting IDs,
-emails, route paths, or error text.
+The equivalent new caller supplies the business fact directly (existing imports
+and the surrounding locked password mutation are omitted):
 
-Build before/after state from an allowlist, not `model_dump()`, ORM `__dict__`, a
-request body, or arbitrary exception context. Include only fields necessary to
-reconstruct the security-relevant change, commonly IDs, active/deleted flags,
-role keys, permission keys, tiers, and version counters. Bound each snapshot to
-16 KiB, six nested levels, and 100 values per collection unless the product
-deliberately adopts another tested limit.
-
-Reject snapshots containing credential or identity-presentation fields such as:
-
-```text
-password, password_hash, secret, authorization, cookie, token, access_token,
-id_token, jti, api_key, private_key, database_url, redis_url,
-proxy_url, credentials, email, username
+```python
+self._audit.audit_success(
+    session,
+    action=AccountAuditAction.ADMIN_RESET_PASSWORD,
+    context=context,
+    target_user_id=target_user_id,
+    message_key=MessageKey.AUTH_PASSWORD_RESET_SUCCEEDED,
+)
 ```
 
-Also reject values with obvious Bearer credentials, credential-bearing URLs,
-private-key headers, or `password`/`secret`/`token`/`api_key` assignments. This
-is defense in depth; the snapshot still starts from an explicit field allowlist.
+`user_role_transaction` yields only `session`; each business Service calls
+`audit_success` after its mutation/result is known, before leaving that
+transaction. The wrapper does not write success audits automatically or provide
+an audit object to fill field by field. Its optional `target_user_id` and
+`target_role_id` default to `None`; callers pass only actual targets.
+Keep the outer session context around the inner transaction context so session
+cleanup still runs if commit or rollback raises. The wrapper attempts the denied
+audit only after the business session exits, in a separate transaction; failure
+to write that audit preserves the original error.
+Construction and response-summary helpers are private implementation details;
+do not expose old wrappers or add a second action-to-metadata registry.
 
-Do not merely redact an allowed mutation's audit state and continue. Rejecting
-an unsafe required audit payload makes the allowed mutation roll back, exposing
-the programming error before secrets enter durable history. A denied action
-must remain denied even when its separate audit attempt fails; emit a safe
-`audit.write.failed` operational event and alert instead.
+Use `outcome` to describe success/failure/denial, not a new action string for each
+result. Use only reviewed minimal state projections: IDs, active/deleted flags,
+role/permission keys, tiers and necessary versions. Do not serialize an ORM object,
+request or exception wholesale. State limits remain 16 KiB, six nesting levels
+and 100 collection entries. Reject credential/presentation fields and recognizable
+credential values in state. An unsafe mandatory success payload rolls back the
+mutation; replacing it with a silently incomplete state would hide the defect.
 
 ## Transaction Outcomes
 
-Use these defaults:
-
 | Outcome | Required behavior |
 | --- | --- |
-| Allowed privileged mutation | Mutation, versions, and the allowed audit insert commit once or all roll back |
-| Policy denial | Roll back protected work first, then write a denied event in a separate transaction |
-| Validation failure before a meaningful privileged attempt | Do not create a domain audit row merely for malformed JSON; log/metric handles abuse |
-| Infrastructure failure | Roll back/fail closed and emit operational telemetry; do not record a false policy denial |
-| Read-only sensitive access | Audit only when product policy identifies the read/export as sensitive |
+| Successful account/permission mutation | Mutation, versions and `succeeded` audit commit together or all roll back; staging the row alone is not success |
+| Policy denial | Roll back protected work before writing a best-effort `denied` event in a separate transaction |
+| Meaningful failed account command | Roll back first; use a safe error snapshot and `failed`; no `after_state` |
+| Malformed input/ordinary query | File logs handle it; do not create domain evidence for every request |
+| Infrastructure failure | Roll back/fail closed and emit safe operational telemetry; never invent a policy denial |
 
-The separate denied-audit transaction has an honest crash gap. If the product
-requires every returned denial to be durable, use the outer transaction plus
-nested savepoint design in
-[Atomic authorization consistency](atomic-consistency.md), test PostgreSQL and
-ORM behavior, and return the denial only after the outer audit transaction
-commits.
-
-Do not send webhooks, alerts, Kafka messages, emails, or Redis writes while
-holding authorization locks. External notifications are a separately designed
-post-commit concern, not part of the RBAC audit transaction baseline. Denial
-alerts observe a committed audit event or safe operational failure signal.
+Denied/failure audit write errors emit safe `audit.write.failed` telemetry and
+preserve the original rejection. Their separate transaction has an honest crash
+gap. Stronger durability requires a separately approved outer transaction and
+savepoint design, not a false claim about this baseline. Never perform Redis,
+webhook, mail or other external I/O while holding authorization locks.
 
 ## Integrity And Database Access
 
-Application database roles receive only the minimum required access. The audit
-writer can `INSERT`; ordinary application code cannot `UPDATE`, `DELETE`, or
-`TRUNCATE`.
-Readers use a separate read-only role or narrowly authorized service. The asset
-adds PostgreSQL triggers that reject row `UPDATE`/`DELETE` and table `TRUNCATE`
-even if application code accidentally attempts them. Audit rows have no
-soft-delete fields or restore operation; append-only is stronger than a
-tombstone.
+The writer receives `INSERT`, not `UPDATE`, `DELETE` or `TRUNCATE`. The user
+installs database guards rejecting row mutation and table truncation; ORM
+metadata does not create those triggers. Audit rows have no soft-delete field.
+This resists accidental application tampering, not a compromised database owner.
 
-This is tamper resistance, not proof against a database owner or compromised
-infrastructure administrator. Stronger requirements may add signed exports,
-object-lock/WORM storage, separated security accounts, database audit tooling,
-and monitored backups. Do not claim cryptographic immutability merely because a
-trigger exists.
-
-The baseline does not expose an audit-write API and does not expose audit rows
-through the public API by default. This minimizes sensitive policy disclosure.
-When the product needs an audit UI or API:
-
-- add only `GET` list/detail/export operations;
-- use a dedicated exact capability such as `access_audit_events:read`, granted
-  only to `super_admin` by the fixed baseline and never delegable;
-- apply the standard response envelope and simple pagination;
-- support bounded indexed filters for time range, actor ID, target ID, action,
-  decision, source, and request ID;
-- use deterministic descending `(created_at, id)` ordering;
-- cap export size or use a separately authorized asynchronous export job with
-  controlled object storage;
-- audit access and export according to the product's security policy; and
-- never return secrets, internal stack traces, Tokens/JTIs, or fields that were
-  not part of the event's safe schema.
-
-Do not grant audit visibility to ordinary `admin` merely because it can manage
-some lower users. Audit history can reveal protected identities, denied targets,
-permission topology, and incident-response activity.
+No default public audit read/write API is exposed. An explicitly requested review
+API needs exact dedicated permission, indexed bounded filters, deterministic
+`(created_at, id)` ordering, limited exports and reviewed visibility. Ordinary
+administrators do not automatically receive audit access.
 
 ## Retention, Partitioning, And Recovery
 
-Define retention from legal, security, privacy, and incident-response needs.
-There is no universal correct number of days. Record the chosen period and the
-owner who can approve legal hold, archive movement, and any exceptional
-destructive policy. A retention period does not itself authorize deletion.
+Retention, archive, legal hold and optional stronger integrity controls belong
+to the adopter's policy. A duration does not authorize deletion. Preserve event
+IDs, interpretation and append-only controls in archives; exceptional destructive
+retention requires separate explicit authority. Do not add archive workers or
+operational infrastructure to this coding baseline.
 
-For a high-volume table, partition by `created_at` before volume makes migration
-expensive. Archive old partitions intact to a protected archive schema,
-tablespace, database, or immutable export while preserving event IDs, order,
-payload versions, integrity controls, and review access. Do not drop, truncate,
-soft-delete, or row-delete the source evidence under this baseline. Back up
-audit history, test restore, protect backup access, and monitor insertion
-failures, unexpected gaps, clock drift, trigger removal, and archival jobs.
-
-Any eventual destructive retention is a separately approved product/legal
-exception outside application runtime and outside this default. It requires an
-explicit scope, authority, legal-hold check, verified durable archive where
-required, backup/recovery decision, and independent audit or deployment record.
-Never infer that authority from a generic retention duration.
-
-Indexes must support the actual review paths without turning every possible JSON
-field into an index. The baseline includes request ID, actor/time, target/time,
-and `(created_at, id)`. Add JSONB indexes only for a proven query; arbitrary GIN
-indexes increase write and storage cost.
-
-## Review And Alerting
-
-Define alerts from stable action/reason codes after events commit. High-signal
-examples include:
-
-- offline super-admin bootstrap or handover;
-- attempted system-role mutation;
-- repeated peer/upward/self-elevation denials;
-- permission changes on widely assigned roles;
-- user suspension/reactivation by privileged actors;
-- audit insert failure, append-only trigger changes, or archival failure; and
-- unusual audit export or read volume.
-
-Use time windows and actor/target aggregation to avoid one alert per ordinary
-denial. An alert links to event IDs and request IDs but contains no before/after
-payload unless the notification channel is approved for it.
+Indexes support time/ID, request ID, operation-user/time and target/time lookups.
+Add JSONB indexes only for demonstrated queries. Protect backups and make restore
+checks part of the owner's operational process.
 
 ## Verification
 
-Run audit transaction and database tests against PostgreSQL. Cover:
-
-- every privileged mutation's allowed and meaningful denied outcomes;
-- exact actor, target, action, decision, reason, source, schema version, request
-  ID, and timestamp semantics;
-- HTTP response/header/log/audit request-ID correlation;
-- allowed audit insertion failure rolling back the protected mutation;
-- protected rollback completing before a denied-audit transaction begins;
-- denied audit failure never converting denial into success;
-- no allowed event on stale `expected_version`, validation failure, or rolled
-  back mutation;
-- safe snapshot allowlists, size/depth/item limits, and recursive rejection of
-  secrets, JWT/JTI, credentials, email, and username;
-- database constraints rejecting malformed source, action, reason, request ID,
-  decision, schema version, and non-object state;
-- PostgreSQL trigger rejection of direct `UPDATE`, `DELETE`, and `TRUNCATE`, and
-  proof that no soft-delete path exists;
-- stable indexed query plans for the product's review filters;
-- runtime database roles lacking audit update/delete/truncate privileges;
-- partition archival preserving every event under append-only controls, with any
-  destructive exception separately approved and unreachable from runtime
-  application roles; and
-- backups and a representative restore preserving event ordering and payload
-  versions.
-
-Operational logs can confirm an audit write failed, but they cannot substitute
-for the missing durable row. Report that residual explicitly whenever denied
-auditing remains best effort.
+Use focused offline tests for exactly 16 model fields, OA IDs, enum/category/
+outcome validation, nullable reasons and identities, bounded recursive redaction,
+new-password fingerprint restrictions and automatic request-ID correlation.
+Verify one account creation event and absence of optional business audit from
+the default registry/export. Test business mutation/audit transaction coupling,
+rollback-before-denial and preservation of original errors on audit failure.
+Database append-only/constraint checks require a user-prepared disposable
+PostgreSQL environment; never create or migrate a database merely to obtain
+ordinary task evidence. Report unavailable service checks separately.

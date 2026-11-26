@@ -1,3 +1,15 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# 说明:
+#    保留第三版业务审计表历史迁移，说明字段约束、查询索引和只追加保护的创建与回退。
+#    迁移执行仍由项目使用者管理，不代表当前应用模型的最新字段命名。
+# History:
+# Date          Author    Version       Modification
+# --------------------------------------------------------------------------------------------------
+# 2026/10/13    XTN       V1.000        完善历史业务审计迁移函数的通俗说明与步骤注释
+# --------------------------------------------------------------------------------------------------
+
 """Add the generic append-only business audit table.
 
 Revision ID: 0003_business_audit
@@ -18,6 +30,13 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    """
+        应用第三版历史迁移，创建业务审计表及只允许新增记录的数据库保护。
+        保存该历史版本的操作来源、业务对象和前后状态字段，不改成当前模型命名。
+
+    :return: 无返回值；成功时业务审计表、查询索引和拒绝改删清空的触发器已创建。
+    """
+    # 先创建审计记录结构，并在数据库约束事件命名、来源、状态和 JSON 对象大小。
     op.create_table(
         "business_audit_events",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
@@ -139,6 +158,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name="pk_business_audit_events"),
     )
+    # 时间和 ID 倒序索引提供稳定查询顺序；另外支持业务域、操作人、对象和请求定位。
     op.create_index(
         "ix_business_audit_created",
         "business_audit_events",
@@ -173,6 +193,7 @@ def upgrade() -> None:
         "business_audit_events",
         ["action", "outcome", sa.text("created_at DESC"), sa.text("id DESC")],
     )
+    # 用数据库触发器拒绝记录改删和整表清空，避免绕过应用层直接改写历史审计。
     op.execute(
         """
         CREATE FUNCTION reject_business_audit_mutation()
@@ -205,6 +226,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """
+        回退第三版历史迁移，拆除业务审计保护并删除业务审计表。
+        该回退会连同表内审计数据一起删除，执行由项目使用者负责。
+
+    :return: 无返回值；成功时本版本的触发器、保护函数和业务审计表已移除。
+    """
+    # 先拆掉引用保护函数的触发器，再删除函数和审计表。
     op.execute(
         "DROP TRIGGER IF EXISTS trg_business_audit_no_truncate ON business_audit_events"
     )

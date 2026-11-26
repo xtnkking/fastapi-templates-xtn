@@ -1,3 +1,18 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# 说明:
+#    为已验证可丢弃的 PostgreSQL 和 Redis 提供集成测试生命周期与隔离清理。
+# History:
+# Date          Author    Version       Modification
+# --------------------------------------------------------------------------------------------------
+# 2026/10/13    XTN       V1.000        会话清理匹配固定会话前缀并补充文件维护记录
+# 2026/10/13    XTN       V1.001        隔离检查后只清理登录记录与顺序二键前缀
+# 2026/10/13    XTN       V1.002        登录顺序清理前缀同步 sequence 命名
+# 2026/10/16    XTN       V1.003        移除运行时权限版本预期，保留协调锁与历史迁移契约
+# 2026/10/24    XTN       V1.004        角色绑定及解绑测试权限统一使用 bind 和 unbind
+# --------------------------------------------------------------------------------------------------
+
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -10,15 +25,15 @@ from redis.asyncio import Redis
 from sqlalchemy import delete, select, text
 
 from alembic import command
+from app.core.access.permissions import PermissionKey
+from app.core.access.roles import SystemRoleKey
 from app.core.config import get_settings
-from app.core.security.domain import (
-    PermissionKey,
-    SystemRoleKey,
-)
-from app.core.security.tokens import issue_access_token
-from app.db.postgres import SessionFactory, engine
+from app.db.postgres_db import SessionFactory, engine
 from app.main import app
-from app.models.access import Permission, Role, RolePermission, User, UserRole
+from app.models.postgres.permission import Permission
+from app.models.postgres.role import Role, RolePermission
+from app.models.postgres.user import User, UserRole
+from app.services.auth_service import auth_service
 from tests.integration.safety import (
     require_actual_database,
     verify_empty_redis_targets,
@@ -121,17 +136,10 @@ async def clean_database(migrated_database: None) -> AsyncIterator[None]:
                 )
             )
             await connection.execute(text("DELETE FROM users"))
-            await connection.execute(
-                text(
-                    "UPDATE rbac_state SET epoch = 0, "
-                    "public_registration_enabled = true WHERE scope = 'global'"
-                )
-            )
         keys = [
             key
-            async for key in redis.scan_iter(
-                match=f"auth:sessions:v2:{settings.app_environment}:*"
-            )
+            for pattern in ("login:sessions:*", "login:sequence:*")
+            async for key in redis.scan_iter(match=pattern)
         ]
         for key in keys:
             await redis.delete(key)
@@ -157,9 +165,9 @@ def access_token() -> Callable[[User], Awaitable[str]]:
     settings = get_settings()
 
     async def make_token(user: User) -> str:
-        return await issue_access_token(
+        return await auth_service.issue_access_token(
             cast(Redis, app.state.redis),
-            user_id=user.id,
+            user_id=user.user_id,
             user_token_version=user.token_version,
             settings=settings,
         )
@@ -212,22 +220,22 @@ async def world() -> World:
                 "junior_admin": Role(
                     key="junior-admin",
                     name="Junior admin",
-                    management_tier=100,
+                    level=100,
                 ),
                 "higher": Role(
                     key="higher",
                     name="Higher",
-                    management_tier=700,
+                    level=700,
                 ),
                 "viewer": Role(
                     key="viewer",
                     name="Viewer",
-                    management_tier=20,
+                    level=20,
                 ),
                 "auditor": Role(
                     key="auditor",
                     name="Auditor",
-                    management_tier=30,
+                    level=30,
                 ),
             }
             roles["manager"] = roles["admin"]
@@ -238,10 +246,7 @@ async def world() -> World:
             )
             await session.flush()
 
-            def grant(
-                role_name: str,
-                keys: set[str],
-            ) -> list[RolePermission]:
+            def grant(role_name: str, keys: set[str]) -> list[RolePermission]:
                 role = roles[role_name]
                 return [
                     RolePermission(
@@ -255,8 +260,8 @@ async def world() -> World:
                 grant(
                     "junior_admin",
                     {
-                        PermissionKey.ROLES_ASSIGN.value,
-                        PermissionKey.ROLES_REVOKE.value,
+                        PermissionKey.ROLES_BIND.value,
+                        PermissionKey.ROLES_UNBIND.value,
                         PermissionKey.PROJECTS_READ.value,
                     },
                 )
@@ -277,9 +282,9 @@ async def world() -> World:
             )
             session.add_all(
                 UserRole(
-                    user_id=users[user_name].id,
+                    user_id=users[user_name].user_id,
                     role_id=roles[role_name].id,
-                    assigned_by_user_id=None,
+                    bound_by_user_id=None,
                 )
                 for user_name, role_name in assignments
             )

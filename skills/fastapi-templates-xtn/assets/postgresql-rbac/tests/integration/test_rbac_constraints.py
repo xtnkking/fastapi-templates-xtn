@@ -5,16 +5,14 @@ import pytest
 from sqlalchemy import delete, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from app.core.security.domain import PermissionKey, SystemRoleKey
-from app.db.postgres import SessionFactory, engine
-from app.models.access import (
-    RbacAuditEvent,
-    RbacState,
-    Role,
-    RolePermission,
-    User,
-    UserRole,
-)
+from app.core.access.permissions import PermissionKey
+from app.core.access.roles import SystemRoleKey
+from app.core.ids import new_audit_id
+from app.db.postgres_db import SessionFactory, engine
+from app.models.postgres.operation_audit import OperationAuditEvent
+from app.models.postgres.rbac_state import RbacState
+from app.models.postgres.role import Role, RolePermission
+from app.models.postgres.user import User, UserRole
 from tests.integration.conftest import World
 
 pytestmark = pytest.mark.postgresql
@@ -30,9 +28,7 @@ pytestmark = pytest.mark.postgresql
         pytest.param("x" * 33, DBAPIError, id="long-user-name"),
     ],
 )
-async def test_database_requires_a_valid_user_name(
-    user_name: str | None, expected_error: type[DBAPIError]
-) -> None:
+async def test_database_requires_a_valid_user_name(user_name: str | None, expected_error: type[DBAPIError]) -> None:
     async with SessionFactory() as session:
         session.add(User(user_name=user_name))
         with pytest.raises(expected_error) as caught:
@@ -45,14 +41,14 @@ async def test_database_reserves_user_name_after_soft_deletion(world: World) -> 
     target = world.users["blank"]
     async with SessionFactory() as session:
         async with session.begin():
-            user = await session.get(User, target.id, with_for_update=True)
+            user = await session.get(User, target.user_id, with_for_update=True)
             assert user is not None
             user.is_active = False
             user.deleted_at = datetime.now(UTC)
             bindings = (
                 await session.scalars(
                     select(UserRole).where(
-                        UserRole.user_id == target.id,
+                        UserRole.user_id == target.user_id,
                         UserRole.deleted_at.is_(None),
                     )
                 )
@@ -70,18 +66,16 @@ async def test_database_rejects_unknown_role_in_user_assignment(world: World) ->
     async with SessionFactory() as session:
         session.add(
             UserRole(
-                user_id=world.users["blank"].id,
+                user_id=world.users["blank"].user_id,
                 role_id=uuid.uuid4(),
-                assigned_by_user_id=world.users["manager"].id,
+                bound_by_user_id=world.users["manager"].user_id,
             )
         )
         with pytest.raises(IntegrityError):
             await session.commit()
 
 
-async def test_database_rejects_unknown_role_in_permission_grant(
-    world: World,
-) -> None:
+async def test_database_rejects_unknown_role_in_permission_grant(world: World) -> None:
     async with SessionFactory() as session:
         session.add(
             RolePermission(
@@ -97,9 +91,9 @@ async def test_database_rejects_duplicate_live_user_assignment(world: World) -> 
     async with SessionFactory() as session:
         session.add(
             UserRole(
-                user_id=world.users["lower"].id,
+                user_id=world.users["lower"].user_id,
                 role_id=world.roles["viewer"].id,
-                assigned_by_user_id=world.users["manager"].id,
+                bound_by_user_id=world.users["manager"].user_id,
             )
         )
         with pytest.raises(IntegrityError):
@@ -124,7 +118,7 @@ async def test_database_requires_every_protected_role_to_be_system() -> None:
             Role(
                 key="unsafe-protected-role",
                 name="Unsafe protected role",
-                management_tier=900,
+                level=900,
                 is_system=False,
                 is_protected=True,
             )
@@ -133,13 +127,13 @@ async def test_database_requires_every_protected_role_to_be_system() -> None:
             await session.commit()
 
 
-async def test_database_reserves_management_tier_1000_for_super_admin() -> None:
+async def test_database_reserves_level_1000_for_super_admin() -> None:
     async with SessionFactory() as session:
         session.add(
             Role(
                 key="super-admin-tier-impostor",
                 name="Super administrator tier impostor",
-                management_tier=1000,
+                level=1000,
                 is_system=False,
                 is_protected=False,
                 is_super_admin=False,
@@ -154,7 +148,7 @@ async def test_database_allows_owner_as_a_custom_role_key() -> None:
         role = Role(
             key="owner",
             name="Custom owner label",
-            management_tier=100,
+            level=100,
         )
         session.add(role)
         await session.commit()
@@ -171,7 +165,7 @@ async def test_database_allows_only_one_super_admin_role(world: World) -> None:
             Role(
                 key="second-super-admin",
                 name="Second super administrator",
-                management_tier=1000,
+                level=1000,
                 is_system=True,
                 is_protected=True,
                 is_super_admin=True,
@@ -195,12 +189,12 @@ async def test_database_seeds_fixed_system_role_shapes() -> None:
         }
 
     assert set(roles) == {item.value for item in SystemRoleKey}
-    assert roles[SystemRoleKey.SUPER_ADMIN.value].management_tier == 1000
+    assert roles[SystemRoleKey.SUPER_ADMIN.value].level == 1000
     assert roles[SystemRoleKey.SUPER_ADMIN.value].is_protected
     assert roles[SystemRoleKey.SUPER_ADMIN.value].is_super_admin
-    assert roles[SystemRoleKey.ADMIN.value].management_tier == 500
+    assert roles[SystemRoleKey.ADMIN.value].level == 500
     assert not roles[SystemRoleKey.ADMIN.value].is_protected
-    assert roles[SystemRoleKey.USER.value].management_tier == 0
+    assert roles[SystemRoleKey.USER.value].level == 0
     assert not roles[SystemRoleKey.USER.value].is_protected
     assert all(role.is_system and role.is_active for role in roles.values())
 
@@ -248,7 +242,7 @@ async def test_database_requires_soft_deleted_roles_to_be_inactive() -> None:
             Role(
                 key="invalid-soft-delete",
                 name="Invalid soft delete",
-                management_tier=10,
+                level=10,
                 is_active=True,
                 deleted_at=datetime.now(UTC),
             )
@@ -272,21 +266,19 @@ async def test_database_rejects_removing_mandatory_user_role(world: World) -> No
         assert user_role is not None
         assignment = await session.scalar(
             select(UserRole).where(
-                UserRole.user_id == world.users["blank"].id,
+                UserRole.user_id == world.users["blank"].user_id,
                 UserRole.role_id == user_role.id,
                 UserRole.deleted_at.is_(None),
             )
         )
         assert assignment is not None
         assignment.deleted_at = datetime.now(UTC)
-        assignment.deleted_by_user_id = world.users["super_admin"].id
+        assignment.deleted_by_user_id = world.users["super_admin"].user_id
         with pytest.raises(IntegrityError):
             await session.commit()
 
 
-async def test_database_rejects_a_second_super_admin_assignment(
-    world: World,
-) -> None:
+async def test_database_rejects_a_second_super_admin_assignment(world: World) -> None:
     async with SessionFactory() as session:
         super_admin_role = await session.scalar(
             select(Role).where(Role.key == SystemRoleKey.SUPER_ADMIN.value)
@@ -294,9 +286,9 @@ async def test_database_rejects_a_second_super_admin_assignment(
         assert super_admin_role is not None
         session.add(
             UserRole(
-                user_id=world.users["blank"].id,
+                user_id=world.users["blank"].user_id,
                 role_id=super_admin_role.id,
-                assigned_by_user_id=world.users["super_admin"].id,
+                bound_by_user_id=world.users["super_admin"].user_id,
             )
         )
         with pytest.raises(IntegrityError):
@@ -314,35 +306,33 @@ async def test_database_allows_base_role_assignment_before_bootstrap() -> None:
         await session.flush()
         session.add(
             UserRole(
-                user_id=new_user.id,
+                user_id=new_user.user_id,
                 role_id=user_role.id,
-                assigned_by_user_id=None,
+                bound_by_user_id=None,
             )
         )
         await session.commit()
 
 
-async def test_database_rejects_removing_final_super_admin_assignment(
-    world: World,
-) -> None:
+async def test_database_rejects_removing_final_super_admin_assignment(world: World) -> None:
     async with SessionFactory() as session:
         assignment = await session.scalar(
             select(UserRole).where(
-                UserRole.user_id == world.users["super_admin"].id,
+                UserRole.user_id == world.users["super_admin"].user_id,
                 UserRole.role_id == world.roles["super_admin"].id,
                 UserRole.deleted_at.is_(None),
             )
         )
         assert assignment is not None
         assignment.deleted_at = datetime.now(UTC)
-        assignment.deleted_by_user_id = world.users["super_admin"].id
+        assignment.deleted_by_user_id = world.users["super_admin"].user_id
         with pytest.raises(IntegrityError):
             await session.commit()
 
     async with SessionFactory() as session:
         persisted = await session.scalar(
             select(UserRole).where(
-                UserRole.user_id == world.users["super_admin"].id,
+                UserRole.user_id == world.users["super_admin"].user_id,
                 UserRole.role_id == world.roles["super_admin"].id,
                 UserRole.deleted_at.is_(None),
             )
@@ -354,19 +344,19 @@ async def test_database_allows_atomic_super_admin_transfer(world: World) -> None
     async with SessionFactory() as session:
         old_assignment = await session.scalar(
             select(UserRole).where(
-                UserRole.user_id == world.users["super_admin"].id,
+                UserRole.user_id == world.users["super_admin"].user_id,
                 UserRole.role_id == world.roles["super_admin"].id,
                 UserRole.deleted_at.is_(None),
             )
         )
         assert old_assignment is not None
         old_assignment.deleted_at = datetime.now(UTC)
-        old_assignment.deleted_by_user_id = world.users["super_admin"].id
+        old_assignment.deleted_by_user_id = world.users["super_admin"].user_id
         session.add(
             UserRole(
-                user_id=world.users["blank"].id,
+                user_id=world.users["blank"].user_id,
                 role_id=world.roles["super_admin"].id,
-                assigned_by_user_id=world.users["super_admin"].id,
+                bound_by_user_id=world.users["super_admin"].user_id,
             )
         )
         await session.commit()
@@ -389,22 +379,23 @@ async def test_database_allows_atomic_super_admin_transfer(world: World) -> None
                 )
             )
         ).all()
-    assert holders == {world.users["blank"].id}
+    assert holders == {world.users["blank"].user_id}
     assert len(historical) == 2
     assert sum(item.deleted_at is None for item in historical) == 1
 
 
-async def test_rbac_audit_rows_are_append_only(world: World) -> None:
-    event_id = uuid.uuid4()
+async def test_operation_audit_rows_are_append_only(world: World) -> None:
+    event_id = new_audit_id("OA")
     async with SessionFactory() as session:
         async with session.begin():
             session.add(
-                RbacAuditEvent(
+                OperationAuditEvent(
                     id=event_id,
-                    actor_user_id=world.users["super_admin"].id,
+                    user_id=world.users["super_admin"].user_id,
                     target_role_id=world.roles["manager"].id,
                     action="role.update",
-                    decision="allowed",
+                    category="permission",
+                    outcome="succeeded",
                     reason_code="role_updated",
                     before_state={"version": 1},
                     after_state={"version": 2},
@@ -417,7 +408,7 @@ async def test_rbac_audit_rows_are_append_only(world: World) -> None:
             async with session.begin():
                 await session.execute(
                     text(
-                        "UPDATE rbac_audit_events SET reason_code = 'rewritten' "
+                        "UPDATE operation_audit_events SET reason_code = 'rewritten' "
                         "WHERE id = :event_id"
                     ),
                     {"event_id": event_id},
@@ -427,14 +418,14 @@ async def test_rbac_audit_rows_are_append_only(world: World) -> None:
         async with SessionFactory() as session:
             async with session.begin():
                 await session.execute(
-                    text("DELETE FROM rbac_audit_events WHERE id = :event_id"),
+                    text("DELETE FROM operation_audit_events WHERE id = :event_id"),
                     {"event_id": event_id},
                 )
 
     with pytest.raises(DBAPIError):
         async with SessionFactory() as session:
             async with session.begin():
-                await session.execute(text("TRUNCATE TABLE rbac_audit_events"))
+                await session.execute(text("TRUNCATE TABLE operation_audit_events"))
 
 
 async def test_rbac_state_row_cannot_be_removed() -> None:
@@ -526,16 +517,16 @@ async def test_schema_uses_only_expected_tables_and_uuid_entity_ids() -> None:
     for key in (
         ("role_permissions", "role_id"),
         ("role_permissions", "permission_id"),
-        ("role_permissions", "assigned_by_user_id"),
+        ("role_permissions", "bound_by_user_id"),
         ("role_permissions", "deleted_by_user_id"),
         ("user_roles", "user_id"),
         ("user_roles", "role_id"),
-        ("user_roles", "assigned_by_user_id"),
+        ("user_roles", "bound_by_user_id"),
         ("user_roles", "deleted_by_user_id"),
         ("permissions", "deleted_by_user_id"),
         ("roles", "deleted_by_user_id"),
         ("users", "deleted_by_user_id"),
-        ("account_security_audit_events", "actor_user_id"),
+        ("account_security_audit_events", "user_id"),
         ("account_security_audit_events", "target_user_id"),
     ):
         assert columns[key].data_type == "uuid"

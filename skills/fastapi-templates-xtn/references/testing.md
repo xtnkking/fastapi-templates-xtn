@@ -8,11 +8,37 @@ The runnable PostgreSQL examples are under
 `test_rbac_api.py` covers the neutral public API, system-role and administrative
 workflows, optimistic preconditions, and rollback-before-denial audit, while
 `test_postgresql_locking.py` covers global-guard ordering, identity-map refresh,
-committed actor revocation, and concurrent assignments.
+committed current user revocation, and concurrent assignments.
 
 The official verification profile for this Skill is Python 3.12,
 PostgreSQL 17, and Redis 7. A concrete project may test and support other
 versions, but do not describe an untested version as verified by this Skill.
+
+## Generated Project Versus Maintainer Tests
+
+The asset's complete `tests/` tree is the Skill maintainer's regression suite,
+not a directory to copy wholesale into every new application. Generate through
+[New-project delivery](new-project-delivery.md), keep the selected small
+application tests, and add targeted tests when actual product behavior changes.
+Preserve meaningful authentication, authorization, CAPTCHA, atomicity, and
+response checks; do not manufacture tests for trivial one-use wrappers.
+Cluster, multiple-process, load-tool, historical migration, and topology helpers
+are not default output. Load the related matrix only for work on that boundary.
+
+The Skill delivers models, not migration files or database initialization.
+New-project tests import model metadata, exercise isolated application logic,
+and use explicit test dependencies without creating tables, migrating,
+seeding, or repairing a database. The user generates, reviews, and executes
+their own migrations, database-only protections and initial data. Deliver the
+[database handoff](migrations.md) and report real database verification as
+pending until that setup and validation are completed by the user.
+Model tests cannot prove PostgreSQL triggers or direct-SQL enforcement.
+
+The full matrices below document expected behavior and the maintenance
+regression coverage. They do not require every generated project to receive
+every test file, or authorize executing database-mutating fixtures during
+project generation. An explicitly requested maintenance regression of the
+historical asset is separate and retains its strict disposable-target guards.
 
 For Access Token tests use
 [JWT access-token security](jwt-session-security.md). For schema and API identifier
@@ -52,12 +78,14 @@ order cannot affect results.
 ## Baseline Tests
 
 - Import and construct the application with explicit test settings.
-- Exercise liveness, readiness, validation errors, and the documented error
-  envelope.
+- Exercise validation errors and the documented error envelope. Prove
+  `/health/live` and `/health/ready` return `404` in the default project. Only
+  test liveness/readiness behavior when the adopter explicitly requests probes;
+  verify access is restricted to an internal network or trusted probes.
 - Verify default `zh-CN` and requested `en` runtime messages, bounded
   `Accept-Language` negotiation, `Content-Language`, merged `Vary`, exact catalog
-  key parity, localized validation details, specific `q=0` precedence over
-  parent/wildcard ranges, hostile-header fallback, untrusted validation-key
+  key parity, localized validation details, simple `q` preference ordering,
+  default-Chinese and hostile-header fallback, untrusted validation-key
   masking, unhandled-error headers, and concurrent request isolation. Follow
   [API internationalization](api-internationalization.md).
 - Verify transaction commit and rollback behavior.
@@ -67,7 +95,29 @@ order cannot affect results.
   equality, correct status/business code, route templates, context isolation,
   recursive secret-marker redaction, and no duplicate access event. Follow
   [Operational logging](operational-logging.md).
-- Verify required audit fields, safe bounded snapshots, atomic allowed writes,
+- Verify machine-timezone-independent Beijing timestamps with millisecond ISO 8601 `+08:00` offsets and matching date folders; only the response envelope's outer `message` retains ordinary text under existing credential filtering and length bounds, while request/nested free text stays redacted.
+- Verify HTTP log actions use existing endpoint function names without route-level
+  action/result assignments; the response builder maps `2xxxx` to `success` and
+  `4xxxx`/`5xxxx` to `failure`, preserving earlier success on a later error response.
+  Cover the middleware fallback without a unified response, success followed by
+  send failure (`operation_outcome=success`, `outcome=error`), automatic affected
+  targets without route assignments, and unchanged database audit action enums
+  and audit behavior. Cover new user/role IDs before send failure, authenticated
+  self-password targets on success/denial, null total-list targets, requested
+  user-session targets and rejection of fake IDs in failed creation inputs.
+- Verify fixed null fields, affected user/role separation, redacted JSON/query
+  summaries, bounded passive body observation and independent `LOG_HMAC_KEY`.
+  Only four password-setting operations fingerprint the proposed new password;
+  login/current-password fields never do. Denials retain the requested target
+  and fingerprint when a complete body was read; they do not imply a successful
+  mutation. File logs omit generic target and service metadata.
+- Verify the unified operation audit has exactly the approved 16 fields, OA IDs,
+  account/permission categories, safe request/business-result summaries and only
+  new-password fingerprints. Registration and administrator creation each write
+  one event; optional business-audit files and model registration stay excluded
+  from default project output. A stored response snapshot must not claim HTTP
+  delivery or require a post-response UPDATE.
+- Verify required audit fields, safe bounded snapshots, atomic successful writes,
   rollback-before-denial audit, append-only database enforcement, and absence of
   tokens, JTI, credentials, email, and username. Follow
   [Audit module](audit-module.md).
@@ -80,12 +130,22 @@ order cannot affect results.
   authority. The bundled asset directly exercises custom-role deletion and both
   RBAC unbind paths; its user/permission lifecycle scenarios are adaptation
   examples rather than public lifecycle endpoints.
-- Run migration upgrade from an empty database and from supported prior revisions.
-- Inspect generated OpenAPI and prove that no public path, tag, operation ID,
-  application title, response schema, or error code contains `rbac`. Internal
-  database, audit, and asset names are outside this assertion.
-- Assert that every authorization-management route uses only `GET` or `POST` and
-  that no `PUT`, `PATCH`, `DELETE`, or legacy `/rbac` alias is registered.
+- Inspect delivered ORM metadata without executing DDL. Migration generation,
+  upgrade checks and verification of the completed schema belong to the user;
+  historical upgrade regression is maintenance-only.
+- Prove `/docs`, `/docs/oauth2-redirect`, `/redoc`, and `/openapi.json` return
+  `404` in the default project. Also prove public paths, response fields and
+  error codes do not expose `rbac`; internal database and audit names are outside
+  this assertion.
+- Assert that every business route uses only `GET` or `POST`, no target ID is a
+  path parameter, and no `PUT`, `PATCH`, `DELETE`, or legacy `/rbac` alias is
+  registered. Business list/detail reads end in `/list` or `/detail`; any
+  explicitly requested health probes use their documented unversioned paths.
+  FastAPI route metadata places GET
+  filters/IDs in Query and POST target IDs in a required closed JSON body. Test absent/invalid
+  IDs, forbidden extra fields and a POST query ID that cannot replace its
+  required body field. Repeat target-visibility tests with the new locations;
+  moving an ID must not change authorization.
 
 ## Local Password Authentication
 
@@ -94,67 +154,90 @@ When the project uses local passwords, load and test the complete contract in
 hasher or an isolated login-flow mock is not a completed authentication system.
 
 Prove the product questions were answered once: username case comparison,
-password composition, simultaneous-login maximum, administrator reset mode,
+password composition and simultaneous-login maximum,
 and existing-account
 enrollment. Then cover the bundled baseline end to end:
 
-- public registration is initially enabled but a persisted super-admin-only
-  switch rejects new registrations after closure, including stale page forms;
-  authorized administrator creation remains available; `GET` and `POST` on
-  `/api/v1/auth/registration/status` respectively read and change the switch,
-  with the latter restricted to the current `super_admin`;
-- settings require `APP_ENVIRONMENT` with no code default even when limiting is
-  enabled, and reject `RATE_LIMIT_ENABLED=false` for every environment except
-  the explicit `dev`, `development`, `local`, `test`, and `testing` escape hatch;
+- public registration remains available with no state-read or switch-update
+  endpoint, while authorized administrator creation remains available;
+- runtime settings and environment examples do not require `APP_ENVIRONMENT`;
+  rate limiting remains mandatory without a disable setting or test escape hatch;
 - Argon2id parameters, off-event-loop execution, the per-worker concurrency
   bound, creation versus login input limits, reserved username and three
   simple password-pattern checks,
   and corrupted stored-hash handling;
-- nullable `users.password_hash` and `users.password_changed_at`, non-null
-  `users.must_change_password=false` by default, and unchanged
-  `users.token_version`; password-state checks, cleared hash/timestamp/temporary
-  flag on user soft deletion, and no password resurrection after restore;
-- uniform `401001` plus real-or-dummy Argon2 work for unknown, wrong-password,
+- password admission defaults of 2 running, 4 waiting and a 0.5-second wait,
+  including immediate execution with a free slot, queue-full rejection, timeout,
+  zero-waiting mode and recovery after rejection/cancellation. Use controllable
+  worker barriers rather than repeated real hashing or timing-sensitive sleeps:
+  a cancelled waiter must leave no queue entry, and cancellation of a started
+  native calculation must not release its slot before that work finishes.
+  Assert queue-full/timeout uses the bilingual `50301` envelope, starts no
+  rejected calculation, and never issues a Token or mutates account data.
+  Verify settings defaults, finite positive timeout and bounds, plus configured
+  values reaching the application's existing PasswordManager. Already consumed
+  CAPTCHA remains consumed on busy rejection, with no automatic replay;
+- `Password` accepts nonempty login/current-password text up to the independent
+  `MAX_PASSWORD_INPUT_CHARACTERS` ceiling; `NewPassword` applies the current
+  minimum and maximum only to newly set passwords. Raising the policy minimum
+  or lowering its maximum must leave valid old passwords usable for login and
+  current-password verification within that input ceiling. Cover both HTTP
+  model validation and direct Service input checks, including empty, invalid
+  type, malformed UTF-8 and over-ceiling input; new-password character and
+  composition rules must not reject an existing password. Keep field
+  descriptions and bilingual length messages derived from their owning
+  constants rather than stale numeric strings;
+- nullable `users.password_hash` and `users.password_changed_at`, and unchanged
+  `users.token_version`; password-state checks, cleared hash/timestamp on user
+  soft deletion, and no password resurrection after restore;
+- uniform `40110` plus real-or-dummy Argon2 work for unknown, wrong-password,
   disabled, deleted, and credential-less login states;
+- one password verification per login, followed by a locked state/hash check;
+  a concurrent hash upgrade rejects that request without reverifying or
+  overwriting the newer hash, while an unchanged stale hash can still upgrade;
 - public registration creates only the mandatory `user` role and commits the
-  user, role binding, password state, versions, and both required audits atomically;
-- login issues no Token before successful Redis active-JTI registration, and a
-  correct temporary credential returns the password-change-required contract
-  without a Token;
+  user, role binding, password state and one account-category operation audit
+  atomically; shared user creation must not add a duplicate permission event;
+- login issues no Token before successful Redis active-JTI registration;
 - the five required graphical-CAPTCHA scenes are correctly isolated and each
   challenge is single-use on a wrong or right answer; self change requires its
   current password, while administrator reset needs the exact capability,
-  CAPTCHA, and strict-lower policy, not the actor's password again;
-  administrator creation and sole-super-admin offline recovery remain temporary
-  regardless of the administrator-reset mode;
-- administrator reset accepts only `new_password`; default `direct` writes
-  `must_change_password=false` and permits normal login, while selected
-  `temporary` writes true and requires one completion before Token issuance;
-  neither request body nor caller can select the project mode;
-- temporary completion is one-time and issues no Token. Both reset modes and
-  successful completion increment `users.token_version`, so two independently
-  issued old Tokens both fail their next authentication. The reset audit action
-  is shared while reason codes distinguish permanent from temporary setup;
+  CAPTCHA, and strict-lower policy, not the current user's password again;
+  administrator creation and sole-super-admin offline recovery set directly
+  usable passwords;
+- administrator reset requires JSON `user_id`, the purpose-bound CAPTCHA fields,
+  and `new_password`; it permits login with that password immediately and
+  increments `users.token_version`, so independently issued old Tokens both
+  fail their next authentication. The reset audit records the completed change;
 - change-versus-reset, reset-versus-delete, and reset-versus-protected-write
   races use barriers and assert both possible commit orders without sleeps;
-- allowed account-security audit failure rolls back the password mutation,
+- required successful account audit failure rolls back the password mutation,
   denied-audit failure preserves the original rejection, and no response,
-  OpenAPI example, log, Redis key, or audit contains a password, hash, Token,
-  JTI, username, raw IP, or request body;
+  schema example, log, Redis key or audit contains plaintext passwords, database
+  password hashes, Tokens/JTIs or unredacted request bodies. Request summaries
+  hide usernames, raw IPs and secrets; only the dedicated new-password comparison
+  field may contain a permitted keyed fingerprint;
+- `HttpLogDetails.audit_request_data()` returns a bounded, recursively redacted
+  query/body snapshot without actively reading the body; `AuditService.audit_success()`
+  derives category/user/source and retains the intended code, message, safe data
+  and existing request ID before commit, without claiming final HTTP delivery
+  or requiring an audit UPDATE. `audit_denied()` preserves the original rejection
+  after rollback, while server errors do not become denied events;
 - password-change counts come from succeeded account-security events for the
   target and the four password-change/reset actions, excluding registration;
 - every password response is `Cache-Control: no-store`, password schema fields
-  are `writeOnly`, and the public contract exposes only the intended `GET` and
-  `POST` routes.
+  remain write-only in application metadata, and the public contract exposes
+  only the intended `GET` and `POST` routes.
 
-Run PostgreSQL constraints and transactional tests against the supported real
-database and login/admission/JTI tests against real Redis. Report an unavailable
-service instead of calling the password baseline production-ready from unit
-tests alone.
+Real PostgreSQL and Redis validation remains necessary evidence for their
+actual behavior. The user runs it after completing their schema and isolated
+test setup. Ordinary Skill delivery does not run historical database-creating
+fixtures to fill that gap. Report unavailable or unperformed checks instead of
+calling the password baseline production-ready from unit tests alone.
 
 ## Rate Limiting, Abuse Defense, And Verification
 
-When the delivered surface uses Redis admission, first prove that the generated
+When the delivered surface uses Redis-backed rate limiting, first prove that the generated
 settings exactly match the centralized values accepted by the user under
 [Rate limiting and abuse-control quotas](rate-limiting.md). Graphical CAPTCHA
 is required in five scenes; email/SMS or MFA is not part of this asset. Test
@@ -171,22 +254,23 @@ slot behavior, or concurrency.
 | Fixed-window core | One per-business key, atomic first `INCR`/`EXPIRE`/remaining PTTL, finite TTL, full quota restored at expiry |
 | Concurrency | No more than the configured number of calls are admitted inside one window; no global or cross-business bucket exists |
 | Key privacy | Raw IP, account, user, target, HMAC digest, and complete key never reach logs or responses |
-| API composition | After JWT and active-JTI validation, an exhausted named actor window is rejected by a non-mutating inspection before PostgreSQL; an open window is incremented only after current-account validation. Invalid/inactive identities spend no actor bucket, and no coarse all-API middleware runs |
+| API composition | After JWT and active-JTI validation, increment the named current user window exactly once before PostgreSQL; excess requests stop without an account read. A later disabled/stale-account denial retains that count and attempts exact-JTI cleanup; forged or Redis-revoked Tokens spend no current user quota and perform no account read. No coarse all-API middleware runs |
 | Login defense | Trusted IP for that business is the only quota subject; no account-only, pair, global, or login-failure risk counter exists |
-| Login orchestration | `IdentityAbuseFlow.authenticate` admits first, invokes one real-or-dummy credential callback, maps `None` to generic denial, and the Token issuer runs only afterward |
+| Login orchestration | The auth route declares `Depends(rate_limit_login)` before `Depends(require_captcha(CaptchaScene.LOGIN))`; CAPTCHA does not call the limiter again. The limiter counts once and its denial prevents consumption; CAPTCHA failure blocks `AuthService.login`. Real-or-dummy password validation preserves generic denial, and Token issuance runs only after success |
 | Registration | One per-IP registration check runs before product side effects |
-| Registration orchestration | `IdentityAbuseFlow.register` never invokes `registration_action` after a denial or unavailable Redis decision |
-| Graphical CAPTCHA | Fixed scenes `login`, `register`, `admin_create`, `admin_reset`, `self_change`; public `/api/v1/auth/captcha` versus authenticated `/api/v1/me/captcha`; per-scene issuance quota, expiry, wrong-answer consume, private owner binding, public challenge acceptance after an issuing-IP change, atomic one-winner refresh/submit, safe image response |
-| Rejected CAPTCHA scene | Valid scene at the wrong issue endpoint or parsed invalid CAPTCHA body: one independent 10-per-five-minute rejection quota keyed on trusted IP or authenticated actor, no image or normal-scene quota consumed, `429001` on excess and `503001` for unavailable limiter authority; admitted private invalid bodies still complete normal identity validation before `422`, while invalid JSON syntax fails before authentication dependencies; no global bucket |
+| Registration orchestration | The auth route declares `Depends(rate_limit_register)` before `Depends(require_captcha(CaptchaScene.REGISTER))`; the limiter runs once before CAPTCHA validation/consumption and `AuthService.register`. A denial or unavailable Redis never reaches either later step |
+| Protected CAPTCHA dependencies | All five actions declare their fixed `CaptchaScene`; authenticated actions declare their authorization/permission context before CAPTCHA, using one identity load and one quota count. CAPTCHA reads the previously authenticated `request.state.user_id`, refuses a missing private identity, directly extracts strings and checks UUID/answer length. Dependency parameter errors return 40001 without consumption; JSON syntax rejected earlier by FastAPI remains 42201. Service parameters and digest inputs use user_id. Limit/permission denial does not consume a challenge; other business-field errors may follow consumption. CAPTCHA failure skips business work; submitted scene/user_id cannot override server bindings |
+| Graphical CAPTCHA | Fixed scenes `login`, `register`, `admin_create_user`, `admin_reset_user_password`, `user_change_password`; public `/api/v1/auth/captcha` versus authenticated `/api/v1/me/captcha`; per-scene issuance quota, independent new images, expiry and NX storage of a single HMAC digest binding scene/user_id/ID/answer. GETDEL precedes comparison: correct answer, wrong answer, wrong scene and wrong user each consume that ID and a later correct retry fails. Private user binding, public acceptance after IP changes, atomic one-winner consumption, malformed digest/Redis failures closed and safe image response |
+| Rejected CAPTCHA scene | Missing/unknown scene or a valid scene at the wrong issue endpoint: count one independent 10-per-five-minute rejection quota once, keyed on trusted IP or authenticated current user; authenticated counting follows JWT/active-JTI validation and precedes PostgreSQL. No image or normal-scene quota is consumed; excess returns `42901` without PostgreSQL, unavailable limiter authority returns `50301`. A valid scene with an invalid unrelated field instead spends its scene quota once and returns `422` after identity validation, while invalid JSON syntax fails before authentication dependencies; no global bucket |
 | Optional delivery extensions | Email/SMS/MFA are not bundled and need a future product decision and tests |
 
-For a real limiter denial, assert HTTP `429`, `429001`, `Cache-Control: no-store`,
+For a real limiter denial, assert HTTP `429`, `42901`, `Cache-Control: no-store`,
 the equal body/header request ID and correctly rounded-up `Retry-After` from
 the remaining fixed-window TTL. If exposing the optional RateLimit headers,
 verify they describe this window, not a Token Bucket refill.
 
 For missing Redis, timeout, Redis command error, malformed script result, or
-invalid stored state, assert HTTP `503`, `503001`, `Cache-Control: no-store`, no
+invalid stored state, assert HTTP `503`, `50301`, `Cache-Control: no-store`, no
 `Retry-After`, no dependency detail, and that the
 protected handler, credential verifier, delivery call, Token issue, or business
 mutation did not run. A middleware-owned limiter failure must not invent a bucket
@@ -206,67 +290,71 @@ Exercise all thirteen minimum routes rather than testing only one representative
 dependency:
 
 ```text
-GET  /api/v1/permissions
-GET  /api/v1/permissions/{permission_id}
-GET  /api/v1/roles
-GET  /api/v1/roles/{role_id}
-POST /api/v1/roles
-POST /api/v1/roles/{role_id}/update
-POST /api/v1/roles/{role_id}/disable
-POST /api/v1/roles/{role_id}/enable
-POST /api/v1/roles/{role_id}/delete
-POST /api/v1/roles/{role_id}/permissions/bind
-POST /api/v1/roles/{role_id}/permissions/unbind
-POST /api/v1/users/{user_id}/roles/bind
-POST /api/v1/users/{user_id}/roles/unbind
+GET  /api/v1/permissions/list
+GET  /api/v1/permissions/detail?permission_id=<id>
+GET  /api/v1/roles/list
+GET  /api/v1/roles/detail?role_id=<id>
+POST /api/v1/roles/create
+POST /api/v1/roles/update
+POST /api/v1/roles/disable
+POST /api/v1/roles/enable
+POST /api/v1/roles/delete
+POST /api/v1/roles/permissions/bind
+POST /api/v1/roles/permissions/unbind
+POST /api/v1/users/roles/bind
+POST /api/v1/users/roles/unbind
 ```
+
+Every existing-role POST supplies `role_id` in its JSON body. User-role commands
+supply `user_id` in their JSON body; creation has no preexisting target ID.
 
 For each route, cover missing credentials (`401`), a current `user` without the
 capability (`403`), the exact capability gate, a concealed object (`404`), input
 validation, and its positive path. Capability success alone does not satisfy a
-write test; also prove the strict hierarchy, actor-held permission, protected-target,
+write test; also prove the strict hierarchy, current user-held permission, protected-target,
 affected-user, system-role, and self-elevation decisions. Prove an early denied
 `POST` attempts a safe audit, and prove the service's locked capability recheck
-returns `403001` before `404001` or `409002` to an unprivileged or newly revoked
+returns `40301` before `40401` or `40931` to an unprivileged or newly revoked
 caller.
 
 For every user or role management write, test the ordered visibility boundary
 inside the authoritative service transaction. A caller missing the exact
-operation capability returns `403001` before target existence, visibility, or
+operation capability returns `40301` before target existence, visibility, or
 version can affect the response. Once capability passes, self, peer, higher, and
-protected user or role targets return the same `404001` body as an unknown ID.
-User-role bind/unbind must also return `404001` when any requested role ID is
+protected user or role targets return the same `40401` body as an unknown ID.
+User-role bind/unbind must also return `40401` when any requested role ID is
 hidden or unknown and must not partially change the visible subset. Only a
 visible target that fails grant authority, affected-user, system-role, self-elevation,
-or another operation-specific decision returns `403001`. Cover the service
+or another operation-specific decision returns `40301`. Cover the service
 directly so an alternate route cannot bypass this ordering, then repeat
 representative user and role writes through the public API.
 
 Role update, enable, disable, delete, and permission commands require
 a nonnegative strict JSON integer body `expected_version`. Test missing, string,
-float, boolean, and negative values as `422001`; test an unauthorized stale write
-as `403001`, an authorized stale write as `409002`, current success, and two
+float, boolean, and negative values as `42201`; test an unauthorized stale write
+as `40301`, an authorized stale write as `40931`, current success, and two
 authorized administrators starting from the same role version. The second writer
-must not silently overwrite the first. Reserve `409001` for another client-visible
+must not silently overwrite the first. Reserve `40901` for another client-visible
 state conflict such as exhausted bounded retries. User-role bind/unbind is instead
 tested as an incremental, idempotent, single-transaction command with post-lock
 authority reload; this version does not require a user version. Successful
 unbind tombstones the live episode, and a later bind creates a new episode with
 a new non-sequential ID. Binding must evaluate the target's complete final live
-set under the global guard and return `409001` when it would exceed 10 roles;
-PostgreSQL independently enforces the same final-state limit.
+set under the global guard and return `40921` when it would exceed 10 roles;
+PostgreSQL independently enforces the same final-state limit only after the
+user installs and verifies the custom database protection in the handoff.
 
 For role and user administration writes, prove the service builds the response
 while it still owns the authorization locks and the route returns that immutable
 snapshot without a post-commit `Session` query. Cover user-role bind/unbind and
 user disable/enable explicitly. Use a deterministic concurrency barrier to show
 that a later committed role or status change cannot contaminate the earlier
-command's response. For `assigned_role_ids`, verify an ordinary administrator
+command's response. For `bound_role_ids`, verify an ordinary administrator
 cannot see a live assignment to a disabled peer or higher role, while
 `super_admin` receives the complete live, non-deleted assignment set.
 
 For response envelopes, numeric business codes, request ID coverage, framework
-errors, pagination, and OpenAPI assertions, follow
+errors, pagination, route metadata, and disabled documentation-route assertions, follow
 [API response standard](api-response-standard.md).
 
 ## Authorization Matrix
@@ -278,26 +366,27 @@ For every protected capability, cover the meaningful rows of this matrix:
 | Missing or invalid bearer token | `401` with `WWW-Authenticate: Bearer` |
 | Active user, no required permission | `403` |
 | Required permission through one role | Success |
-| Required permissions split across multiple roles | Success for union semantics |
+| Required permission supplied by any one of several active roles | Success for union semantics |
 | Tenth live role binding | Success; the user's final count is 10 |
-| Eleventh live role binding | Atomic `409001` conflict with no mutation |
+| Eleventh live role binding | Atomic `40921` conflict with no mutation |
 | Disabled identity or inactive Redis JTI | `401` under the documented policy |
 | Suspended user | `401` under the documented policy |
 | Missing or deliberately concealed resource | Same generic `404` response |
 
 Also test:
 
-- ALL and ANY permission modes, including an empty requirement configuration;
+- each route's exact single-permission gate, including a grant from a later role
+  in the user's merged authority snapshot;
 - users with no role and roles with no permissions;
 - list, detail, search, count, export, bulk, and nested-resource capability and
   row-policy enforcement;
 - leaked resource IDs and IDOR attempts through every lookup variant;
 - mass-assignment attempts for roles, permissions, `super_admin` status, and
   system flags;
-- self-escalation, granting permissions the actor does not hold, system-role
+- self-escalation, granting permissions the current user does not hold, system-role
   mutation, and removal of the final `super_admin`;
-- attempts to use `roles:assign` to create a role or replace its permissions, and
-  attempts to assign a role outside the actor's own authority;
+- attempts to use `roles:bind` to create a role or replace its permissions, and
+  attempts to assign a role outside the current user's own authority;
 - immutable `super_admin`, `admin`, and `user` role keys, tiers, flags,
   lifecycle, and permission composition through every route and direct service
   entry point;
@@ -311,27 +400,26 @@ Also test:
 - `user` denied on every management endpoint; `admin` allowed only for strictly
   lower users and custom roles, and denied for role deletion, system-role
   mutation, online `super_admin` handover, peers, and higher targets;
-- management writes returning `403001` before lookup when capability is absent,
-  returning non-leaking `404001` for self, peer, higher, protected, unknown, or
-  hidden requested-role targets after capability passes, and reserving `403001`
-  for visible targets outside actor-held grant or affected-authority policy;
+- management writes returning `40301` before lookup when capability is absent,
+  returning non-leaking `40401` for self, peer, higher, protected, unknown, or
+  hidden requested-role targets after capability passes, and reserving `40301`
+  for visible targets outside current user-held grant or affected-authority policy;
 - administrative user and role lists, counts, searches, details, exports, and
   nested reads showing all non-deleted targets only to `super_admin`; every other
   administrator sees only strictly lower, non-protected targets, cannot see
-  itself or peers, and receives the same `404001` for hidden and unknown IDs;
+  itself or peers, and receives the same `40401` for hidden and unknown IDs;
 - role and user pages loading grants and authority in a bounded number of
   queries whose count does not grow with page size, with list `total` using the
   exact visibility predicate;
 - role/user mutation responses using immutable in-transaction snapshots rather
-  than post-commit request-session reloads, with nested `assigned_role_ids`
-  filtered to the actor's visible roles;
+  than post-commit request-session reloads, with nested `bound_role_ids`
+  filtered to the current user's visible roles;
 - ordinary role binding unable to grant `super_admin`, `admin` assignment or
   revocation requiring the current `super_admin`, and no online route to
   transfer the sole `super_admin`;
-- the operator-run PostgreSQL bootstrap script accepting only immutable
-  `users.id`, requiring an existing live active identity with `user`, assigning
-  only `super_admin`, updating the user
-  authorization version and global epoch only when changed, and auditing in one
+- the user-owned offline PostgreSQL bootstrap transaction accepting only immutable
+  `users.user_id`, requiring an existing live active identity with `user`, assigning
+  only `super_admin`, and auditing in one
   transaction; a same-identity replay is idempotent, while a missing, invalid,
   deleted, or different second identity is rejected without partial state;
 - an upgrade preserving an ordinary custom role whose key is `owner` without
@@ -369,7 +457,7 @@ Also test:
   and compares the exact user and credential state;
 - direct service calls, background tasks, and WebSockets that could bypass route
   dependencies;
-- the default exact `sub`/`jti`/`iat`/`exp`/`token_type` profile, the
+- the default exact `user_id`/`jti`/`iat`/`exp`/`token_type` profile, the
   explicitly consented profile adding both `iss` and `aud`, rejection of a
   partial pair or profile mismatch, preservation of an existing configured pair,
   configurable 24-hour default, canonical selected-policy subject and UUIDv4
@@ -378,11 +466,12 @@ Also test:
   exact Redis record, outage, confirmed current-Token logout, account-wide logout
   invalidating two independently issued Tokens, and the revocation matrix in
   [JWT access-token security](jwt-session-security.md);
-- revocation while access tokens and authorization caches are warm, including
-  multiple application workers and the declared maximum stale-access window;
-- immediate-revocation endpoints with an old token and an old permission cache,
-  proving that current authorization versions are resolved authoritatively;
-- cache outage behavior, which must reload from the authority or fail closed.
+- revocation while access tokens remain valid, including multiple application
+  workers, proving current PostgreSQL permissions are reloaded;
+- immediate-revocation endpoints with an old token, proving transaction-local
+  authority is reloaded after acquiring the required locks;
+- if the project adds a permission cache, its declared stale-access window and
+  outage behavior must be tested; reload the authority or fail closed.
 - PostgreSQL schema inspection proving every RBAC, audit, and business
   primary/public ID follows [identifier policy](identifier-policy.md), including
   exact prefix format or UUIDv4 shape as selected, and no integer sequence or
@@ -415,17 +504,22 @@ with deterministic transaction barriers rather than timing-based sleeps, run
 them against PostgreSQL, assert the actual isolation level, and make deadlocks or
 exhausted internal retries observable failures.
 
-## Database Coverage
+## Database Coverage And User Handoff
 
 SQLite can make unit tests fast but does not reproduce PostgreSQL constraints,
-locking, isolation, JSON behavior, or row-level security. Run integration tests
-against the production database engine for foreign keys, the singleton global
+locking, isolation, JSON behavior, or row-level security. The user's completed
+schema needs validation against the selected PostgreSQL engine for foreign keys, the singleton global
 authorization guard, system-role protection, default-user assignment, concurrent
 super-admin changes, partial live-relation uniqueness, every implemented
 soft-delete/restore transaction, audit and `rbac_state` deletion guards,
-migrations, and query plans.
+migrations, and query plans. Explain these unverified boundaries when delivering
+models; do not claim ORM creation includes custom trigger or grant enforcement.
 
-Run the bundled integration suite only against fresh disposable targets. Set
+### Historical Maintainer Integration Harness
+
+The retained historical suite is not copied into a generated project and is
+not run by the new-project workflow. For separately requested maintenance
+regression only, it requires fresh disposable targets. Set
 `TEST_DATABASE_URL` to a new empty PostgreSQL database ending in `_test`, and
 set `TEST_DISPOSABLE_DATABASE` to that exact database name. Set both
 `TEST_REDIS_URL` and `TEST_RATE_LIMIT_REDIS_URL` to separate, initially empty
@@ -445,11 +539,28 @@ tests do not require these settings.
 ## Completion Evidence
 
 Verify the changed code boundary using the repository's existing commands.
-Run relevant format, lint, type, contract, authorization, migration, and
-concurrency checks; report exact commands, results, and unavailable checks.
-Import and exercise generated code rather than only inspecting it. Production
+For entrypoint changes, verify actual handler, middleware and router registration,
+partial-startup cleanup, and continued release after a cleanup failure. Patch
+the implementation's owning module in tests rather than adding unused exports
+back to `main.py` solely to preserve old test imports.
+Run relevant format, lint, type, contract and isolated authorization checks;
+report exact commands and results. Import and exercise generated code rather
+than only inspecting it. Confirm output contains no migration histories,
+initialization SQL, maintenance-only test helpers, build products or caches.
+Report user-owned schema initialization, database-only protection, migration,
+and real PostgreSQL/Redis concurrency verification separately as pending when
+they were not performed. Do not run DDL through tests as a workaround. Production
 capacity certification, rolling releases, and cluster exercises are outside
 ordinary coding scope.
+
+For readability/documentation changes, manually follow one endpoint → Service →
+Repository chain and compare comments with the real permission checks, callback
+invocation and commit ownership. Inspect a generated project, not just the rules.
+Verify Chinese public field/query descriptions in source and model metadata while
+keeping types, requiredness, defaults and constraints unchanged; runtime language tests cover
+messages separately. Use executable-AST comparison for formatting-only changes
+and contract comparison for documentation metadata changes. Do not count comments
+or create brittle exact-wording tests as a substitute for reviewing their meaning.
 
 For connection pools, timeouts, or shared process state, read
 [Capacity and availability](application-capacity-and-availability.md).
@@ -457,27 +568,24 @@ Select the existing boundary tests that apply:
 
 - Database network deadlines: use the controllable forwarding proxy against
   disposable PostgreSQL to withhold replies while sockets remain open. Cover
-  checkout and active commands, bounded safe `503001`, bad-connection retirement,
+  checkout and active commands, bounded safe `50301`, bad-connection retirement,
   healthy-peer preservation, and fresh access after recovery.
-- Transaction/cancellation behavior: preflight opens no explicit transaction,
-  cancellation propagates, and connection retirement does not wait for network
-  cleanup. Unrelated business timeouts remain ordinary application failures.
+- Transaction/cancellation behavior: the built-in checkout ping opens no
+  explicit transaction, cancellation propagates, and connection retirement
+  does not wait for network cleanup. Unrelated business timeouts remain ordinary application failures.
   Lost commit replies must not cause automatic replay or assumed rollback.
 - Shared sessions and quotas: use independent processes with shared real
   PostgreSQL/Redis when changing that behavior; in-process ASGI clients alone
   cannot establish process isolation.
-- Redis connection modes or Lua slot changes: set `TEST_REDIS_SERVER` to a local
-  Redis 7 executable and run `pytest tests/test_redis_topology_live.py`. The helper
-  creates private loopback instances with random ports, credentials, and empty
-  temporary directories; it does not use configured business Redis URLs.
-  Verify standalone, Sentinel discovery and controlled primary switch, Cluster
-  routing, session atomicity, CAPTCHA single-use refresh, and concurrent quotas.
-  Without the executable these tests explicitly skip. TLS configuration
-  tests do not prove a TLS handshake; this harness is not a production quorum,
-  replica failover, or network-partition certification.
-- Buffered logging: when changing it, preserve safe snapshots, event-loop
-  progress under a blocked sink, bounded queues, loss counters, and bounded
-  shutdown. See [Operational logging](operational-logging.md).
+- Standalone Redis client changes: run `tests/test_redis_clients.py` for URL,
+  bounded pool, TLS parameter and no-command-replay behavior. For Lua semantics,
+  use the separately prepared disposable Redis targets described above to check
+  session atomicity, CAPTCHA single-use consumption and concurrent quotas. Unit TLS
+  configuration checks do not prove a TLS handshake or dependency failover.
+- Runtime logging: when changing it, preserve safe JSON formatting, output
+  failure isolation, request-ID correlation and clean handler removal. Direct
+  stdout can block a request; do not claim non-blocking delivery. See
+  [Operational logging](operational-logging.md).
 - Load tooling: test count/time exclusivity, finite bounds, launch cutoff, and
   bounded samples when modifying the tool. Using it is optional for requested
   performance work; results describe the tested workload only.

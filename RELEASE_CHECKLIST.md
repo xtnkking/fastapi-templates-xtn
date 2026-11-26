@@ -218,11 +218,9 @@ The `Prepare v0.6.1` block is retained as a historical record.
   will separate PostgreSQL migration-owner and runtime roles. Only an existing
   project also needs a decision for accounts without a local password. Preserve
   the chosen identity contract in an existing project.
-- [ ] The PostgreSQL registration switch starts enabled, remains changeable
-  through a super-admin-only command, and is checked transactionally on each
-  public registration. A public read returns only the switch's boolean; closing
-  registration does not block login or authorized administrator creation. Both
-  account-creation paths grant only `user`.
+- [ ] Public registration remains available without a toggle, state-read or
+  switch-update endpoint. CAPTCHA and per-IP limiting still protect registration;
+  public and administrator creation both grant only `user`.
 - [ ] Each of the five required graphical-CAPTCHA scenes (login, registration,
   administrator create/reset, self password change) is purpose-bound and
   single-attempt: success and failure both consume it atomically. A CAPTCHA
@@ -246,7 +244,7 @@ The `Prepare v0.6.1` block is retained as a historical record.
 - [ ] No global or cross-business quota exists, including in optional country
   and proxy guidance. Anonymous authentication is limited by business plus
   trusted IP; authenticated endpoints by business plus user ID. Fixed-window
-  Redis admission fails closed when it cannot decide. Verify `429001`,
+  Redis admission fails closed when it cannot decide. Verify `42901`,
   `Retry-After`, and configurable defaults; no submitted username is a quota
   subject. Optional country reads are not anonymous ordinary business reads.
 - [ ] JWT still defaults to one hour, only minimal claims plus a verified Redis
@@ -424,15 +422,14 @@ must not be carried into `v0.5.1`.
   Verify the authenticated gate selects the documented read/write/admin/logout
   policy, never exempts `super_admin`, and never exposes raw IP, account, actor,
   Token, or JTI values in Redis keys, logs, metrics, or responses.
-- [ ] Verify `APP_ENVIRONMENT` is required with no code default, including when
-  rate limiting remains enabled. Verify settings reject `RATE_LIMIT_ENABLED=false`
-  outside explicit local and test environment names. Verify public registration
-  is absent from both the route table and OpenAPI by default, and appears only after
-  `PUBLIC_REGISTRATION_ENABLED=true`.
-- [ ] Verify a real quota denial returns HTTP `429`, business code `429001`, the
+- [ ] Verify `APP_ENVIRONMENT` is required with no code default and rate limiting
+  has no disable setting or environment bypass. Tests must replace the isolated
+  Service/Redis boundary rather than turn protection off. Verify public registration
+  remains available with CAPTCHA and its own per-IP quota, without a runtime switch.
+- [ ] Verify a real quota denial returns HTTP `429`, business code `42901`, the
   standard four-field response, the same `X-Request-ID`, and an integer
   `Retry-After`, without executing protected work. An unavailable, timed-out, or
-  malformed limiter must fail closed as `503001` for sensitive flows and must
+  malformed limiter must fail closed as `50301` for sensitive flows and must
   not be mislabeled as a quota denial.
 - [ ] Verify login's only hard admission buckets are IP, IP plus normalized
   account, and global traffic; registration independently uses IP, normalized
@@ -469,7 +466,7 @@ must not be carried into `v0.5.1`.
   disabled role remains assigned but contributes no tier or permission.
 - [ ] Verify role mutations require a strict integer body `expected_version`,
   authorization denial is evaluated before version mismatch, authorized stale
-  writes return HTTP `409` with `409002`, and no current route or OpenAPI contract
+  writes return HTTP `409` with `40902`, and no current route or OpenAPI contract
   still requires ETag/`If-Match`.
 - [ ] Verify every user is limited to 10 live role bindings, counting mandatory
   `user`, any `super_admin`, and disabled-role bindings while excluding

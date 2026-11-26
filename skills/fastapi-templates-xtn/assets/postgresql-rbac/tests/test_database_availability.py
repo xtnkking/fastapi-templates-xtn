@@ -1,3 +1,17 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# 说明:
+#    数据库异常分类、连接池及安全服务不可用响应的离线测试。
+# History:
+# Date          Author    Version       Modification
+# --------------------------------------------------------------------------------------------------
+# 2026/09/23    XTN       V1.000        数据库异常测试直接引用请求日志中间件
+# 2026/09/30    XTN       V1.001        检查内置借连接探测及单文件建连故障处理
+# 2026/10/02    XTN       V1.002        对齐 PostgreSQL 故障分类模块名称
+# 2026/10/02    XTN       V1.003        故障分类直接从 PostgreSQL 数据库入口导入
+# --------------------------------------------------------------------------------------------------
+
 from asyncio import CancelledError
 from collections.abc import Callable
 from typing import NoReturn, cast
@@ -6,6 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from redis.asyncio import Redis
 from redis.asyncio.connection import AbstractConnection, ConnectionPool
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy.engine.interfaces import Dialect
@@ -14,12 +29,12 @@ from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.pool import AsyncAdaptedQueuePool, ConnectionPoolEntry
 from sqlalchemy.util import greenlet_spawn
 
-from app.core.api_contract import BusinessCode
+from app.core.codes import BusinessCode
 from app.core.config import get_settings
-from app.db.errors import DatabaseUnavailableError, database_error_category
-from app.db.postgres import connect_database, engine
-from app.db.redis import create_rate_limit_redis_client, create_redis_client
-from app.main import RequestObservabilityMiddleware, app
+from app.core.middleware.request_logging import RequestLoggingMiddleware
+from app.db.postgres_db import DatabaseUnavailableError, connect_database, database_error_category, engine
+from app.db.redis_db import close_redis_client, create_rate_limit_redis_client, create_redis_client
+from app.main import app
 
 
 class _DriverError(Exception):
@@ -48,14 +63,11 @@ class _DriverError(Exception):
         (OSError("private database connection detail"), 500),
     ],
 )
-async def test_database_availability_http_contract_is_precise_and_safe(
-    error: Exception,
-    expected_status: int,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_database_availability_http_contract_is_precise_and_safe(error: Exception, expected_status: int,
+                                                                       caplog: pytest.LogCaptureFixture) -> None:
     test_app = FastAPI()
     test_app.exception_handlers.update(app.exception_handlers)
-    test_app.add_middleware(RequestObservabilityMiddleware)
+    test_app.add_middleware(RequestLoggingMiddleware)
 
     @test_app.get("/controlled-database-operation")
     async def operation() -> None:
@@ -95,10 +107,8 @@ async def test_database_availability_http_contract_is_precise_and_safe(
         _DriverError("57P03"),
     ],
 )
-async def test_engine_normalizes_connect_failure_without_network_or_retry(
-    monkeypatch: pytest.MonkeyPatch,
-    failure: Exception,
-) -> None:
+async def test_engine_normalizes_connect_failure_without_network_or_retry(monkeypatch: pytest.MonkeyPatch,
+                                                                          failure: Exception) -> None:
     await engine.dispose()
     connection_calls: list[dict[str, object]] = []
 
@@ -132,9 +142,7 @@ async def test_engine_normalizes_connect_failure_without_network_or_retry(
 
 
 @pytest.mark.parametrize("error", [ValueError("configuration"), CancelledError()])
-def test_connect_preserves_cancellation_and_program_errors(
-    error: BaseException,
-) -> None:
+def test_connect_preserves_cancellation_and_program_errors(error: BaseException) -> None:
     dialect = MagicMock(spec=Dialect)
     dialect.connect.side_effect = error
     with pytest.raises(type(error)) as caught:
@@ -161,6 +169,7 @@ async def test_postgresql_pool_exhaustion_has_a_bounded_wait() -> None:
     configured_pool = cast(AsyncAdaptedQueuePool, engine.pool)
     assert configured_pool.size() == get_settings().database_pool_size
     assert configured_pool.timeout() == get_settings().database_pool_timeout_seconds
+    assert configured_pool._pre_ping is True
 
 
 async def test_each_redis_client_has_its_own_bounded_connection_pool() -> None:
@@ -168,6 +177,9 @@ async def test_each_redis_client_has_its_own_bounded_connection_pool() -> None:
     active = create_redis_client(settings)
     limiter = create_rate_limit_redis_client(settings)
     try:
+        # 默认配置是单机 Redis；此用例检查的是它的连接池，不是 Cluster 节点池。
+        assert isinstance(active, Redis)
+        assert isinstance(limiter, Redis)
         assert active.connection_pool is not limiter.connection_pool
         for client in (active, limiter):
             pool = client.connection_pool
@@ -184,5 +196,5 @@ async def test_each_redis_client_has_its_own_bounded_connection_pool() -> None:
             await pool.release(first)
             await pool.release(second)
     finally:
-        await active.aclose()
-        await limiter.aclose()
+        await close_redis_client(active)
+        await close_redis_client(limiter)

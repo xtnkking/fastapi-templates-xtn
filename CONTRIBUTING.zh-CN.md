@@ -14,6 +14,14 @@ https://github.com/xtnkking/fastapi-templates-xtn
 XTN 是规范仓库的唯一维护者。只有 XTN 决定哪些内容可以提交、合并、打标签、
 发布或被表述为官方版本。
 
+已授权的维护工作遵循
+[Skill 主规范](skills/fastapi-templates-xtn/SKILL.md)。先改维护源码，再同步安装副本；
+按[注释与排版规范](skills/fastapi-templates-xtn/references/python-comments.md)检查实际生成结果。
+说明必须符合实际执行逻辑，公开中文 OpenAPI 文档与中英运行提示分别维护，并运行相关
+[检查](skills/fastapi-templates-xtn/references/testing.md)。公开行为和验证结果写入相关文档及更新日志。
+本地代理配置、本机路径和私有维护记录不进入提交，也不把仓库维护规范或完整回归测试集
+复制到使用者的应用项目。
+
 ## 欢迎提交 Issue
 
 欢迎通过 GitHub Issues 提交错误报告、文档修正和功能建议。新建 Issue 前请先

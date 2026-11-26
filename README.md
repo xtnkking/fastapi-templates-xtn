@@ -13,6 +13,37 @@ structured logging, and separate durable audits.
 [`skills/fastapi-templates-xtn/VERSION`](skills/fastapi-templates-xtn/VERSION).
 Install this immutable tag for the current baseline.
 
+Unreleased local changes introduce [curated new-project delivery](skills/fastapi-templates-xtn/references/new-project-delivery.md):
+runtime code, ORM models, one concise Chinese README and focused offline tests.
+Users generate, review and execute their own migration files and prepare initial
+data. The Skill does not create tables or export migration history, SQL/bootstrap
+tools, the full maintainer suite or caches. Existing applications are preserved.
+Generated projects omit standalone source manifests, database handoff and legal
+files. Essential database prerequisites and necessary copied-code license text
+stay in the README, with license text collapsed; this does not assign an
+open-source license to the user's business application. Dependency configuration
+remains, and existing projects' documents are not automatically deleted.
+See [new-project delivery](skills/fastapi-templates-xtn/references/new-project-delivery.md)
+for the output contract; these changes are not yet in the published download.
+
+The unreleased template also follows the approved auth_pay entrypoint style:
+`main.py` shows lifecycle and explicit handler, middleware and router assembly;
+request logging and error responses have separate owners.
+See [reuse and abstraction](skills/fastapi-templates-xtn/references/reuse-and-abstraction.md)
+for the maintained ownership and call-flow conventions.
+
+Current source also uses the same `auth` name across routes, schemas, dependencies
+and `AuthService`. Shared response, logging, username and route-validation modules
+use direct names; the generated README points to each owner. Authentication routes
+declare named limit and scene-bound CAPTCHA dependencies, then call business
+Services directly. CAPTCHA checks only read challenge fields and the previously
+authenticated user; limits and permissions remain separate route dependencies
+declared before CAPTCHA. Response composition stays in routes.
+Their server-side route names come from clear handler names, and password policy receives one optional
+username instead of a generic identity collection. The generator's help explains
+every required option and its accepted format before it writes files.
+These changes are part of Unreleased, not the `v0.7.0` download.
+
 `v0.7.0` keeps new projects simple: one standalone PostgreSQL and one shared
 standalone Redis. Sentinel, Cluster, read/write splitting, and separate backends
 remain opt-in. It adds responsibility-based source directories, bounded
@@ -27,16 +58,10 @@ new session implementation to an existing application requires users to log in
 again, and the changed rate-limit keys start fresh windows once. Account data
 and PostgreSQL schema are unchanged; no new Alembic migration is needed.
 
-`v0.6.0` adds a project-wide administrator password-reset choice. The
-default `direct` mode makes the administrator-supplied value the permanent
-password immediately; optional `temporary` mode requires the user to complete
-one formal-password setup. Project generation must explain and ask about both;
-`direct` is simpler but the administrator knows and privately delivers the final
-password; `temporary` adds a step but lets the user choose the final password.
-An API caller cannot switch modes per request. Both modes retain CAPTCHA,
-capability and strict-lower checks, old-Token revocation, atomic audit, and
-secret-free responses/logs. Administrator-created users and offline recovery of
-the sole `super_admin` remain temporary-password flows.
+Administrator creation, password reset, and offline recovery of the sole
+`super_admin` set a password that can be used immediately. Password delivery
+remains private; CAPTCHA, capability and strict-lower checks, old-Token
+revocation, atomic audit, and secret-free responses/logs remain in place.
 
 `v0.6.0` also adds request-level API internationalization. Every
 client-facing runtime response message, including safe validation details,
@@ -44,8 +69,8 @@ supports default `zh-CN` and requested `en` through `Accept-Language`.
 Responses declare `Content-Language` and `Vary: Accept-Language`; status codes,
 numeric business codes, data, request IDs, logs, audit fields, and internal
 reason codes remain language-independent. Additional languages are explicit
-project extensions. Database-authored product content and OpenAPI developer
-metadata are not translated by this module.
+project extensions. Database-authored product content and static schema
+descriptions are not translated by this module.
 
 ## Upstream And Attribution
 
@@ -66,13 +91,17 @@ maintained and are not affiliated with or endorsed by upstream. Preserve
   matters; preserve a pre-existing project's intentional identity contract.
   Passwords default to 8..60 characters and three simple weak-pattern checks;
   ask whether to require upper/lowercase, digits, or symbols.
-- Public registration is enabled by default, but `super_admin` may turn off its
-  persisted server-side switch. `GET /api/v1/auth/registration/status` returns
-  only `registration_enabled` to anonymous callers; only the current
-  `super_admin` may use `POST` on that path to change it. Closing signup does
-  not close existing-user login or authorized administrator creation. Both
-  creation paths bind only `user`.
+- Public registration remains available without a backend switch or registration-status
+  endpoint. It still requires its own CAPTCHA and per-IP rate limit. Public registration
+  and authorized administrator creation both bind only `user`.
   Ordinary business reads and writes are never anonymous by default.
+- New-project business APIs use only GET/POST and static paths: list/detail
+  reads end in `/list` or `/detail` and take query parameters; POST commands
+  take target IDs and other inputs in validated JSON. Endpoints are grouped
+  into authentication, current account, managed users, roles and permissions.
+  Authentication and target authorization remain required regardless of where
+  the input is placed. Existing projects retain their intentional contracts
+  unless the owner asks to change them.
 - Five fixed graphical-CAPTCHA scenes protect login, registration, admin user
   creation, admin password reset, and self password change: `login`, `register`,
   `admin_create`, `admin_reset`, and `self_change`. The first two use public
@@ -93,8 +122,8 @@ maintained and are not affiliated with or endorsed by upstream. Preserve
   active JTI records with login timestamps and atomically evicts the oldest
   when a successful new login reaches that limit. This does not identify
   physical devices. Password changes/reset also invalidate old Tokens.
-- Exactly one `super_admin` exists after the initial operator-run SQL bootstrap.
-  Changing that holder is another guarded, audited offline PostgreSQL script,
+- Exactly one `super_admin` exists after the developer's manual database binding.
+  Changing that holder is another user-owned guarded, audited offline action,
   never an HTTP transfer route. The immutable `admin` and `user` system roles,
   ten-live-role maximum, strict lower-only administration, anti-self-elevation,
   soft deletion, and PostgreSQL transaction/audit coupling remain enforced.
@@ -112,16 +141,18 @@ maintained and are not affiliated with or endorsed by upstream. Preserve
   anonymous authentication uses trusted IP, authenticated operations use the
   actor's immutable user ID. There are **no global or cross-business quotas**,
   no anonymous username buckets, and no shared `/api/` IP bucket. A valid
-  over-limit decision is `429001` with `Retry-After`; Redis/IP authority
-  failure is fail-closed `503001`. All settings are editable in `app/core/config.py`
+  over-limit decision is `42901` with `Retry-After`; Redis/IP authority
+  failure is fail-closed `50301`. All settings are editable in `app/core/config.py`
   and `.env.example`; defaults are listed below and must be shown to the
   project owner before generating a service.
-- Every ordinary JSON API response has `code` (six-digit number), `message`,
+- Every ordinary JSON API response has `code` (five-digit number), `message`,
   `data`, and a server-generated `request_id`; the same ID is in
-  `X-Request-ID`. Structured operational logs, append-only `rbac_audit_events`,
-  account-security audits, and opt-in catalogued business audits have separate
-  responsibilities. No password, JWT/JTI, or raw request body belongs in logs
-  or audit snapshots.
+  `X-Request-ID`. File logs are separate from the unified append-only
+  `operation_audit_events` account/permission evidence. Requests and business
+  result snapshots are bounded and redacted; new-password comparison uses an
+  independent keyed fingerprint. General business audit is opt-in and excluded
+  from default export. No plaintext password, JWT/JTI or raw request dump belongs
+  in logs or audit snapshots.
 
 | Separate operation | Default |
 | --- | ---: |
@@ -129,7 +160,6 @@ maintained and are not affiliated with or endorsed by upstream. Preserve
 | CAPTCHA scene at wrong issue endpoint, per trusted IP or actor | 10 / 5 min |
 | Login, per trusted IP | 20 / 5 min |
 | Registration, per trusted IP | 5 / hour |
-| Temporary-password completion for administrator-created users or optional temporary reset, per trusted IP | 20 / 5 min |
 | Authenticated ordinary read / write, per operation and actor | 600 / min; 120 / min |
 | Admin read / change, per operation and actor | 300 / min; 60 / min |
 
@@ -170,6 +200,16 @@ for the module boundaries, request flow, tables, and API inventory. Detailed
 English references remain the executable specification loaded by the Skill on
 demand.
 
+Permission definitions live in
+[`app/core/access/permissions.py`](skills/fastapi-templates-xtn/assets/postgresql-rbac/app/core/access/permissions.py),
+grouped by business; system-role specifications and grants live in
+[`app/core/access/roles.py`](skills/fastapi-templates-xtn/assets/postgresql-rbac/app/core/access/roles.py).
+`PERMISSION_CATALOG` values are description message keys. Prepare initial text
+with `get_permission_description(key)` (Chinese by default); built-in descriptions
+follow the request language, while permission codes and custom database text remain stable.
+Add both locale entries for each new permission description, following
+[API internationalization](skills/fastapi-templates-xtn/references/api-internationalization.md).
+
 For code changes, the [reuse and abstraction rules](skills/fastapi-templates-xtn/references/reuse-and-abstraction.md)
 explain when to share a parameterized implementation, keep simple code inline,
 or retain a function that owns a security, transaction, or framework boundary.
@@ -178,8 +218,22 @@ For an empty project without an established framework, the optional default is
 the [responsibility-first layout](skills/fastapi-templates-xtn/references/project-structure.md):
 `api`, `core`, `db`, `dependencies`, `models`, `repositories`, `schemas`, and
 `services`. As businesses grow, add modules or packages inside these layers.
-Create workers and utilities only for actual implementations; a simple query
-does not need a forwarding Service method.
+Use `api/v1/endpoints/<business>.py`, `services/<business>_service.py`,
+`repositories/postgres/<business>_repository.py`, and
+`models/postgres/<business>.py`; create other database categories only when used.
+Every delivered Python function has a clear multi-line docstring explaining its
+purpose, parameters and return/yield value, following the default
+[Chinese comment format](skills/fastapi-templates-xtn/references/python-comments.md).
+The same guide covers aligned method inputs, individually readable long endpoint
+inputs and response/audit mappings. Comments explain actual permissions, field
+meaning and execution order, including when deferred callbacks run. Public
+`Field`/`Query` descriptions explain validation metadata in source. New projects
+disable `/docs`, `/redoc`, and `/openapi.json`; `Accept-Language` selects only
+Chinese/English runtime text, including built-in permission descriptions.
+Create workers and utilities only for actual implementations. Business endpoints
+call named Services that own pagination, business errors and result construction;
+SQL belongs to their Repositories. Do not add a Service that merely forwards
+to another Service or a setter for each already-locked ORM field.
 Existing applications retain their framework, directories, and call conventions;
 integrate the requested feature into them. Using this Skill does not authorize
 a rewrite or wholesale template replacement. Reorganization requires an explicit
@@ -192,35 +246,39 @@ pools, timeouts, shared process state, or a measured bottleneck, load
 [Capacity and availability](skills/fastapi-templates-xtn/references/application-capacity-and-availability.md).
 New projects default to one standalone PostgreSQL and one standalone Redis,
 configured through `DATABASE_URL` and `REDIS_URL`; login state, CAPTCHA, and
-quotas share Redis. Existing projects retain their current topology. Cluster,
-read/write splitting, and separate Redis backends require an explicit need;
-there is no mandatory cluster-selection step. Redis also supports Sentinel and native Cluster through
-[connection settings](skills/fastapi-templates-xtn/references/redis-connections.md);
-the application connects to infrastructure supplied by operations. Existing runtime safeguards, concurrency tests, and
+quotas share Redis. The bundled code supports one PostgreSQL endpoint and standalone
+Redis only; Sentinel, Cluster, node discovery and read/write splitting are not
+built in. An adopter who needs a cluster implements and verifies that integration
+in their own project. Existing projects retain their current topology; a second
+standalone Redis for quotas is optional, as described in
+[connection settings](skills/fastapi-templates-xtn/references/redis-connections.md).
+Existing runtime safeguards, concurrency tests, and
 the optional GET load tool remain available; no production platform is required.
 
 The official verification environment is Python 3.12, PostgreSQL 17, and
 Redis 7. A generated project may support other versions only after that project
 tests them; this repository does not claim those combinations are verified.
-`GET /health/live` reports only that the process is alive. `GET /health/ready`
-requires PostgreSQL to report a writable primary, exactly Alembic head `0004_password_auth`, and a
-readable `rbac_state(scope='global')` row. It also requires both the active-JTI
-and rate-limit Redis targets to pass `PING` plus a Lua write/read/delete probe
-using a random, non-secret key with a five-second TTL. Checks use bounded
-timeouts; the response exposes only the overall ready/unavailable result with
-`Cache-Control: no-store`, never component details, keys, URLs, or exceptions.
-Readiness, not liveness, should control deployment traffic.
+The default project includes no `/health/live` or `/health/ready` endpoint.
+Add deployment probes only when the adopter explicitly requests them, and
+restrict access to an internal network or trusted probes. Any requested checks
+must use bounded timeouts, avoid exposing dependency details, and never create
+or repair database state.
 The supplied Compose file and dedicated disposable-test checks support
 integration verification.
 See the [asset setup and quota guide](skills/fastapi-templates-xtn/assets/postgresql-rbac/README.md)
 before adapting or running the copied service.
+
+Maintainers follow the canonical [Skill](skills/fastapi-templates-xtn/SKILL.md)
+and its [reuse and abstraction guidance](skills/fastapi-templates-xtn/references/reuse-and-abstraction.md).
+Local agent configuration and private maintenance records are not published or
+exported into generated applications.
 
 From this repository root:
 
 ```powershell
 python -B -m pip install --upgrade "pip==26.2.1" "setuptools==84.0.0"
 python -B -m pip install -c skills/fastapi-templates-xtn/assets/postgresql-rbac/constraints-ci-py312.txt "skills/fastapi-templates-xtn/assets/postgresql-rbac[test]"
-ruff format --check --no-cache skills/fastapi-templates-xtn/assets/postgresql-rbac
+python -B -m autopep8 --diff --exit-code --recursive skills/fastapi-templates-xtn/assets/postgresql-rbac
 ruff check --no-cache skills/fastapi-templates-xtn/assets/postgresql-rbac
 mypy --no-incremental --cache-dir "$env:TEMP\fastapi-templates-xtn-mypy-cache" --config-file skills/fastapi-templates-xtn/assets/postgresql-rbac/pyproject.toml skills/fastapi-templates-xtn/assets/postgresql-rbac/app skills/fastapi-templates-xtn/assets/postgresql-rbac/tests
 python -B -m pytest -p no:cacheprovider -m "not postgresql" skills/fastapi-templates-xtn/assets/postgresql-rbac/tests

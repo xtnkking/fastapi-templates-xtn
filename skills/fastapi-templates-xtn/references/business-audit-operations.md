@@ -22,8 +22,9 @@ table exists. When a product requires a review surface:
 - grant neither capability to ordinary users or ordinary `admin` by default;
 - apply domain and resource visibility in addition to the exact capability;
 - use the standard four-field response envelope and mandatory request ID;
-- support bounded indexed filters for time, domain, action, outcome, actor ID,
-  resource type and ID, source, and request ID;
+- support bounded indexed filters for time, domain, action, outcome, `user_id`
+  (操作人), `target_user_id` (被操作人), `source_type`/`source_id`,
+  `target_type`/`target_id`, `entrypoint`, and request ID;
 - use deterministic descending `(created_at, id)` ordering;
 - reject arbitrary JSONPath, SQL fragments, unbounded date ranges, and filters
   on fields that are not part of the stable event schema;
@@ -100,7 +101,7 @@ destroying the source evidence. Do not silently bypass retention or discard held
 evidence.
 
 Audit IDs preserve event meaning without storing presentation identity. When a
-privacy erasure request affects an actor or resource, apply the product's
+privacy erasure request affects an operator or resource, apply the product's
 documented pseudonymization or access-restriction policy outside the immutable
 row. Never rewrite old snapshots to pretend they were created under a newer
 schema or privacy policy.
@@ -119,7 +120,7 @@ actions, outcomes, and reason codes, not free text. High-signal examples include
   and
 - unusual audit-read or export volume.
 
-Aggregate by actor, action, resource, and time window so ordinary events do not
+Aggregate by operation user/source, action, target, and time window so ordinary events do not
 produce one alert each. A notification contains event IDs and request IDs only.
 Do not include snapshots, direct personal data, credentials, JWT/JTI values,
 exception text, or provider responses unless the destination has a separately

@@ -78,9 +78,7 @@ async def test_probe_bounds_whole_call_and_does_not_retry() -> None:
     assert result["transport_errors"] == {"timeout": 2}
 
 
-async def test_probe_rejects_oversized_responses_and_does_not_follow_redirects() -> (
-    None
-):
+async def test_probe_rejects_oversized_responses_and_does_not_follow_redirects() -> (None):
     async def respond(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/large":
             return httpx.Response(200, content=b"x" * (MAX_RESPONSE_BYTES + 1))
@@ -126,9 +124,7 @@ def test_invalid_endpoint_does_not_echo_secrets(url: str) -> None:
     assert "marker" not in str(error.value)
 
 
-async def test_duration_stops_new_calls_and_drains_bounded_workers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_duration_stops_new_calls_and_drains_bounded_workers(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = 0.0
     active = peak = calls = 0
     admitted_at: list[float] = []
@@ -173,9 +169,7 @@ async def test_duration_stops_new_calls_and_drains_bounded_workers(
     assert result["successful_requests_per_second"] == round((calls - 1) / clock, 3)
 
 
-async def test_latency_reservoir_is_bounded_and_can_include_later_calls(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_latency_reservoir_is_bounded_and_can_include_later_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = 0.0
     calls = 0
     observed_counts: list[int] = []
@@ -215,9 +209,7 @@ async def test_latency_reservoir_is_bounded_and_can_include_later_calls(
     assert result["latency_ms"] == {"p50": 3.0, "p95": 30.0, "p99": 30.0}
 
 
-async def test_a_duration_that_expires_before_admission_reports_no_percentiles(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_duration_that_expires_before_admission_reports_no_percentiles(monkeypatch: pytest.MonkeyPatch) -> None:
     ticks = iter([0.0, 1.0, 1.0])
     monkeypatch.setattr(
         load_module, "time", SimpleNamespace(perf_counter=lambda: next(ticks))
@@ -297,9 +289,7 @@ def test_cli_workload_selection_preserves_default_and_uses_token_environment(
     assert "example.test" not in output
 
 
-def test_cli_rejects_combined_count_and_duration_before_starting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_cli_rejects_combined_count_and_duration_before_starting(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "sys.argv",
         [

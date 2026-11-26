@@ -8,8 +8,8 @@ import platform
 import re
 import sys
 import tomllib
-from collections.abc import Iterable, Mapping, Sequence
 from collections import deque
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 from packaging.markers import default_environment

@@ -1,3 +1,16 @@
+-- 说明:
+--    保留旧版 UUID 数据结构的离线超级管理员交接维护示例，不交付生成项目。
+--    原账号与新账号的旧登录一并失效，持有全局授权行锁时同事务保存交接关系和审计。
+--    本文件仅供历史结构阅读；表名、ID 和审计字段均不适用当前模型，不得用于当前生成项目。
+--    当前项目须由使用者依据 OperationAuditEvent 和现有用户、角色模型自行准备交接流程。
+-- History:
+-- Date          Author    Version       Modification
+-- --------------------------------------------------------------------------------------------------
+-- 2026/10/15    XTN       V1.000        移除当前已取消的用户权限版本更新，保留登录撤销和交接保护
+-- 2026/10/16    XTN       V1.001        移除全局授权计数更新，保留显式行锁和交接审计
+-- 2026/10/16    XTN       V1.002        明确历史结构边界，禁止作为当前项目的交接脚本
+-- --------------------------------------------------------------------------------------------------
+
 \set ON_ERROR_STOP on
 
 -- Operator-only action. Supply both immutable UUIDv4 user IDs from a trusted host.
@@ -102,10 +115,8 @@ BEGIN
     VALUES (new_user_id, super_role.id, old_user_id);
     -- Reject pre-transfer bearer tokens for both accounts, including those
     -- already present in the Redis active-JTI registry.
-    UPDATE users SET authz_version = authz_version + 1,
-                     token_version = token_version + 1
+    UPDATE users SET token_version = token_version + 1
     WHERE id IN (old_user_id, new_user_id);
-    UPDATE rbac_state SET epoch = epoch + 1 WHERE scope = 'global';
     INSERT INTO rbac_audit_events (
         actor_user_id, target_user_id, target_role_id, action, decision,
         reason_code, source, schema_version, before_state, after_state, request_id

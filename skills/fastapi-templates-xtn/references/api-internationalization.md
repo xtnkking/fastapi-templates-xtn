@@ -9,20 +9,30 @@ Additional languages are an explicit project extension.
 
 The feature is implemented in the bundled asset, not only described here:
 
-- [`app/core/i18n.py`](../assets/postgresql-rbac/app/core/i18n.py) defines `MessageKey`,
-  validates both catalogs at import time, selects a bounded request locale,
-  translates message keys, maps validation error types, and applies language
-  response headers.
+- [`app/core/i18n/messages.py`](../assets/postgresql-rbac/app/core/i18n/messages.py) defines `MessageKey`,
+  validates both catalogs at import time, and translates message keys.
+  `translate_for_locale(locale, key)` resolves a message without a Request.
+- [`app/core/i18n/language.py`](../assets/postgresql-rbac/app/core/i18n/language.py) selects a
+  bounded request locale from `Accept-Language`, keeps it on this request only,
+  and applies `Content-Language` and `Vary` response headers.
+- [`app/core/i18n/validation_messages.py`](../assets/postgresql-rbac/app/core/i18n/validation_messages.py)
+  maps Pydantic error types to safe translated messages and bounded field names.
 - [`app/assets/locales/zh-CN.json`](../assets/postgresql-rbac/app/assets/locales/zh-CN.json)
   contains the Simplified Chinese runtime messages.
 - [`app/assets/locales/en.json`](../assets/postgresql-rbac/app/assets/locales/en.json) contains
   the English runtime messages. Both JSON files must have exactly the same keys
   as `MessageKey`.
-- [`app/core/api_contract.py`](../assets/postgresql-rbac/app/core/api_contract.py) translates
+- [`app/core/response.py`](../assets/postgresql-rbac/app/core/response.py) translates
   stable keys while building success and error envelopes.
-- [`app/main.py`](../assets/postgresql-rbac/app/main.py) resolves the request
-  locale, localizes framework and unexpected errors, and attaches
-  `Content-Language` plus `Vary` to every HTTP response.
+- [`app/core/access/permissions.py`](../assets/postgresql-rbac/app/core/access/permissions.py) maps
+  each built-in `PermissionKey` to a description `MessageKey` in `PERMISSION_CATALOG`.
+  `get_permission_description(key, stored_description=..., locale=...)` translates
+  built-in descriptions and preserves stored custom descriptions; its locale
+  defaults to `zh-CN` for initial data preparation.
+- [`app/core/middleware/request_logging.py`](../assets/postgresql-rbac/app/core/middleware/request_logging.py)
+  resolves the request locale and attaches `Content-Language` plus `Vary` to
+  every HTTP response. [`app/core/exception_handlers.py`](../assets/postgresql-rbac/app/core/exception_handlers.py)
+  localizes framework and unexpected errors; `app/main.py` registers both owners.
 - [`tests/test_i18n.py`](../assets/postgresql-rbac/tests/test_i18n.py) covers
   catalog parity, negotiation, success/error/validation messages, headers,
   unsafe input, and concurrent Chinese/English requests.
@@ -31,10 +41,11 @@ The runtime call flow is:
 
 ```text
 Accept-Language
--> RequestObservabilityMiddleware calls locale_for_request()
+-> RequestLoggingMiddleware calls language.locale_for_request()
 -> canonical locale is stored on request.state
 -> route/service or exception selects a stable MessageKey
--> api_response(), error_content(), or validation_message() calls translate()
+-> api_response(), error_content(), or validation_messages.validation_message()
+   calls i18n.translate()
 -> response contains localized message plus Content-Language and
    Vary: Accept-Language
 ```
@@ -44,16 +55,47 @@ catalogs, use that key at the response boundary, and extend `test_i18n.py`.
 Rendered Chinese or English literals in routes and services bypass this flow and
 are not allowed.
 
+New-password policy length messages use `{min_length}` and `{max_length}` in both catalogs.
+`translate_for_locale` fills these from the password module's shared bounds;
+changing the bounds does not require editing translated numbers. Only trusted
+code constants supply these values; never format a password or raw request into
+the message.
+
+Username format messages use `{min_length}`, `{max_length}` and `{characters}`.
+`translate_for_locale` fills them from `core/security/user_name.py`, including
+the character label for the selected language. The request/query descriptions
+and ORM constraints use that same owner; do not hard-code another length in
+either language catalog. The two character labels are rule-owned bilingual
+fragments kept beside the allowed character range; complete error sentences
+remain in the language catalogs. This does not permit rendered error messages
+elsewhere in that rule file or in routes and Services.
+
+Password request-validation errors use `validation.password_too_short` or
+`validation.password_too_long` with `{length}` taken only from Pydantic's positive
+integer `ctx.min_length` or `ctx.max_length`. This reports the actual field
+constraint: login/current-password input has an independent transport boundary,
+while `NewPassword` uses the current setting policy. Do not guess the range from
+the field name `password`, which appears in both login and registration.
+Missing or invalid length context falls back to the generic localized text-length
+message; no input value or other exception context is returned.
+
+Permission list/detail endpoints pass `locale_for_request(request)` to
+`PermissionService`; its response construction calls `get_permission_description()`.
+The catalog stores message keys, so user-owned initialization obtains stored text
+with `get_permission_description(key)`. Adding a business permission requires a
+description `MessageKey` and real text in both Chinese and English catalogs.
+
 ## Runtime Contract
 
 The client may send the standard `Accept-Language` request header. Missing,
 unsupported, malformed, or oversized values fall back to `zh-CN`; they never
-produce `406` and are never reflected in a response. Support exact `zh-CN` and
-`en`, the common `zh` aliases, English regional tags such as `en-US`, quality
-weights, and `*`. A more specific language range, including `q=0`, overrides a
-parent range or wildcard for that language. If every supported language is
-explicitly rejected, keep the documented no-`406` fallback to `zh-CN`. Bound
-both header length and the number of parsed ranges.
+produce `406` and are never reflected in a response. Recognize `zh`, `zh-CN`,
+`zh-Hans`, `zh-SG`, `en`, and English regional tags such as `en-US`. Among
+recognized candidates, choose the highest positive `q` weight; ties keep the
+first candidate. `q=0` skips that candidate, and `*` does not choose a language.
+If no candidate remains, use `zh-CN` even when the request rejected it; this
+small bilingual default does not implement full HTTP language negotiation.
+Bound both header length and the number of parsed ranges.
 
 Every HTTP response carries the canonical selected value in
 `Content-Language` and merges `Accept-Language` into `Vary` exactly once. This
@@ -67,14 +109,23 @@ Only human-facing runtime text is localized:
 - domain, authentication, authorization, CAPTCHA, rate-limit, dependency, and
   unexpected-error `message` values;
 - the outer validation message and safe `data.errors[].message` values; and
-- liveness and readiness messages.
+- built-in permission `data.description` values in catalog list/detail results; and
+- liveness and readiness messages, only when the adopter explicitly requests
+  those probes. The default project has none; requested probes must be limited
+  to an internal network or trusted probes.
 
 HTTP status, numeric business code, response shape, field names, machine values
 inside `data`, request ID, permission keys, role keys, stable log events, audit
 actions, audit outcomes, and internal `reason_code` values remain
-language-independent. Database-authored product content and OpenAPI developer
-metadata are separate product concerns; do not claim they are translated by the
-runtime message module.
+language-independent. Database-authored product content and static schema
+descriptions are separate product concerns; do not claim they are translated by
+the runtime message module.
+The default public `Field` and `Query` descriptions use Chinese to explain input
+and output meaning in source and validation metadata. They remain static when
+`Accept-Language: en` is sent; this does not mean runtime API translation is missing. Preserve field
+names, constraints and machine values while adding those descriptions. See
+[Python comments](python-comments.md) when changing documentation or layout.
+Default projects do not expose `/docs`, `/redoc`, or `/openapi.json`.
 
 ## Stable Message Keys
 
@@ -122,8 +173,8 @@ the bounded field hint, never on localized text.
 
 When the project owner explicitly needs another language:
 
-1. Add its canonical code and only required safe aliases to the static locale
-   registry. Never turn a request value into a file path or dynamic import.
+1. Add its canonical code and only required safe aliases in `core/i18n/language.py`.
+   Never turn a request value into a file path or dynamic import.
 2. Add one UTF-8 JSON catalog under `app/assets/locales/` with exactly the same keys as
    `MessageKey`, and include it as package data.
 3. Translate every value; do not copy English as a silent placeholder.
@@ -138,13 +189,14 @@ translation management service until the actual product needs them.
 ## Verification
 
 Test missing/default Chinese, explicit Chinese, English and regional English,
-quality ordering, `q=0`, unsupported values, malformed values, control
+common browser headers, quality ordering, zero-weight skipping, unsupported values, malformed values, control
 characters, path-like input, excessive length, and excessive language ranges.
 The resolver must always return one registered locale and never reflect input.
 
-For both languages cover successful reads and writes, `400`, `401`, `403`,
+For both languages cover successful reads and writes, built-in permission
+list/detail descriptions, custom-description fallback, `400`, `401`, `403`,
 password-change-required, `404`, `405`, both `409` codes, `422`, `429`, `500`,
-and `503`. Confirm only human text changes: HTTP status, numeric code, `data`,
+and `503`. Confirm only human text changes: HTTP status, numeric code, machine values inside `data`,
 request ID, `WWW-Authenticate`, `Cache-Control`, `Retry-After`, and rate-limit
 headers retain their existing semantics. Run concurrent mixed-language requests
 to prove request isolation, and scan public response call sites for rendered

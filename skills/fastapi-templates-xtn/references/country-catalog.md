@@ -10,22 +10,31 @@ do not select or load this Skill solely for a generic country table task.
 Search terms: `country table`, `countries`, `country selector`, `country_code`,
 `calling_code`, `name_zh`, `name_en`, `flag_url`, `ISO 3166`, `国家表`, `国家区号`.
 
-For concrete SQLAlchemy, Alembic, query, route, import, and test shapes, read
+For concrete SQLAlchemy, database handoff, query, route, import, and test shapes, read
 [Country catalog PostgreSQL](country-catalog-postgresql.md) after this contract.
 
 ## Product Boundary
 
-This module is optional and is not part of the copied PostgreSQL RBAC asset.
-Do not create its table, routes, seed job, Redis keys, or frontend controls unless
+This module is optional and is not part of the selected new-project baseline.
+Do not add its model, routes, import feature, Redis keys, or frontend controls unless
 the current product needs them. A transient country string returned by an IP
 geolocation provider does not by itself justify a maintained catalog.
+
+Even when requested, the Skill delivers the model and requested application
+code, not table creation or initial data. The user generates, reviews and
+executes their own migrations and initialization. Do not produce an Alembic
+revision or seed script, create tables from startup/tests, or run a CSV import
+as an implicit setup step. An explicitly requested import feature may be
+implemented as business code; its execution and database setup remain separate.
+Follow [Model and database handoff](migrations.md).
 
 Preserve an existing project's established country model. For a greenfield
 catalog, resolve only the one product decision that cannot be inferred: the
 approved code set. Determine whether the product supports all entries from a
 named, versioned ISO 3166-1 alpha-2 source or an explicit business subset. Do not
 silently call an incomplete subset "all countries". Record the source, version or
-retrieval date, approved subset rule, and redistribution license before seeding.
+retrieval date, approved subset rule, and redistribution license before the
+user chooses and performs initialization or import.
 
 The baseline below otherwise makes the decisions for the implementer. It models
 countries and dependent territories together because alpha-2 catalogs commonly
@@ -34,7 +43,7 @@ already does so, but label the UI `国家/地区` when that is more accurate.
 
 ## Fixed Table Contract
 
-Use `countries` for a new table. Do not add a synthetic integer or random ID:
+Map the optional model to `countries`. Do not add a synthetic integer or random ID:
 the uppercase two-character `country_code` is the stable, non-sequential natural
 primary key and public identifier. A standards-backed natural key is compatible
 with this Skill's anti-enumeration rule; authorization and object policy still
@@ -150,7 +159,10 @@ validator, and import contract but leave the dataset out of the repository.
 
 ## Import And Atomicity
 
-Country import is ordinary configuration data, not an RBAC control-plane write.
+This section applies only when an import feature was explicitly requested;
+it does not authorize creating the table, initializing rows or running the
+import during Skill generation. Country import is ordinary configuration data,
+not an RBAC control-plane write.
 It does not acquire `rbac_state`. It still requires one PostgreSQL transaction:
 
 1. Parse and fully validate the file before mutating durable rows.
@@ -172,7 +184,7 @@ planned changes, and soft-delete only after that separate confirmation. The
 ordinary upsert path never interprets absence as deletion.
 
 For reproducibility, record the approved source identifier, source version or
-retrieval date, file hash, row count, actor or deployment identity, and result in
+retrieval date, file hash, row count, operator or deployment identity, and result in
 deployment evidence. Do not add these values to every country row unless the
 product needs row-level provenance.
 
@@ -181,11 +193,11 @@ product needs row-level provenance.
 Do not add an API if countries are used only by server-side validation or a build
 artifact. When a frontend needs the directory, the baseline exposes only:
 
-- `GET /api/v1/countries` for live, active rows with optional `q` and
+- `GET /api/v1/countries/list` for live, active rows with optional `q` and
   `calling_code` filters plus `page`, `page_size`, and deterministic
   `country_code` ordering;
-- `GET /api/v1/countries/{country_code}` for one live, active row, normalizing the
-  path value to uppercase and returning the standard concealed `404001` when the
+- `GET /api/v1/countries/detail?country_code=<code>` for one live, active row,
+  normalizing the typed query value to uppercase and returning the standard concealed `40401` when the
   row is missing, inactive, or deleted.
 
 Use the four-field response envelope and page data from
@@ -202,12 +214,14 @@ implicit anonymous API from this Skill. Apply the per-operation authenticated
 read policy and never return deleted rows.
 
 Do not expose create, update, enable, disable, delete, restore, or import routes by
-default. Prefer reviewed migrations or an operator command. If runtime management
+default. The user manages initial data through their own reviewed process.
+Implement an operator import command only when requested. If runtime management
 is a real product requirement, use neutral `GET`/`POST` resource routes, explicit
 `countries:read` and `countries:manage` capabilities, strict request models,
+POST target `country_code` in the JSON body instead of a path segment,
 `expected_version`, the soft-delete lifecycle above, and the same hierarchy checks
 as other privileged operations. Record these configuration changes in the
-business audit module, not `rbac_audit_events`.
+optional business audit module, not `operation_audit_events`.
 
 ## Flag Safety
 
@@ -222,9 +236,13 @@ unavailable.
 
 ## Verification
 
-When this optional module is implemented, prove:
+When this optional module is implemented, verify the applicable isolated model,
+validator and API behavior. Hand the real-database checks below to the user
+after their schema setup; do not execute migrations or initialize data through
+fixtures as an ordinary delivery step:
 
-- the migration creates no sequence, identity, or synthetic numeric country ID;
+- model metadata contains no sequence, identity, or synthetic numeric country ID,
+  and the user's completed schema preserves that contract;
 - all checks, timestamp types, partial live indexes, and the deleted-implies-
   inactive constraint exist in PostgreSQL;
 - the source is strict UTF-8, has the exact header, matches the approved code set,

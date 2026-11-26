@@ -23,6 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
+  "autopep8>=2.3.2,<3",
   "httpx>=0.28,<1",
   "mypy>=1.14,<3",
   "pip-audit>=2.7,<3",
@@ -41,18 +42,37 @@ include = ["app*"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra -p no:cacheprovider"
 markers = [
   "postgresql: requires the PostgreSQL and Redis services from compose.dev.yaml",
 ]
 
 [tool.ruff]
-line-length = 88
+line-length = 120
 target-version = "py312"
+cache-dir = "~/.cache/fastapi-templates-xtn/ruff"
+
+# Preserve vertically aligned method parameters and indented Chinese docstrings.
+# autopep8 owns layout; Ruff owns lint/import checks, not formatting.
+[tool.autopep8]
+max_line_length = 120
+recursive = true
+exclude = ".git,.venv,venv,__pycache__,build,dist"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
+# 项目明确保留 UTF-8 文件头；不要让自动修复删除用户要求的编码说明。
+# 保留直观的 TypeVar/Generic 写法，不让 Ruff 要求改回 Python 3.12 专属泛型声明。
+ignore = ["UP009", "UP046", "UP047"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Depends 在函数定义时声明 FastAPI 依赖，不是在默认参数里执行业务。
+extend-immutable-calls = ["fastapi.Depends"]
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
+cache_dir = "~/.cache/fastapi-templates-xtn/mypy"

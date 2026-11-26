@@ -1,4 +1,106 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+# 说明:
+#    离线检查 Skill 分发内容、源码安全边界及文档契约，不导入应用或连接数据库。
+# History:
+# Date          Author    Version       Modification
+# --------------------------------------------------------------------------------------------------
+# 2026/09/23    XTN       V1.000        适配按业务拆分的模型、Schema、Service 与统一 API 版本前缀
+# 2026/09/23    XTN       V1.001        按语法校验字段约束，区分静态接口文档与运行时中文文案
+# 2026/09/23    XTN       V1.002        按入口、中间件、异常处理和健康探针的新归属校验装配与安全边界
+# 2026/09/26    XTN       V1.003        同步业务模块命名，按直接认证流程保留防刷和验证码顺序校验
+# 2026/09/26    XTN       V1.004        对齐路由校验与限流测试的直接命名
+# 2026/09/27    XTN       V1.005        校验统一限流服务、路由旁声明和强制安全配置
+# 2026/09/29    XTN       V1.006        校验关闭文档入口、路由名称限流和运行时认证依赖接线
+# 2026/09/29    XTN       V1.007        默认不交付健康探针，仅校验业务装配及原有安全边界
+# 2026/09/29    XTN       V1.008        核对独立权限与角色文件，并在角色配置中保留十角色上限检查
+# 2026/09/29    XTN       V1.009        对齐 JWT、会话和授权策略拆分后的路径及 API 路由规则接线
+# 2026/09/29    XTN       V1.010        统一响应校验改用传统泛型声明标记
+# 2026/09/29    XTN       V1.011        对齐独立的 v1 路由校验模块与简洁总路由
+# 2026/09/30    XTN       V1.012        按文案、语言协商与参数错误的独立归属校验多语言
+# 2026/09/30    XTN       V1.013        数据库入口校验改为单文件 PostgreSQL 实现
+# 2026/09/30    XTN       V1.014        当前契约不再要求临时密码路径和配置
+# 2026/10/02    XTN       V1.015        对齐限流策略的真实运行入口
+# 2026/10/02    XTN       V1.016        线下恢复校验改读不导出的维护命令服务
+# 2026/10/02    XTN       V1.017        对齐 PostgreSQL 故障及线下维护查询文件归属
+# 2026/10/02    XTN       V1.018        会话路由与简化语言协商校验同步当前契约
+# 2026/10/02    XTN       V1.019        登录凭据异常归统一错误模块并复用 401 处理器
+# 2026/10/02    XTN       V1.020        校验单权限依赖的实际管理认证入口
+# 2026/10/02    XTN       V1.021        不再把独立 PostgreSQL 错误文件列为必交付项
+# 2026/10/02    XTN       V1.022        删除已取消的密码字节上限检查
+# 2026/10/04    XTN       V1.023        按验证码依赖直接拒绝限流入口核对接线
+# 2026/10/04    XTN       V1.024        校验登录后验证码依赖同时执行合法场景扣次
+# 2026/10/08    XTN       V1.025        注册限流契约统一使用 register 命名
+# 2026/10/08    XTN       V1.026        限流接线校验对齐 Service 选策略的现行实现
+# 2026/10/09    XTN       V1.027        模型文件清单与密码契约检查覆盖共用及验证码模块
+# 2026/10/09    XTN       V1.028        账号审计动作核对集中枚举及各业务实际调用
+# 2026/10/09    XTN       V1.029        退出路由接线检查跟随专用身份和限流依赖
+# 2026/10/09    XTN       V1.030        响应合同检查对齐现有权限业务 ID 类型
+# 2026/10/09    XTN       V1.031        现行注册测试静态引用统一使用 register 命名
+# 2026/10/09    XTN       V1.032        分页响应及路由合同检查统一使用 Response 后缀
+# 2026/10/09    XTN       V1.033        验证码契约检查对齐无状态共享服务的公开方法
+# 2026/10/10    XTN       V1.034        限流合同改为查库前单次计数，删除只读预查要求
+# 2026/10/10    XTN       V1.035        请求与响应合同统一核对公共基类
+# 2026/10/10    XTN       V1.036        用户字段统一为 user_id，权限对象与审计操作方使用明确名称
+# 2026/10/10    XTN       V1.037        验证码签发检查归路由，依赖仅保留校验与一次性消费
+# 2026/10/10    XTN       V1.038        密码字段统一核对 Password 保密类型及直接长度约束
+# 2026/10/12    XTN       V1.039        核对固定场景验证码依赖及其前置限流、权限和完整请求校验
+# 2026/10/12    XTN       V1.040        验证码依赖只管验证码，前置限流和权限在路由声明
+# 2026/10/12    XTN       V1.041        验证码直接提取字段并统一可信用户 ID 命名
+# 2026/10/13    XTN       V1.042        验证 GETDEL 单次消费及摘要中的业务、用户绑定
+# 2026/10/13    XTN       V1.043        会话文档合同对齐登录记录和登录顺序两键
+# 2026/10/13    XTN       V1.044        会话键合同使用 sequence 明确登录先后顺序
+# 2026/10/14    XTN       V1.045        验证码依赖合同直接核对用途枚举传递
+# 2026/10/14    XTN       V1.046        密码默认上限改为 32，长度合同只认统一上下限
+# 2026/10/14    XTN       V1.047        取消日志环境必填配置，应用名称和版本只核对实际应用用途
+# 2026/10/14    XTN       V1.048        核对请求日志独立指纹密钥的真实装配
+# 2026/10/15    XTN       V1.049        线下授权合同不再要求更新已移除的用户权限版本
+# 2026/10/15    XTN       V1.050        用户角色集合字段检查统一使用 bound_role_ids
+# 2026/10/15    XTN       V1.051        用户创建统一检查 UserService 中的共用及管理员入口
+# 2026/10/16    XTN       V1.052        审计合同保留从当前上下文读取关联 ID 的共同入口
+# 2026/10/16    XTN       V1.053        异常构造器名称统一标明固定 HTTP 状态
+# 2026/10/16    XTN       V1.054        授权接线不再要求全局版本查询，维护 SQL 仅保留协调锁
+# 2026/10/16    XTN       V1.055        校验统一操作审计及可选业务审计边界，保留历史迁移合同
+# 2026/10/16    XTN       V1.056        业务直接传审计动作枚举，统一检查成功和拒绝写入入口
+# 2026/10/16    XTN       V1.057        登录复查校验对齐合并后的账号状态判断与哈希比较
+# 2026/10/16    XTN       V1.058        登录业务方法及调用接线统一检查 login 名称
+# 2026/10/16    XTN       V1.059        单次密码验证后直接拒绝并发哈希变化
+# 2026/10/16    XTN       V1.060        登录业务统一检查锁外令牌签发，路由只调用完整登录
+# 2026/10/19    XTN       V1.061        账号状态比较检查对齐 user_info 命名
+# 2026/10/20    XTN       V1.062        密码合同区分旧密码传输边界及设置新密码的策略长度
+# 2026/10/20    XTN       V1.063        核对密码计算繁忙异常必须登记专用 503 处理器
+# 2026/10/20    XTN       V1.064        可见性合同区分角色 level 与用户 role_level
+# 2026/10/20    XTN       V1.065        验证直写认证依赖及账号读取前的单次限流
+# 2026/10/20    XTN       V1.066        管理及本人接线合同同步上下文依赖名称
+# 2026/10/20    XTN       V1.067        次数选择归限流模块，JWT字段集合采用直观名称
+# 2026/10/20    XTN       V1.068        JWT 字段字典检查同步 token_fields 名称
+# 2026/10/20    XTN       V1.069        会话维护接线检查同步登录记录检查和删除入口
+# 2026/10/22    XTN       V1.070        退出路由接线改为直接校验登录，不再要求退出限流
+# 2026/10/22    XTN       V1.071        权限回调直接复用 Token 与账号检查，并核对管理限流顺序
+# 2026/10/22    XTN       V1.072        限流默认值检查对齐简短本人和管理配置名称
+# 2026/10/22    XTN       V1.073        权限检查默认普通额度，核对业务显式选择和验证码前置顺序
+# 2026/10/22    XTN       V1.074        用户和角色查询归属业务仓储，认证共用账号状态检查
+# 2026/10/22    XTN       V1.075        用户权限查询复用已加载用户及共同汇总，保留页面过滤和锁内复查
+# 2026/10/23    XTN       V1.076        用户权限统一 users 集合入口，查询和汇总合并为同一内部步骤
+# 2026/10/23    XTN       V1.077        登录记录归 Redis 仓储，校验业务签发与锁外登记接线
+# 2026/10/23    XTN       V1.078        当前用户信息路由改为 user_info 并对齐处理函数名称
+# 2026/10/24    XTN       V1.079        验证码依赖检查跟随三个完整业务场景名称
+# 2026/10/24    XTN       V1.080        用户仓储检查对齐直观查询命名和共用用户信息组装
+# 2026/10/24    XTN       V1.081        用户列表、详情和查询构造检查采用简短业务名称
+# 2026/10/24    XTN       V1.082        角色仓储检查对齐列表、详情及统一角色权限入口
+# 2026/10/24    XTN       V1.083        用户角色绑定数量检查使用 count_roles 和直观计数名称
+# 2026/10/24    XTN       V1.084        角色业务检查对齐加锁、操作校验、版本检查及删除名称
+# 2026/10/24    XTN       V1.085        用户管理资料检查使用 UserDetails 和 get_users_info
+# 2026/10/24    XTN       V1.086        公共事务检查对齐 user_role_transaction 文件与入口
+# 2026/10/26    XTN       V1.087        用户权限信息类型统一使用 UserInfo，保持原有验证行为
+# 2026/10/26    XTN       V1.088        权限结果字段明确区分有效用户信息与包含停用角色的信息
+# 2026/10/26    XTN       V1.089        本人改密的验证码前置检查对齐基础权限依赖
+# 2026/10/26    XTN       V1.090        角色可见性文档检查对齐列表删除状态与详情范围
+# 2026/11/26    XTN       V1.091        用户名字段合同改为核对统一规则引用
+# 2026/11/26    XTN       V1.092        区分历史版本说明与当前模型，按完整禁令判断跨行范围文案
+# --------------------------------------------------------------------------------------------------
+
 """Validate the distributable Skill without external Python dependencies."""
 
 from __future__ import annotations
@@ -19,7 +121,8 @@ ASSET_ROOT = SKILL_ROOT / "assets" / "postgresql-rbac"
 EXPECTED_NAME = "fastapi-templates-xtn"
 VERSION_PATH = SKILL_ROOT / "VERSION"
 RELEASE_VERSION = (
-    VERSION_PATH.read_text(encoding="utf-8").strip() if VERSION_PATH.is_file() else ""
+    VERSION_PATH.read_text(
+        encoding="utf-8").strip() if VERSION_PATH.is_file() else ""
 )
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 RELEASE_INSTALL_URL = (
@@ -48,6 +151,8 @@ REQUIRED_REPO_FILES = (
     "RELEASE_CHECKLIST.zh-CN.md",
     "scripts/test_update_installed_skill.py",
     "scripts/test_validate_ci_environment.py",
+    "scripts/test_validate_release.py",
+    "scripts/test_create_project.py",
     "scripts/update_installed_skill.py",
     "scripts/validate_asset_wheel.py",
     "scripts/validate_ci_environment.py",
@@ -87,11 +192,18 @@ REQUIRED_SKILL_FILES = (
     "references/rate-limiting.md",
     "references/reuse-and-abstraction.md",
     "references/project-structure.md",
+    "references/python-comments.md",
+    "references/new-project-delivery.md",
     "references/application-capacity-and-availability.md",
     "references/redis-connections.md",
     "references/verification-and-abuse-defense.md",
     "scripts/test_validate_country_csv.py",
     "scripts/validate_country_csv.py",
+    "scripts/create_project.py",
+    "assets/starter-delivery/README.md",
+    "assets/starter-delivery/.env.example",
+    "assets/starter-delivery/tests/test_user_name.py",
+    "assets/starter-delivery/tests/test_authorization.py",
 )
 REQUIRED_ASSET_FILES = (
     ".env.example",
@@ -102,65 +214,100 @@ REQUIRED_ASSET_FILES = (
     "constraints-ci-py312.txt",
     "pyproject.toml",
     "alembic/env.py",
-    "app/services/abuse_flow.py",
-    "app/core/api_contract.py",
-    "app/core/i18n.py",
+    "app/core/response.py",
+    "app/core/codes.py",
+    "app/core/exceptions.py",
+    "app/core/exception_handlers.py",
+    "app/core/middleware/request_body_limit.py",
+    "app/core/middleware/request_logging.py",
+    "app/core/middleware/security_headers.py",
+    "app/db/postgres_db.py",
+    "app/core/i18n/messages.py",
+    "app/core/i18n/language.py",
+    "app/core/i18n/validation_messages.py",
+    "app/core/access/permissions.py",
+    "app/core/access/roles.py",
+    "app/core/access/authorization.py",
     "app/assets/locales/__init__.py",
     "app/assets/locales/en.json",
     "app/assets/locales/zh-CN.json",
-    "app/core/security/abuse_defense.py",
     "app/core/audit.py",
-    "app/api/authentication.py",
-    "app/schemas/authentication.py",
-    "app/services/authentication.py",
-    "app/services/business_audit.py",
+    "app/api/v1/endpoints/auth.py",
+    "app/schemas/auth.py",
+    "app/schemas/common.py",
+    "app/schemas/captcha.py",
+    "app/schemas/user.py",
+    "app/schemas/role.py",
+    "app/schemas/permission.py",
+    "app/models/postgres/user.py",
+    "app/models/postgres/role.py",
+    "app/models/postgres/permission.py",
+    "app/models/postgres/rbac_state.py",
+    "app/models/postgres/operation_audit.py",
+    "app/services/auth_service.py",
+    "app/services/audit_service.py",
+    "app/services/business_audit_service.py",
     "app/core/business_audit.py",
-    "app/models/business_audit.py",
-    "app/core/security/captcha.py",
+    "app/models/postgres/business_audit.py",
+    "app/services/captcha_service.py",
     "app/dependencies/captcha.py",
-    "app/core/observability.py",
-    "app/models/account_security.py",
-    "app/commands/passwords.py",
+    "app/core/logging/events.py",
+    "app/core/logging/context.py",
+    "app/core/logging/output.py",
+    "app/commands/reset_super_admin_password.py",
+    "app/commands/operator_password_service.py",
+    "app/commands/operator_password_repository.py",
     "app/core/security/passwords.py",
-    "app/core/security/identity.py",
-    "app/core/security/rate_limit.py",
+    "app/core/security/user_name.py",
+    "app/core/rate_limit/limiter.py",
     "app/dependencies/rate_limit.py",
-    "app/core/middleware/rate_limit.py",
-    "app/db/redis.py",
-    "app/db/errors.py",
+    "app/core/route_validation.py",
+    "app/db/redis_db.py",
     "scripts/load_test.py",
     "tests/test_load_test.py",
     "tests/test_database_availability.py",
     "tests/integration/test_database_availability.py",
-    "tests/integration/test_authentication_connections.py",
+    "tests/integration/test_auth_connections.py",
     "tests/integration/test_multi_instance.py",
     "tests/integration/instance_server.py",
-    "app/api/access.py",
-    "app/core/security/policy.py",
-    "app/repositories/access.py",
-    "app/core/security/tokens.py",
-    "app/services/access.py",
-    "app/core/security/policies.py",
+    "app/api/v1/endpoints/permissions.py",
+    "app/api/v1/endpoints/roles.py",
+    "app/api/v1/endpoints/users.py",
+    "app/api/v1/endpoints/me.py",
+    "app/api/v1/router.py",
+    "app/api/v1/route_validation.py",
+    "app/core/access/authorization_policy.py",
+    "app/core/access/role_policy.py",
+    "app/core/access/user_policy.py",
+    "app/repositories/postgres/permission_repository.py",
+    "app/repositories/postgres/role_repository.py",
+    "app/repositories/postgres/user_repository.py",
+    "app/repositories/postgres/user_role_repository.py",
+    "app/repositories/postgres/rbac_state_repository.py",
+    "app/core/security/jwt_tokens.py",
+    "app/repositories/redis/__init__.py",
+    "app/repositories/redis/login_session_repository.py",
+    "app/services/role_service.py",
+    "app/services/permission_service.py",
+    "app/services/user_service.py",
+    "app/services/user_role_transaction.py",
     "app/core/config.py",
     "alembic/versions/0003_business_audit.py",
     "alembic/versions/0004_password_auth.py",
     "sql/bootstrap_super_admin.sql",
     "sql/handover_super_admin.sql",
-    "tests/test_abuse_flow.py",
-    "tests/test_abuse_defense.py",
     "tests/test_audit.py",
-    "tests/test_authentication_api.py",
-    "tests/test_authentication_service.py",
+    "tests/test_auth_api.py",
+    "tests/test_auth_service.py",
     "tests/test_integration_safety.py",
-    "tests/test_health.py",
     "tests/test_i18n.py",
     "tests/test_business_audit.py",
     "tests/test_captcha.py",
     "tests/test_captcha_redis_live.py",
-    "tests/test_dependency_observability.py",
-    "tests/test_observability.py",
-    "tests/test_observability_formatter.py",
-    "tests/test_buffered_logging.py",
+    "tests/test_dependency_logging.py",
+    "tests/test_logging.py",
+    "tests/test_logging_formatter.py",
+    "tests/test_logging_output.py",
     "tests/integration/database_proxy.py",
     "tests/integration/test_database_deadlines.py",
     "tests/test_password_migration.py",
@@ -169,20 +316,19 @@ REQUIRED_ASSET_FILES = (
     "tests/test_policy.py",
     "tests/test_rate_limit.py",
     "tests/test_rate_limit_dependencies.py",
+    "tests/test_route_validation.py",
+    "tests/test_http_security_middleware.py",
     "tests/test_rate_limit_middleware.py",
-    "tests/test_request_observability.py",
+    "tests/test_request_logging.py",
     "tests/test_rbac_queries.py",
-    "tests/test_rbac_service_observability.py",
+    "tests/test_rbac_service_logging.py",
     "tests/test_rbac_service_operations.py",
     "tests/test_schemas.py",
     "tests/test_security.py",
     "tests/test_settings.py",
     "tests/test_redis_clients.py",
-    "tests/test_redis_session_slots.py",
-    "tests/redis_topology.py",
-    "tests/test_redis_topology_live.py",
+    "tests/test_redis_session_keys.py",
     "tests/integration/test_redis_session_registry.py",
-    "tests/integration/test_abuse_defense_redis.py",
     "tests/integration/safety.py",
     "tests/integration/test_business_audit.py",
     "tests/integration/test_captcha_redis.py",
@@ -192,7 +338,6 @@ REQUIRED_ASSET_FILES = (
     "tests/integration/test_postgresql_locking.py",
     "tests/integration/test_rbac_api.py",
     "tests/integration/test_rate_limit_redis.py",
-    "tests/integration/test_readiness.py",
     "tests/integration/test_read_visibility.py",
     "tests/integration/test_user_role_limit.py",
 )
@@ -327,7 +472,8 @@ def validate_frontmatter(errors: list[str]) -> None:
         "metadata",
     }
     if unexpected:
-        fail(errors, f"SKILL.md has unsupported frontmatter keys: {sorted(unexpected)}")
+        fail(
+            errors, f"SKILL.md has unsupported frontmatter keys: {sorted(unexpected)}")
 
     proxy_reference = "references/proxy-availability-detection.md"
     if proxy_reference not in content:
@@ -337,7 +483,8 @@ def validate_frontmatter(errors: list[str]) -> None:
         fail(errors, f"SKILL.md does not route to {business_audit_reference}")
     identity_lifecycle_reference = "references/identity-soft-delete.md"
     if identity_lifecycle_reference not in content:
-        fail(errors, f"SKILL.md does not route to {identity_lifecycle_reference}")
+        fail(
+            errors, f"SKILL.md does not route to {identity_lifecycle_reference}")
     country_reference = "references/country-catalog.md"
     if country_reference not in content:
         fail(errors, f"SKILL.md does not route to {country_reference}")
@@ -356,7 +503,11 @@ def validate_identity_and_row_lifecycle(errors: list[str]) -> None:
     paths = {
         "entrypoint": SKILL_ROOT / "SKILL.md",
         "reference": SKILL_ROOT / "references" / "identity-soft-delete.md",
-        "models": ASSET_ROOT / "app" / "models" / "access.py",
+        "models": ASSET_ROOT / "app" / "models" / "postgres" / "user.py",
+        "role model": ASSET_ROOT / "app" / "models" / "postgres" / "role.py",
+        "permission model": ASSET_ROOT / "app" / "models" / "postgres" / "permission.py",
+        "state model": ASSET_ROOT / "app" / "models" / "postgres" / "rbac_state.py",
+        "audit model": ASSET_ROOT / "app" / "models" / "postgres" / "operation_audit.py",
         "migration": ASSET_ROOT
         / "alembic"
         / "versions"
@@ -377,7 +528,8 @@ def validate_identity_and_row_lifecycle(errors: list[str]) -> None:
     if missing:
         return
 
-    text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
+    text = {name: path.read_text(encoding="utf-8")
+            for name, path in paths.items()}
     required_markers = {
         "reference": (
             "## Choose The Identity And Login Contract Before Greenfield Work",
@@ -392,13 +544,12 @@ def validate_identity_and_row_lifecycle(errors: list[str]) -> None:
             "class User(Base):",
             "user_name: Mapped[str]",
             'UniqueConstraint("user_name", name="uq_users_user_name")',
-            "class RbacState(Base):",
-            "class Permission(Base):",
-            "class Role(Base):",
-            "class RolePermission(Base):",
             "class UserRole(Base):",
-            "class RbacAuditEvent(Base):",
         ),
+        "role model": ("class Role(Base):", "class RolePermission(Base):"),
+        "permission model": ("class Permission(Base):",),
+        "state model": ("class RbacState(Base):",),
+        "audit model": ("class OperationAuditEvent(Base):",),
         "migration": (
             'sa.Column("user_name", sa.String(length=32), nullable=False)',
             'sa.UniqueConstraint("user_name", name="uq_users_user_name")',
@@ -438,9 +589,11 @@ def validate_identity_and_row_lifecycle(errors: list[str]) -> None:
         "RolePermission": "soft-delete",
         "UserRole": "soft-delete",
         "RbacState": "permanent",
-        "RbacAuditEvent": "append-only",
+        "OperationAuditEvent": "append-only",
     }
-    model_source = text["models"]
+    model_source = "\n".join(text[name] for name in (
+        "models", "role model", "permission model", "state model", "audit model",
+    ))
     class_positions = []
     for name, lifecycle in model_classes.items():
         position = model_source.find(f"class {name}(Base):")
@@ -456,7 +609,8 @@ def validate_identity_and_row_lifecycle(errors: list[str]) -> None:
         body = model_source[start:end]
         has_tombstone = "deleted_at: Mapped[" in body
         if lifecycle == "soft-delete" and not has_tombstone:
-            fail(errors, f"asset model {name} must define a deleted_at tombstone")
+            fail(
+                errors, f"asset model {name} must define a deleted_at tombstone")
         if lifecycle != "soft-delete" and has_tombstone:
             fail(
                 errors,
@@ -487,7 +641,8 @@ def validate_links(errors: list[str]) -> None:
             target_path = unquote(target.split("#", 1)[0])
             if not (markdown.parent / target_path).resolve().exists():
                 relative_markdown = markdown.relative_to(REPO_ROOT)
-                fail(errors, f"broken link in {relative_markdown}: {raw_target}")
+                fail(
+                    errors, f"broken link in {relative_markdown}: {raw_target}")
 
 
 def validate_bilingual_docs(errors: list[str]) -> None:
@@ -500,7 +655,8 @@ def validate_bilingual_docs(errors: list[str]) -> None:
         english = english_path.read_text(encoding="utf-8")
         chinese = chinese_path.read_text(encoding="utf-8")
         if f"[简体中文]({chinese_name})" not in english:
-            fail(errors, f"{english_name} is missing its Simplified Chinese link")
+            fail(
+                errors, f"{english_name} is missing its Simplified Chinese link")
         if f"[English]({english_name})" not in chinese:
             fail(errors, f"{chinese_name} is missing its English link")
 
@@ -511,7 +667,8 @@ def validate_legal_mirrors(errors: list[str]) -> None:
         skill_file = SKILL_ROOT / name
         if repo_file.is_file() and skill_file.is_file():
             if repo_file.read_bytes() != skill_file.read_bytes():
-                fail(errors, f"repository and distributable copies differ: {name}")
+                fail(
+                    errors, f"repository and distributable copies differ: {name}")
 
     notice_markers = (
         UPSTREAM_COMMIT,
@@ -530,7 +687,8 @@ def validate_legal_mirrors(errors: list[str]) -> None:
         for marker in notice_markers:
             if marker not in notice_text:
                 relative = notice_path.relative_to(REPO_ROOT)
-                fail(errors, f"{relative} is missing required notice: {marker}")
+                fail(
+                    errors, f"{relative} is missing required notice: {marker}")
 
     if (SKILL_ROOT / "SKILL.md").is_file():
         skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
@@ -569,9 +727,11 @@ def validate_release_readiness(errors: list[str], *, release_ready: bool) -> Non
     for path, heading, status_label, pre_heading, post_heading in definitions:
         if not path.is_file():
             continue
-        section = _current_checklist_section(path.read_text(encoding="utf-8"), heading)
+        section = _current_checklist_section(
+            path.read_text(encoding="utf-8"), heading)
         if section is None:
-            fail(errors, f"{path.name} is missing current section: ## {heading}")
+            fail(
+                errors, f"{path.name} is missing current section: ## {heading}")
             continue
         status_match = re.search(
             rf"^{re.escape(status_label)}[^\n]*`(DRAFT|READY)`\s*$",
@@ -579,14 +739,16 @@ def validate_release_readiness(errors: list[str], *, release_ready: bool) -> Non
             re.MULTILINE,
         )
         if status_match is None:
-            fail(errors, f"{path.name} must declare DRAFT or READY release status")
+            fail(
+                errors, f"{path.name} must declare DRAFT or READY release status")
             continue
         statuses.append(status_match.group(1))
 
         pre_start = section.find(pre_heading)
         post_start = section.find(post_heading)
         if pre_start < 0 or post_start <= pre_start:
-            fail(errors, f"{path.name} has invalid current pre-tag evidence sections")
+            fail(
+                errors, f"{path.name} has invalid current pre-tag evidence sections")
             continue
         pre_tag = section[pre_start:post_start]
         states = re.findall(r"^- \[([ xX])\] ", pre_tag, re.MULTILINE)
@@ -634,10 +796,10 @@ def validate_release_metadata(errors: list[str], *, release_ready: bool) -> None
             "skills/fastapi-templates-xtn/VERSION",
         ),
         "skills/fastapi-templates-xtn/references/migrations.md": (
-            f"`{RELEASE_TAG}` changes no database shape",
+            f"`{RELEASE_TAG}`",
         ),
         "skills/fastapi-templates-xtn/references/architecture-overview.zh-CN.md": (
-            f"`{RELEASE_TAG}` 不改变数据库结构",
+            f"`{RELEASE_TAG}`",
         ),
     }
     for relative, markers in version_markers.items():
@@ -661,7 +823,8 @@ def validate_release_metadata(errors: list[str], *, release_ready: bool) -> None
         path = REPO_ROOT / changelog_name
         if not path.is_file():
             continue
-        match = re.search(pattern, path.read_text(encoding="utf-8"), re.MULTILINE)
+        match = re.search(pattern, path.read_text(
+            encoding="utf-8"), re.MULTILINE)
         if match is None:
             fail(
                 errors, f"{changelog_name} lacks the current {RELEASE_VERSION} heading"
@@ -732,20 +895,30 @@ def validate_release_metadata(errors: list[str], *, release_ready: bool) -> None
 
 
 def validate_access_token_baseline(errors: list[str]) -> None:
+    """
+        核对 JWT 规则、Redis 登录仓储和认证接线，防止移层时漏掉原有安全要求。
+
+    :param errors: 接收文件、协议或调用顺序不符合约定的说明。
+    :return: 无返回值；只读取源码和文档，不访问 Redis 或数据库。
+    """
+    # 1. 从各自归属的文件读取合同；JWT 编解码与 Redis 登录读写分别维护。
     paths = {
         "skill": SKILL_ROOT / "SKILL.md",
         "policy": SKILL_ROOT / "references" / "jwt-session-security.md",
         "implementation": SKILL_ROOT / "references" / "jwt-session-implementation.md",
         "settings": ASSET_ROOT / "app" / "core" / "config.py",
-        "security": ASSET_ROOT / "app" / "core" / "security" / "tokens.py",
-        "dependencies": ASSET_ROOT / "app" / "dependencies" / "authentication.py",
+        "JWT codec": ASSET_ROOT / "app" / "core" / "security" / "jwt_tokens.py",
+        "login repository": ASSET_ROOT / "app" / "repositories" / "redis" / "login_session_repository.py",
+        "auth service": ASSET_ROOT / "app" / "services" / "auth_service.py",
+        "dependencies": ASSET_ROOT / "app" / "dependencies" / "auth.py",
         "environment": ASSET_ROOT / ".env.example",
         "settings tests": ASSET_ROOT / "tests" / "test_settings.py",
         "security tests": ASSET_ROOT / "tests" / "test_security.py",
     }
     if any(not path.is_file() for path in paths.values()):
         return
-    text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
+    text = {name: path.read_text(encoding="utf-8")
+            for name, path in paths.items()}
 
     require_semantics(
         errors,
@@ -773,7 +946,8 @@ def validate_access_token_baseline(errors: list[str]) -> None:
             (
                 "PostgreSQL has no Token/session table or per-request Token lookup",
                 (
-                    r"Do not add a PostgreSQL table for individual Token records.*do not add another database query per request",
+                    r"Do not add a PostgreSQL table for individual Token records.*"
+                    r"do not add another database query per request",
                 ),
             ),
         ),
@@ -789,14 +963,18 @@ def validate_access_token_baseline(errors: list[str]) -> None:
             "Redis is the only per-token online active-JTI gate",
         ),
         "implementation": (
-            "../assets/postgresql-rbac/app/core/security/tokens.py",
+            "../assets/postgresql-rbac/app/core/security/jwt_tokens.py",
+            "../assets/postgresql-rbac/app/repositories/redis/login_session_repository.py",
+            "../assets/postgresql-rbac/app/services/auth_service.py",
             "issue_access_token(",
-            "require_active_jti(",
-            "revoke_active_jti(",
+            "register_login_session(",
+            "check_login_session(",
+            "delete_login_session(",
             "HSETNX",
             "PEXPIRETIME",
             "PEXPIREAT",
-            "auth:sessions:v2",
+            "login:sessions:",
+            "login:sequence:",
         ),
         "settings": (
             "jwt_issuer: str | None = None",
@@ -804,12 +982,18 @@ def validate_access_token_baseline(errors: list[str]) -> None:
             "must be configured together or omitted",
             "Field(default=86_400, ge=1)",
         ),
-        "security": (
-            'REQUIRED_ACCESS_CLAIMS = frozenset({"sub", "jti", "iat", "exp", "token_type"})',
-            'OPTIONAL_ACCESS_SCOPE_CLAIMS = frozenset({"iss", "aud"})',
-            "expected_claims = _expected_access_claims(settings)",
-            "if set(payload) != expected_claims",
+        "JWT codec": (
+            'REQUIRED_ACCESS_TOKEN_FIELDS = frozenset({"user_id", "jti", "iat", "exp", "token_type"})',
+            'OPTIONAL_ACCESS_TOKEN_FIELDS = frozenset({"iss", "aud"})',
+            "expected_fields = REQUIRED_ACCESS_TOKEN_FIELDS",
+            "expected_fields |= OPTIONAL_ACCESS_TOKEN_FIELDS",
+            "if set(token_fields) != expected_fields",
             "if settings.jwt_issuer is not None and settings.jwt_audience is not None",
+        ),
+        "login repository": (
+            "class LoginSessionRepository:",
+            "login_session_repository = LoginSessionRepository()",
+            "register_login_session(",
             "_ACTIVATE_JTI =",
             "redis.call('TIME')",
             "redis.call('HSETNX', KEYS[1], ARGV[1], ARGV[2])",
@@ -819,6 +1003,10 @@ def validate_access_token_baseline(errors: list[str]) -> None:
             "_LIST_USER_SESSIONS",
             "redis.eval(",
             "_COMPARE_AND_DELETE",
+        ),
+        "auth service": (
+            "async def issue_access_token(",
+            "await login_session_repository.register_login_session(",
         ),
         "environment": ("JWT_ACCESS_TOKEN_TTL_SECONDS=86400",),
         "settings tests": (
@@ -835,7 +1023,6 @@ def validate_access_token_baseline(errors: list[str]) -> None:
             "test_configured_issuer_and_audience_mode_accepts_exact_seven_claims",
             "test_configured_issuer_and_audience_mode_rejects_invalid_scope",
             "test_configured_issuer_and_audience_mode_rejects_each_missing_claim",
-            "test_active_jti_field_does_not_depend_on_optional_issuer_or_audience",
             "test_configured_scope_uses_the_same_active_jti_lifecycle",
         ),
     }
@@ -847,6 +1034,30 @@ def validate_access_token_baseline(errors: list[str]) -> None:
                     errors, f"{relative} is missing Access Token invariant: {marker!r}"
                 )
 
+    # 2. 老模块不能继续保留为转发入口；Redis 仓储只管理已生成的登录信息，不签发 JWT。
+    old_registry = ASSET_ROOT / "app" / "core" / "security" / "session_registry.py"
+    if old_registry.exists():
+        fail(errors, "Redis login access must not retain the old core session registry")
+    repository_tree = _parse_python(errors, paths["login repository"], label="Redis login repository")
+    repository_class = _class_node(repository_tree, "LoginSessionRepository") if repository_tree else None
+    repository_methods = {
+        node.name for node in repository_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    } if repository_class is not None else set()
+    required_repository_methods = {
+        "register_login_session", "check_login_session", "delete_login_session", "list_active_sessions",
+    }
+    if not required_repository_methods.issubset(repository_methods):
+        fail(errors, "Redis login repository must own registration, validation, deletion and listing")
+    if repository_tree is not None and any(
+        isinstance(node, ast.ImportFrom) and node.module == "app.core.security.jwt_tokens"
+        and any(alias.name not in {"AccessTokenInfo", "integer_numeric_date"} for alias in node.names)
+        or isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "issue_access_token"
+        for node in ast.walk(repository_tree)
+    ):
+        fail(errors, "Redis login repository must not sign or decode JWTs or orchestrate Token issuance")
+
+    # 3. 默认示例不能启用签发者/使用方；请求鉴权仍须先查 Redis，再查 PostgreSQL 账号。
     active_optional_scope = re.compile(r"^\s*JWT_(?:ISSUER|AUDIENCE)\s*=")
     if any(
         active_optional_scope.match(line)
@@ -858,15 +1069,20 @@ def validate_access_token_baseline(errors: list[str]) -> None:
             ".env.example must leave optional JWT_ISSUER/JWT_AUDIENCE disabled",
         )
 
-    redis_check = text["dependencies"].find("token_version = await require_active_jti(")
-    postgres_check = text["dependencies"].find(
-        "authority = await load_authority_snapshot("
-    )
-    if redis_check < 0 or postgres_check < 0 or redis_check > postgres_check:
-        fail(errors, "authentication must validate Redis before PostgreSQL authority")
+    dependency_tree = _parse_python(errors, paths["dependencies"], label="authentication dependencies")
+    token_check = _function_node(dependency_tree.body, "check_token") if dependency_tree else None
+    token_calls = {
+        ast.unparse(node.func): node.lineno
+        for node in ast.walk(token_check) if isinstance(node, ast.Call)
+    } if token_check is not None else {}
+    decode_position = token_calls.get("decode_access_token")
+    redis_position = token_calls.get("login_session_repository.check_login_session")
+    if (decode_position is None or redis_position is None or decode_position >= redis_position
+            or "SessionFactory" in token_calls or "user_repository.check_current_user" in token_calls):
+        fail(errors, "Token dependency must verify JWT then Redis without loading PostgreSQL authority")
 
     if re.search(
-        r"""[\"']ver[\"']\s*:|payload\s*\[\s*[\"']ver[\"']\s*\]""", text["security"]
+        r"""[\"']ver[\"']\s*:|(?:token_fields|payload)\s*\[\s*[\"']ver[\"']\s*\]""", text["JWT codec"]
     ):
         fail(errors, "asset JWT code must not contain a ver claim")
 
@@ -884,6 +1100,19 @@ def validate_access_token_baseline(errors: list[str]) -> None:
     )
     for path in executable_paths:
         content = path.read_text(encoding="utf-8")
+        # 日志把常见敏感字段写入脱敏清单，不代表实现了刷新令牌；只排除这份纯字符串声明。
+        if path == ASSET_ROOT / "app" / "core" / "logging" / "details.py":
+            logging_tree = _parse_python(errors, path, label="HTTP log redaction")
+            for node in logging_tree.body if logging_tree is not None else ():
+                if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                        and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "_REDACTED_FIELDS"
+                        and isinstance(node.value, ast.Call) and ast.unparse(node.value.func) == "frozenset"
+                        and len(node.value.args) == 1 and isinstance(node.value.args[0], ast.Set)
+                        and all(isinstance(field, ast.Constant) and isinstance(field.value, str)
+                                for field in node.value.args[0].elts)):
+                    declaration = ast.get_source_segment(content, node)
+                    if declaration is not None:
+                        content = content.replace(declaration, "", 1)
         for pattern in forbidden_patterns:
             if pattern.search(content):
                 relative = path.relative_to(REPO_ROOT)
@@ -903,7 +1132,8 @@ def _parse_python(
     try:
         return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     except (OSError, SyntaxError, UnicodeDecodeError) as exc:
-        fail(errors, f"cannot parse {label} {path.relative_to(REPO_ROOT)}: {exc}")
+        fail(
+            errors, f"cannot parse {label} {path.relative_to(REPO_ROOT)}: {exc}")
         return None
 
 
@@ -968,7 +1198,284 @@ def _returned_names(node: ast.Return) -> tuple[str, ...] | None:
     return tuple(item.id for item in value.elts if isinstance(item, ast.Name))
 
 
+def _validate_field_contract(tree: ast.Module, class_name: str, field_name: str,
+                             annotation: str, keywords: dict[str, str], errors: list[str]) -> None:
+    """
+        按真实字段语法校验必填类型及指定约束，允许换行和补充文档说明。
+
+    :param tree: 仅解析、不会执行的模型源码语法树。
+    :param class_name: 声明字段的模型类名。
+    :param field_name: 必须保持合同的字段名。
+    :param annotation: 预期的字段类型表达式。
+    :param keywords: 必须保留的 Field 参数及其表达式。
+    :param errors: 接收合同错误的列表。
+    :return: 无返回值；缺失、非必填或约束错误时追加错误。
+    """
+    model = _class_node(tree, class_name)
+    field = next((
+        node for node in model.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == field_name
+    ), None) if model is not None else None
+    declaration = field.value if field is not None else None
+    if (
+        field is None
+        or ast.unparse(field.annotation) != annotation
+        or not isinstance(declaration, ast.Call)
+        or ast.unparse(declaration.func) != "Field"
+        or declaration.args
+    ):
+        fail(
+            errors, f"{class_name}.{field_name} must be a required {annotation} Field")
+        return
+    actual = {keyword.arg: keyword.value for keyword in declaration.keywords}
+    if any(name in actual for name in (None, "default", "default_factory")):
+        fail(
+            errors, f"{class_name}.{field_name} must remain required without a default")
+    for name, expected in keywords.items():
+        value = actual.get(name)
+        if value is None or ast.dump(value) != ast.dump(ast.parse(expected, mode="eval").body):
+            fail(
+                errors, f"{class_name}.{field_name} must keep {name}={expected}")
+
+
+def _validate_role_schema_contract(tree: ast.Module, errors: list[str]) -> None:
+    """
+        校验三个角色写入请求的严格版本号，以及权限 ID 批次边界。
+
+    :param tree: 角色请求源码的语法树，不受 Field 换行或说明文字影响。
+    :param errors: 接收丢失严格整数校验或数量边界等错误的列表。
+    :return: 无返回值；检查结果追加到 errors。
+    """
+    for class_name in ("RoleUpdateRequest", "RoleVersionRequest", "RolePermissionIdsRequest"):
+        _validate_field_contract(
+            tree, class_name, "expected_version", "int", {
+                "strict": "True", "ge": "0"}, errors
+        )
+    _validate_field_contract(
+        tree, "RolePermissionIdsRequest", "permission_ids", "list[PermissionId]",
+        {"min_length": "1", "max_length": "100"}, errors,
+    )
+
+
+def _validate_runtime_message_literals(tree: ast.Module, errors: list[str], *, label: str) -> None:
+    """
+        允许字段说明及用户名规则的双语字符标签，拒绝其他绕开多语言目录的中文文案。
+
+    :param tree: 应用源码语法树；不导入或执行应用。
+    :param errors: 接收运行时硬编码中文文案错误的列表。
+    :param label: 错误信息使用的源码相对路径。
+    :return: 无返回值；发现不属于文档或指定规则标签的中文字符串时追加错误。
+    """
+    # 仅豁免真正的文档字符串及 Field/Query 声明中的 description，不豁免整个模型或路由。
+    documented = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and ast.get_docstring(node) is not None
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and ast.unparse(node.func) in {"Field", "Query"}:
+            documented.update(
+                id(part) for keyword in node.keywords
+                if keyword.arg == "description" and isinstance(keyword.value, (ast.Constant, ast.JoinedStr))
+                for part in ast.walk(keyword.value) if isinstance(part, ast.Constant)
+            )
+
+    # 用户名允许字符的双语标签与字符规则一起维护；只放行该文件的这个文字常量。
+    # 完整错误句仍由语言目录提供，同文件其他中文返回值和异常继续检查。
+    if label.replace("\\", "/").endswith("/app/core/security/user_name.py"):
+        documented.update(
+            id(node.value) for node in tree.body
+            if isinstance(node, ast.Assign) and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "USER_NAME_CHARACTERS_ZH"
+            and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+        )
+
+    # Redis Lua 的独立注释行用于解释代码，不是接口文案；脚本内真实字符串仍然检查。
+    lua_script_names = {
+        "FIXED_WINDOW_SCRIPT", "_SESSION_FUNCTIONS",
+        "_ACTIVATE_JTI", "_COMPARE_AND_DELETE", "_READ_ACTIVE_JTI", "_LIST_USER_SESSIONS",
+    }
+    script_content: dict[int, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names, value = {node.target.id}, node.value
+        elif isinstance(node, ast.Assign):
+            names = {target.id for target in node.targets if isinstance(
+                target, ast.Name)}
+            value = node.value
+        else:
+            continue
+        if names & lua_script_names and value is not None:
+            for literal in ast.walk(value):
+                if isinstance(literal, ast.Constant) and isinstance(literal.value, str):
+                    script_content[id(literal)] = re.sub(
+                        r"(?m)^\s*--[^\n]*", "", literal.value)
+
+    # 下列变量仅声明 OpenAPI 响应文档；仍只接受 description 值，其他键中的中文照常报错。
+    metadata_names = {
+        "REQUEST_ID_OPENAPI_HEADER",
+        "NO_STORE_OPENAPI_HEADER",
+        "RATE_LIMIT_OPENAPI_HEADERS",
+    }
+    metadata_nodes: list[ast.AST] = []
+    for node in tree.body:
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.target.id in metadata_names and node.value is not None:
+                metadata_nodes.append(node.value)
+        elif isinstance(node, ast.FunctionDef) and node.name == "_role_update_json_schema":
+            # 此回调仅原位调整两个字段的文档；不豁免任意返回值、异常或局部变量。
+            metadata_nodes.extend(
+                statement.value for statement in node.body
+                if isinstance(statement, ast.Assign) and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Subscript)
+                and isinstance(statement.targets[0].value, ast.Name)
+                and statement.targets[0].value.id == "properties"
+                and isinstance(statement.targets[0].slice, ast.Constant)
+                and statement.targets[0].slice.value in {"name", "description"}
+                and isinstance(statement.value, ast.Dict)
+            )
+    for metadata in metadata_nodes:
+        for node in ast.walk(metadata):
+            if isinstance(node, ast.Dict):
+                documented.update(
+                    id(value) for key, value in zip(node.keys, node.values, strict=True)
+                    if isinstance(key, ast.Constant) and key.value == "description"
+                    and isinstance(value, ast.Constant)
+                )
+            # 常见错误文档使用状态码 → description 的静态字典生成；不放行任意生成器内容。
+            if (
+                isinstance(node, ast.DictComp)
+                and isinstance(node.key, ast.Name) and node.key.id == "status_code"
+                and isinstance(node.value, ast.Dict)
+                and any(
+                    isinstance(
+                        key, ast.Constant) and key.value == "description"
+                    and isinstance(value, ast.Name) and value.id == "description"
+                    for key, value in zip(node.value.keys, node.value.values, strict=True)
+                )
+            ):
+                for generator in node.generators:
+                    iterator = generator.iter
+                    if (
+                        ast.unparse(
+                            generator.target) == "(status_code, description)"
+                        and isinstance(iterator, ast.Call) and not iterator.args and not iterator.keywords
+                        and isinstance(iterator.func, ast.Attribute) and iterator.func.attr == "items"
+                        and isinstance(iterator.func.value, ast.Dict)
+                    ):
+                        documented.update(
+                            id(value) for key, value in zip(
+                                iterator.func.value.keys, iterator.func.value.values, strict=True
+                            )
+                            if isinstance(key, ast.Constant) and type(key.value) is int
+                            and 400 <= key.value <= 599 and isinstance(value, ast.Constant)
+                        )
+    if any(
+        isinstance(node, ast.Constant) and isinstance(node.value, str)
+        and id(node) not in documented
+        and re.search(r"[\u4e00-\u9fff]", script_content.get(id(node), node.value))
+        for node in ast.walk(tree)
+    ):
+        fail(
+            errors, f"{label} contains rendered Chinese API text outside catalogs")
+
+
+def _validate_authentication_schema_contract(tree: ast.Module, errors: list[str]) -> None:
+    """
+        校验旧密码和新密码分别使用直接字段约束，避免新策略阻止原密码验证。
+
+    :param tree: 身份请求模型的语法树，只解析源码，不导入应用或连接服务。
+    :param errors: 本次校验发现的具体合同问题列表。
+    :return: 无返回值；发现的问题追加到 errors。
+    """
+    aliases = {
+        node.targets[0].id: node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    }
+    if "ExistingPassword" in aliases or _function_node(
+        tree.body, "_validate_new_password_length"
+    ) is not None:
+        fail(errors, "password inputs must not restore ExistingPassword or a custom length validator")
+    # 两种字段都直接使用 SecretStr + Field；旧密码只有传输边界，新密码单独读取策略上下限。
+    for name, minimum, maximum in (
+        ("Password", "1", "MAX_PASSWORD_INPUT_CHARACTERS"),
+        ("NewPassword", "MIN_PASSWORD_CHARACTERS", "MAX_PASSWORD_CHARACTERS"),
+    ):
+        alias = aliases.get(name)
+        if (
+            not isinstance(alias, ast.Subscript)
+            or ast.unparse(alias.value) != "Annotated"
+            or not isinstance(alias.slice, ast.Tuple)
+            or not alias.slice.elts
+            or ast.unparse(alias.slice.elts[0]) != "SecretStr"
+        ):
+            fail(errors, f"{name} must remain an Annotated SecretStr alias")
+            continue
+        fields = [node for node in alias.slice.elts
+                  if isinstance(node, ast.Call) and ast.unparse(node.func) == "Field"]
+        if len(fields) != 1 or len(alias.slice.elts) != 2:
+            fail(
+                errors, f"{name} must use only SecretStr and one Field contract")
+        if len(fields) == 1:
+            keywords = {item.arg: item.value for item in fields[0].keywords}
+            if any(
+                ast.unparse(keywords.get(key, ast.Constant(None))) != expected
+                for key, expected in {"min_length": minimum, "max_length": maximum}.items()
+            ) or "json_schema_extra" in keywords:
+                fail(
+                    errors, f"{name} must enforce its character bounds directly in Field")
+
+    schema_class_fields: dict[str, dict[str, str]] = {}
+    required_secret_fields = {
+        "RegisterRequest": {"password": "NewPassword"},
+        "LoginRequest": {"password": "Password"},
+        "PasswordChangeRequest": {"current_password": "Password", "new_password": "NewPassword"},
+        "UserPasswordResetRequest": {"new_password": "NewPassword"},
+        "UserCreateRequest": {"password": "NewPassword"},
+    }
+    for class_name, field_contracts in required_secret_fields.items():
+        node = _class_node(tree, class_name)
+        actual = {
+            item.target.id: ast.unparse(item.annotation)
+            for item in node.body
+            if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
+        } if node is not None else {}
+        schema_class_fields[class_name] = actual
+        for field_name, expected in field_contracts.items():
+            if actual.get(field_name) != expected:
+                fail(
+                    errors, f"{class_name}.{field_name} must use the SecretStr-based {expected} contract")
+    if set(schema_class_fields.get("UserPasswordResetRequest", {})) != {"new_password", "user_id"}:
+        fail(errors, "UserPasswordResetRequest must expose only user_id and new_password beyond CAPTCHA fields")
+
+    username_request = _class_node(tree, "UsernameRequest")
+    username_field = next((
+        item.value for item in username_request.body
+        if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name) and item.target.id == "user_name"
+    ), None) if username_request is not None else None
+    # 用户名规则由业务文件维护；这里检查字段是否复用它，避免维护检查另存一份数字。
+    username_keywords = {
+        item.arg: ast.unparse(item.value)
+        for item in username_field.keywords
+    } if isinstance(username_field, ast.Call) and ast.unparse(username_field.func) == "Field" else {}
+    if any(username_keywords.get(name) != expected for name, expected in {
+        "min_length": "MIN_USER_NAME_LENGTH", "max_length": "MAX_USER_NAME_LENGTH", "pattern": "USER_NAME_PATTERN",
+    }.items()):
+        fail(errors, "username OpenAPI contract must reuse the central username length and character rules")
+
+
 def validate_local_password_authentication(errors: list[str]) -> None:
+    """
+        核对本地账号、密码和完整登录链路的源码合同，不运行应用或访问数据库。
+
+    :param errors: 收集缺失文件、字段和调用顺序等具体问题的列表。
+    :return: 无返回值；不符合约定的内容追加到 errors。
+    """
+    # 先收集各业务真实维护的文件，再解析其中的模型、接口和方法；不执行这些源码。
     paths = {
         "skill": SKILL_ROOT / "SKILL.md",
         "reference": SKILL_ROOT / "references" / "local-password-authentication.md",
@@ -979,16 +1486,29 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         "main": ASSET_ROOT / "app" / "main.py",
         "settings": ASSET_ROOT / "app" / "core" / "config.py",
         "passwords": ASSET_ROOT / "app" / "core" / "security" / "passwords.py",
-        "models": ASSET_ROOT / "app" / "models" / "account_security.py",
-        "users model": ASSET_ROOT / "app" / "models" / "access.py",
-        "schemas": ASSET_ROOT / "app" / "schemas" / "authentication.py",
-        "API": ASSET_ROOT / "app" / "api" / "authentication.py",
-        "service": ASSET_ROOT / "app" / "services" / "authentication.py",
-        "operator": ASSET_ROOT / "app" / "commands" / "passwords.py",
+        "audit actions": ASSET_ROOT / "app" / "core" / "audit.py",
+        "models": ASSET_ROOT / "app" / "models" / "postgres" / "operation_audit.py",
+        "users model": ASSET_ROOT / "app" / "models" / "postgres" / "user.py",
+        "state model": ASSET_ROOT / "app" / "models" / "postgres" / "rbac_state.py",
+        "schemas": ASSET_ROOT / "app" / "schemas" / "auth.py",
+        "common schemas": ASSET_ROOT / "app" / "schemas" / "common.py",
+        "captcha schemas": ASSET_ROOT / "app" / "schemas" / "captcha.py",
+        "user schemas": ASSET_ROOT / "app" / "schemas" / "user.py",
+        "API": ASSET_ROOT / "app" / "api" / "v1" / "endpoints" / "auth.py",
+        "account API": ASSET_ROOT / "app" / "api" / "v1" / "endpoints" / "users.py",
+        "self API": ASSET_ROOT / "app" / "api" / "v1" / "endpoints" / "me.py",
+        "API router": ASSET_ROOT / "app" / "api" / "v1" / "router.py",
+        "service": ASSET_ROOT / "app" / "services" / "auth_service.py",
+        "user service": ASSET_ROOT / "app" / "services" / "user_service.py",
+        "password repository": ASSET_ROOT / "app" / "repositories" / "postgres" / "user_repository.py",
+        "security audit service": ASSET_ROOT / "app" / "services" / "audit_service.py",
+        "operator": ASSET_ROOT / "app" / "commands" / "reset_super_admin_password.py",
+        "operator service": ASSET_ROOT / "app" / "commands" / "operator_password_service.py",
         "Alembic environment": ASSET_ROOT / "alembic" / "env.py",
+        "model registry": ASSET_ROOT / "app" / "models" / "postgres" / "__init__.py",
         "migration": (ASSET_ROOT / "alembic" / "versions" / "0004_password_auth.py"),
-        "API tests": ASSET_ROOT / "tests" / "test_authentication_api.py",
-        "service tests": ASSET_ROOT / "tests" / "test_authentication_service.py",
+        "API tests": ASSET_ROOT / "tests" / "test_auth_api.py",
+        "service tests": ASSET_ROOT / "tests" / "test_auth_service.py",
         "password tests": ASSET_ROOT / "tests" / "test_passwords.py",
         "PostgreSQL authentication tests": (
             ASSET_ROOT / "tests" / "integration" / "test_password_authentication.py"
@@ -1008,18 +1528,28 @@ def validate_local_password_authentication(errors: list[str]) -> None:
     if missing:
         return
 
-    text = {label: path.read_text(encoding="utf-8") for label, path in paths.items()}
+    text = {label: path.read_text(encoding="utf-8")
+            for label, path in paths.items()}
     trees: dict[str, ast.Module] = {}
     for label in (
         "main",
         "settings",
         "passwords",
+        "audit actions",
         "models",
         "users model",
         "schemas",
+        "common schemas",
+        "captcha schemas",
+        "user schemas",
         "API",
+        "account API",
+        "self API",
+        "API router",
         "service",
+        "user service",
         "operator",
+        "operator service",
         "migration",
     ):
         tree = _parse_python(errors, paths[label], label=label)
@@ -1035,7 +1565,8 @@ def validate_local_password_authentication(errors: list[str]) -> None:
     )
     for marker in question_markers:
         if marker not in text["reference"]:
-            fail(errors, f"local-password product-question batch is missing {marker!r}")
+            fail(
+                errors, f"local-password product-question batch is missing {marker!r}")
     normalized_reference = re.sub(r"\s+", " ", text["reference"])
     for marker in (
         "Do not invent",
@@ -1050,72 +1581,86 @@ def validate_local_password_authentication(errors: list[str]) -> None:
     if "interactive operator command" not in text["reference"]:
         fail(errors, "local-password reference must retain offline operator recovery")
 
-    api_tree = trees["API"]
-    routes: set[tuple[str, str, str, str]] = set()
-    for node in api_tree.body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for decorator in node.decorator_list:
-            if (
-                not isinstance(decorator, ast.Call)
-                or not isinstance(decorator.func, ast.Attribute)
-                or not isinstance(decorator.func.value, ast.Name)
-                or decorator.func.attr.lower()
-                not in {"get", "post", "put", "patch", "delete"}
-                or not decorator.args
-                or not isinstance(decorator.args[0], ast.Constant)
-                or not isinstance(decorator.args[0].value, str)
+    api_labels = ("API", "account API", "self API")
+    text["API"] = "\n".join(text[label] for label in api_labels)
+    routes: set[tuple[str, str, str]] = set()
+    expected_prefixes = {"API": "/auth",
+                         "account API": "/users", "self API": "/me"}
+    version_router = next((
+        node.value for node in trees["API router"].body
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+        and ast.unparse(node.value.func) == "APIRouter"
+    ), None)
+    version_prefix = next((
+        keyword.value.value for keyword in version_router.keywords
+        if keyword.arg == "prefix" and isinstance(keyword.value, ast.Constant)
+    ), None) if version_router is not None else None
+    if version_prefix != "/api/v1":
+        fail(errors, "API assembly router must own the /api/v1 version prefix")
+        version_prefix = ""
+    # 不同业务文件均可名为 router；必须先在各自模块解析前缀，再校验完整路径。
+    for label in api_labels:
+        prefixes: dict[str, str] = {}
+        for node in trees[label].body:
+            if not (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Call)
+                and ast.unparse(node.value.func) == "APIRouter"
             ):
                 continue
-            routes.add(
-                (
-                    decorator.func.value.id,
-                    decorator.func.attr.lower(),
-                    decorator.args[0].value,
-                    node.name,
-                )
-            )
+            prefix = next(
+                (keyword.value for keyword in node.value.keywords if keyword.arg == "prefix"), None)
+            if not isinstance(prefix, ast.Constant) or prefix.value != expected_prefixes[label]:
+                fail(
+                    errors, f"{label} must use the {expected_prefixes[label]} business prefix")
+                continue
+            prefixes[node.targets[0].id] = prefix.value
+        for node in trees[label].body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not (
+                    isinstance(decorator, ast.Call)
+                    and isinstance(decorator.func, ast.Attribute)
+                    and isinstance(decorator.func.value, ast.Name)
+                    and decorator.func.attr.lower() in {"get", "post", "put", "patch", "delete"}
+                    and decorator.args
+                    and isinstance(decorator.args[0], ast.Constant)
+                    and isinstance(decorator.args[0].value, str)
+                ):
+                    continue
+                prefix = prefixes.get(decorator.func.value.id)
+                if prefix is None:
+                    fail(
+                        errors, f"{label}.{node.name} has an unresolved router prefix")
+                    continue
+                routes.add((decorator.func.attr.lower(), version_prefix +
+                           prefix + decorator.args[0].value, node.name))
     expected_routes = {
-        ("registration_router", "post", "/auth/captcha", "create_public_captcha"),
-        ("router", "post", "/me/captcha", "create_authenticated_captcha"),
-        (
-            "registration_router",
-            "get",
-            "/auth/registration/status",
-            "read_registration_status",
-        ),
-        (
-            "router",
-            "post",
-            "/auth/registration/status",
-            "update_registration_status",
-        ),
-        (
-            "registration_router",
-            "post",
-            "/auth/register",
-            "register_local_account",
-        ),
-        ("router", "post", "/auth/login", "login_with_local_password"),
-        ("router", "get", "/me/sessions", "my_active_sessions"),
-        ("router", "post", "/me/password/change", "change_my_password"),
-        (
-            "router",
-            "post",
-            "/users/{user_id}/password/reset",
-            "reset_user_password",
-        ),
-        (
-            "router",
-            "post",
-            "/auth/password/reset/complete",
-            "complete_temporary_password_reset",
-        ),
-        ("router", "post", "/users", "create_user_with_temporary_password"),
+        ("post", "/api/v1/auth/captcha", "create_public_captcha"),
+        ("post", "/api/v1/auth/register", "register"),
+        ("post", "/api/v1/auth/login", "login"),
+        ("post", "/api/v1/auth/logout", "logout"),
+        ("post", "/api/v1/me/captcha", "create_authenticated_captcha"),
+        ("post", "/api/v1/me/password/change", "change_my_password"),
+        ("get", "/api/v1/me/user_info", "get_user_info"),
+        ("get", "/api/v1/users/sessions/list", "list_user_sessions"),
+        ("get", "/api/v1/users/list", "list_users"),
+        ("get", "/api/v1/users/detail", "get_user_detail"),
+        ("post", "/api/v1/users/create", "create_user"),
+        ("post", "/api/v1/users/password/reset", "reset_user_password"),
+        ("post", "/api/v1/users/roles/bind", "bind_user_roles"),
+        ("post", "/api/v1/users/roles/unbind", "unbind_user_roles"),
+        ("post", "/api/v1/users/disable", "disable_user"),
+        ("post", "/api/v1/users/enable", "enable_user"),
+        ("post", "/api/v1/users/sessions/logout-all", "revoke_user_sessions"),
     }
     missing_routes = expected_routes - routes
     if missing_routes:
-        fail(errors, f"local-password API is missing routes: {missing_routes!r}")
+        fail(
+            errors, f"local-password API is missing routes: {missing_routes!r}")
     unexpected_routes = sorted(
         route for route in routes if route not in expected_routes
     )
@@ -1125,49 +1670,24 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             f"local-password API contains unexpected routes: {unexpected_routes!r}",
         )
 
-    router_prefixes: dict[str, object] = {}
-    for node in api_tree.body:
-        if (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and isinstance(node.value, ast.Call)
-            and isinstance(node.value.func, ast.Name)
-            and node.value.func.id == "APIRouter"
-        ):
-            prefix = next(
-                (
-                    keyword.value
-                    for keyword in node.value.keywords
-                    if keyword.arg == "prefix"
-                ),
-                None,
-            )
-            if prefix is not None:
-                try:
-                    router_prefixes[node.targets[0].id] = ast.literal_eval(prefix)
-                except (TypeError, ValueError):
-                    pass
-    if (
-        router_prefixes.get("router") != "/api/v1"
-        or router_prefixes.get("registration_router") != "/api/v1"
-    ):
-        fail(errors, "both local-password routers must use the /api/v1 prefix")
-
-    router_selector = _function_node(api_tree.body, "authentication_routers")
-    router_returns = (
-        [
-            _returned_names(node)
-            for node in router_selector.body
-            if isinstance(node, ast.Return)
-        ]
-        if router_selector is not None
-        else []
-    )
-    if router_returns != [("registration_router", "router")]:
+    installed_routers = {
+        ast.unparse(node.value.args[0])
+        for node in trees["API router"].body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and ast.unparse(node.value.func) == "router.include_router"
+        and len(node.value.args) == 1
+    }
+    if not {
+        "auth.router",
+        "me.router",
+        "users.router",
+        "roles.router",
+        "permissions.router",
+    }.issubset(installed_routers):
         fail(
             errors,
-            "public registration route must remain installed while the persisted switch changes",
+            "all authentication routers must remain installed",
         )
 
     active_environment = {
@@ -1179,33 +1699,21 @@ def validate_local_password_authentication(errors: list[str]) -> None:
     if "PUBLIC_REGISTRATION_ENABLED" in active_environment:
         fail(
             errors,
-            "registration switch must live in PostgreSQL, not a deployment setting",
+            "public registration must not reintroduce a deployment switch",
         )
-    if active_environment.get("ADMIN_PASSWORD_RESET_MODE") != "direct":
-        fail(
-            errors,
-            "administrator password reset must default to direct mode in .env.example",
-        )
+    if "ADMIN_PASSWORD_RESET_MODE" in active_environment:
+        fail(errors, "administrator password reset must not expose a mode switch")
     for label, marker in (
-        (
-            "settings",
-            'admin_password_reset_mode: Literal["direct", "temporary"] = "direct"',
-        ),
-        ("API", "reset_mode=settings.admin_password_reset_mode"),
-        ("service", 'require_password_change = reset_mode == "temporary"'),
-        ("service", 'else "permanent_password_set"'),
+        ("state model", "public_registration_enabled"),
+        ("service", "set_registration_enabled"),
+        ("service", "state.public_registration_enabled"),
+        ("schemas", "RegistrationStatusData"),
+        ("API", "get_registration_status"),
+        ("API", "update_registration_status"),
     ):
-        if marker not in text[label]:
+        if marker in text[label]:
             fail(
-                errors, f"{label} must implement the selected administrator reset mode"
-            )
-    for label, marker in (
-        ("users model", "public_registration_enabled: Mapped[bool]"),
-        ("service", "if not state.public_registration_enabled:"),
-        ("API", "await service.set_registration_enabled("),
-    ):
-        if marker not in text[label]:
-            fail(errors, f"{label} must enforce persisted registration switch")
+                errors, f"{label} reintroduces the removed registration switch")
 
     password_constants = _module_literals(trees["passwords"])
     expected_password_constants = {
@@ -1215,8 +1723,8 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         "ARGON2_HASH_LENGTH": 32,
         "ARGON2_SALT_LENGTH": 16,
         "MIN_PASSWORD_CHARACTERS": 8,
-        "MAX_PASSWORD_CHARACTERS": 60,
-        "MAX_PASSWORD_UTF8_BYTES": 1_024,
+        "MAX_PASSWORD_CHARACTERS": 32,
+        "MAX_PASSWORD_INPUT_CHARACTERS": 1024,
         "DEFAULT_MAX_CONCURRENT_OPERATIONS": 2,
     }
     for name, expected in expected_password_constants.items():
@@ -1265,46 +1773,13 @@ def validate_local_password_authentication(errors: list[str]) -> None:
     ):
         fail(errors, "asset pyproject.toml must directly depend on argon2-cffi")
 
-    schema_class_fields: dict[str, dict[str, str]] = {}
-    for class_name in (
-        "RegistrationRequest",
-        "LoginRequest",
-        "PasswordChangeRequest",
-        "AdminPasswordResetRequest",
-        "AdminUserCreateRequest",
-        "PasswordResetCompletionRequest",
-    ):
-        node = _class_node(trees["schemas"], class_name)
-        if node is None:
-            continue
-        schema_class_fields[class_name] = {
-            item.target.id: ast.unparse(item.annotation)
-            for item in node.body
-            if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
-        }
-    required_secret_fields = {
-        "RegistrationRequest": {"password"},
-        "LoginRequest": {"password"},
-        "PasswordChangeRequest": {"current_password", "new_password"},
-        "AdminPasswordResetRequest": {"new_password"},
-        "AdminUserCreateRequest": {"temporary_password"},
-        "PasswordResetCompletionRequest": {"temporary_password", "new_password"},
-    }
-    for class_name, field_names in required_secret_fields.items():
-        actual = schema_class_fields.get(class_name, {})
-        for field_name in field_names:
-            if actual.get(field_name) != "SecretStr":
-                fail(errors, f"{class_name}.{field_name} must use SecretStr")
-    if set(schema_class_fields.get("AdminPasswordResetRequest", {})) != {
-        "new_password"
-    }:
-        fail(
-            errors,
-            "AdminPasswordResetRequest must expose only new_password beyond CAPTCHA fields",
-        )
+    schema_contract = ast.Module(
+        body=[*trees["common schemas"].body, *trees["captcha schemas"].body,
+              *trees["schemas"].body, *trees["user schemas"].body], type_ignores=[])
+    _validate_authentication_schema_contract(schema_contract, errors)
 
     user_model = _class_node(trees["users model"], "User")
-    audit_model = _class_node(trees["models"], "AccountSecurityAuditEvent")
+    audit_model = _class_node(trees["models"], "OperationAuditEvent")
     if user_model is None or audit_model is None:
         fail(errors, "user password fields and account-security audit are required")
     else:
@@ -1319,8 +1794,8 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             ),
             None,
         )
-        if audit_table != "account_security_audit_events":
-            fail(errors, "AccountSecurityAuditEvent table name is incorrect")
+        if audit_table != "operation_audit_events":
+            fail(errors, "OperationAuditEvent table name is incorrect")
         password_fields = {
             node.target.id
             for node in user_model.body
@@ -1328,7 +1803,6 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         }
         expected_fields = {
             "password_hash",
-            "must_change_password",
             "password_changed_at",
         }
         if not expected_fields.issubset(password_fields):
@@ -1347,7 +1821,8 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         "deleted_at IS NULL OR password_hash IS NULL",
     ):
         if marker not in text["users model"]:
-            fail(errors, f"User password-state constraint is missing {marker!r}")
+            fail(
+                errors, f"User password-state constraint is missing {marker!r}")
 
     migration_literals = _module_literals(trees["migration"])
     if (
@@ -1355,7 +1830,8 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         or migration_literals.get("down_revision") != "0003_business_audit"
     ):
         fail(errors, "0004_password_auth must directly follow 0003_business_audit")
-    migration_calls: dict[str, list[str]] = {"create_table": [], "drop_table": []}
+    migration_calls: dict[str, list[str]] = {
+        "create_table": [], "drop_table": []}
     added_columns: list[str] = []
     dropped_columns: list[str] = []
     for node in ast.walk(trees["migration"]):
@@ -1424,12 +1900,14 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             fail(errors, f"Alembic file has no literal revision: {path.name}")
             continue
         if down_revision is not None and not isinstance(down_revision, str):
-            fail(errors, f"Alembic file has unsupported down_revision: {path.name}")
+            fail(
+                errors, f"Alembic file has unsupported down_revision: {path.name}")
             continue
         if revision in revisions:
             fail(errors, f"duplicate Alembic revision: {revision}")
         revisions[revision] = down_revision
-    heads = set(revisions) - {parent for parent in revisions.values() if parent}
+    heads = set(revisions) - \
+        {parent for parent in revisions.values() if parent}
     if heads != {"0004_password_auth"}:
         fail(
             errors, f"0004_password_auth must be the sole migration head, got {heads!r}"
@@ -1444,7 +1922,7 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         if marker not in text["migration"]:
             fail(errors, f"account-security audit is missing {marker!r}")
 
-    service_class = _class_node(trees["service"], "LocalAuthenticationService")
+    service_class = _class_node(trees["service"], "AuthService")
     service_methods = (
         {
             node.name
@@ -1456,42 +1934,140 @@ def validate_local_password_authentication(errors: list[str]) -> None:
     )
     required_methods = {
         "register",
-        "authenticate",
+        "login",
+        "issue_access_token",
         "change_password",
-        "reset_user_password",
-        "complete_password_reset",
-        "operator_reset_super_admin_password",
     }
     if not required_methods.issubset(service_methods):
         fail(
             errors,
             f"local authentication service is missing {required_methods - service_methods!r}",
         )
-    for action in (
-        "account_security.registration.completed",
-        "account_security.password.changed",
-        "account_security.password.admin_reset",
-        "account_security.password.reset_completed",
-        "account_security.password.operator_reset",
-    ):
-        if action not in text["service"]:
-            fail(errors, f"account-security audit catalog is missing {action!r}")
-    for marker in (
-        "holder_ids != frozenset({user_id})",
-        "load_live_super_admin_holder_ids(session)",
-        "if verification.needs_rehash:",
-        "user.password_hash = replacement_hash",
-        "user.password_changed_at == snapshot.password_changed_at",
-        "user.password_changed_at = changed_at",
-        "self._same_password_state(user, concurrent_rehash_snapshot)",
-        "if error.status_code >= 500:",
-        "except Exception as exc:",
-        '"audit.write.failed"',
-    ):
-        if marker not in text["service"]:
+    # 登录业务必须在同一个方法中完成签发；先退出数据库事务，不能拿着行锁等待 Redis。
+    login_method = _function_node(
+        service_class.body, "login") if service_class is not None else None
+    issuer_calls = [
+        node for node in ast.walk(login_method)
+        if isinstance(node, ast.Await) and isinstance(node.value, ast.Call)
+        and ast.unparse(node.value.func) == "self.issue_access_token"
+    ] if login_method is not None else []
+    if len(issuer_calls) != 1:
+        fail(errors, "AuthService.login must await its Token issuer exactly once")
+    elif login_method is not None:
+        issuer = issuer_calls[0]
+        if any(
+            isinstance(node, (ast.With, ast.AsyncWith)
+                       ) and issuer in ast.walk(node)
+            for node in ast.walk(login_method)
+        ):
             fail(
-                errors, f"local authentication service is missing safeguard {marker!r}"
-            )
+                errors, "AuthService.login must issue the Token after leaving database contexts")
+        result_returns = [
+            node for node in ast.walk(login_method)
+            if isinstance(node, ast.Return) and isinstance(node.value, ast.Call)
+            and ast.unparse(node.value.func) == "LoginResult"
+        ]
+        if (login_method.returns is None or ast.unparse(login_method.returns) != "LoginResult"
+                or len(result_returns) != 1
+                or result_returns[0].lineno <= issuer.lineno):
+            fail(
+                errors, "AuthService.login must return LoginResult only after confirmed issuance")
+    # 业务层先签名，再交给仓储登记；只有确认登记成功的分支才可返回 Token。
+    issuer_method = _function_node(
+        service_class.body, "issue_access_token") if service_class is not None else None
+    registration_calls = [
+        node for node in ast.walk(issuer_method)
+        if isinstance(node, ast.Await) and isinstance(node.value, ast.Call)
+        and ast.unparse(node.value.func) == "login_session_repository.register_login_session"
+    ] if issuer_method is not None else []
+    token_returns = [
+        node for node in ast.walk(issuer_method)
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Name) and node.value.id == "token"
+    ] if issuer_method is not None else []
+    if (len(registration_calls) != 1 or len(token_returns) != 1
+            or token_returns[0].lineno <= registration_calls[0].lineno):
+        fail(errors, "AuthService issuer must register the signed Token before returning it")
+    elif issuer_method is not None:
+        registration = registration_calls[0]
+        confirmed_returns = [
+            node for node in ast.walk(issuer_method)
+            if isinstance(node, ast.If) and ast.unparse(node.test) == "registered"
+            and token_returns[0] in ast.walk(node)
+        ]
+        if len(confirmed_returns) != 1:
+            fail(errors, "AuthService issuer must return a Token only after confirmed registration")
+        if any(
+            isinstance(node, (ast.With, ast.AsyncWith)) and registration in ast.walk(node)
+            for node in ast.walk(issuer_method)
+        ):
+            fail(errors, "AuthService issuer must register Redis sessions outside database contexts")
+    operator_service_class = _class_node(
+        trees["operator service"], "OperatorPasswordService")
+    operator_methods = {
+        node.name for node in operator_service_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    } if operator_service_class is not None else set()
+    if "reset_super_admin_password" not in operator_methods:
+        fail(errors, "offline operator recovery service is missing reset_super_admin_password")
+    user_service_class = _class_node(trees["user service"], "UserService")
+    user_service_methods = {
+        node.name for node in user_service_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    } if user_service_class is not None else set()
+    required_user_methods = {
+        "create_user", "admin_create_user", "reset_user_password"}
+    if not required_user_methods.issubset(user_service_methods):
+        fail(
+            errors, f"user service is missing {required_user_methods - user_service_methods!r}")
+    # 动作只在核心枚举定义一次，业务直接传成员，由统一审计入口判断所属分类。
+    expected_actions = {
+        "REGISTER_USER": ("account_security.registration.completed", "service"),
+        "ADMIN_CREATE_USER": ("account_security.registration.admin_created", "user service"),
+        "CHANGE_PASSWORD": ("account_security.password.changed", "service"),
+        "ADMIN_RESET_PASSWORD": ("account_security.password.admin_reset", "user service"),
+        "OPERATOR_RESET_PASSWORD": ("account_security.password.operator_reset", "operator service"),
+    }
+    action_catalog = _class_node(trees["audit actions"], "AccountAuditAction")
+    action_values = {
+        node.targets[0].id: node.value.value
+        for node in action_catalog.body if isinstance(node, ast.Assign)
+        and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Constant)
+    } if action_catalog is not None else {}
+    for member, (action, label) in expected_actions.items():
+        if action_values.get(member) != action:
+            fail(
+                errors, f"account-security audit catalog must retain {member} = {action!r}")
+        action_inputs = {
+            ast.unparse(keyword.value)
+            for node in ast.walk(trees[label]) if isinstance(node, ast.Call)
+            for keyword in node.keywords if keyword.arg == "action"
+        }
+        if f"AccountAuditAction.{member}" not in action_inputs:
+            fail(
+                errors, f"{label} must use AccountAuditAction.{member} for audit writes")
+    safeguards = {
+        "service": (
+            "if verification.needs_rehash:",
+            "user.password_hash = replacement_hash",
+            "user.password_changed_at == user_info.password_changed_at",
+            "self._same_account_state(user, user_info)",
+            "user.password_hash != user_info.password_hash",
+        ),
+        "operator service": (
+            "holder_ids != frozenset({user_id})",
+            "load_live_super_admin_holder_ids(session)",
+        ),
+        "password repository": ("user.password_changed_at = cast(datetime, password_changed_at)",),
+        "security audit service": (
+            "if error.status_code >= 500:", "except Exception as exc:", '"audit.write.failed"',
+        ),
+    }
+    for label, markers in safeguards.items():
+        for marker in markers:
+            if marker not in text[label]:
+                fail(
+                    errors, f"{label} is missing local-authentication safeguard {marker!r}")
 
     operator_calls = [
         ast.unparse(node.func)
@@ -1508,13 +2084,11 @@ def validate_local_password_authentication(errors: list[str]) -> None:
 
     required_test_markers = {
         "API tests": (
-            "test_public_registration_route_remains_present_for_runtime_switch",
-            "test_captcha_is_required_before_public_registration_calls_service",
-            "test_registration_status_public_read_exposes_only_boolean",
-            "test_temporary_password_login_returns_403002_without_a_token",
-            "test_admin_reset_defaults_to_a_direct_permanent_password",
-            "test_admin_reset_and_temporary_completion_are_separate_commands",
-            "test_admin_reset_request_cannot_select_the_project_mode",
+            "test_public_register_route_remains_available",
+            "test_captcha_is_required_before_public_register_calls_service",
+            "test_registration_switch_routes_are_absent",
+            "test_admin_reset_sets_a_directly_usable_password",
+            "test_admin_reset_request_rejects_unsupported_mode",
             "test_password_routes_are_post_only_and_do_not_expose_the_mechanism",
         ),
         "service tests": (
@@ -1522,7 +2096,6 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             "test_successful_login_upgrades_a_stale_hash_after_rechecking_locks",
             "test_password_rotation_updates_user_row_and_timestamp",
             "test_service_self_change_rejects_reusing_the_current_password",
-            "test_service_temporary_completion_rejects_reusing_the_temporary_password",
             "test_account_security_denial_audit_excludes_infrastructure_failures",
             "test_operator_reset_requires_the_exact_super_admin_holder_set",
             "test_operator_reset_accepts_only_the_target_as_sole_super_admin",
@@ -1532,10 +2105,9 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             "test_hash_work_is_bounded_even_when_callers_run_concurrently",
         ),
         "PostgreSQL authentication tests": (
-            "test_registration_and_login_persist_complete_local_identity",
-            "test_registration_toggle_blocks_public_creation_but_not_admin_creation",
+            "test_register_and_login_persist_complete_local_identity",
             "test_self_password_change_updates_user_and_revokes_old_token",
-            "test_admin_reset_supports_direct_and_temporary_project_modes",
+            "test_admin_reset_sets_a_directly_usable_password",
         ),
         "PostgreSQL persistence tests": (
             "test_rotation_updates_same_user_row",
@@ -1546,35 +2118,404 @@ def validate_local_password_authentication(errors: list[str]) -> None:
     for label, markers in required_test_markers.items():
         for marker in markers:
             if marker not in text[label]:
-                fail(errors, f"{label} is missing local-password test {marker!r}")
+                fail(
+                    errors, f"{label} is missing local-password test {marker!r}")
 
-    if (
-        "from app.models import account_security as account_security_models"
-        not in text["Alembic environment"]
-    ):
-        fail(errors, "Alembic metadata must import password_models")
+    environment_tree = ast.parse(text["Alembic environment"])
+    registry_tree = ast.parse(text["model registry"])
+    registry_used = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "app.models.postgres"
+        and any(alias.name == "Base" for alias in node.names)
+        for node in ast.walk(environment_tree)
+    )
+    operation_audit_registered = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "app.models.postgres.operation_audit"
+        and any(alias.name == "OperationAuditEvent" for alias in node.names)
+        for node in registry_tree.body
+    )
+    if not registry_used or not operation_audit_registered:
+        fail(errors, "Alembic metadata must use the default registry including operation audit")
     for label, markers in {
         "reference": (
-            "ADMIN_PASSWORD_RESET_MODE",
-            "Administrator reset is a project-wide choice",
-            "controls only the administrator HTTP reset",
+            "Administrator creation and reset set a directly usable password",
         ),
         "README": (
             "username/password login",
-            "Public registration is enabled by default",
-            "Changing that holder is another guarded, audited offline PostgreSQL script",
-            "administrator password-reset choice",
+            "Public registration remains available",
+            "Changing that holder is another user-owned guarded, audited offline action",
+            "Administrator creation, password reset",
         ),
         "Chinese README": (
             "用户名密码",
-            "公开注册初始开启",
-            "受保护的交接脚本",
-            "管理员重置密码模式",
+            "自行注册不提供开关",
+            "不生成或执行迁移、初始化、交接脚本",
+            "管理员新增、重置密码",
         ),
     }.items():
         for marker in markers:
             if marker not in text[label]:
-                fail(errors, f"{label} is missing local-password marker {marker!r}")
+                fail(
+                    errors, f"{label} is missing local-password marker {marker!r}")
+
+
+def _validate_auth_entry_order(tree: ast.Module, errors: list[str]) -> None:
+    """
+        检查认证接口先通过限流和验证码，再调用完整业务；路由不自行签发令牌。
+
+    :param tree: 认证路由语法树，不执行请求或连接外部服务。
+    :param errors: 接收遗漏前置保护或执行顺序错误的列表。
+    :return: 无返回值；错误追加到 errors，函数名简化不改变原有安全边界。
+    """
+    expected_flows = {
+        "login": (
+            "auth_service.login",
+        ),
+        "register": (
+            "auth_service.register",
+        ),
+    }
+    # 路由只保留业务调用；限流和验证码仍由前面的显式依赖执行。
+    for function_name, expected in expected_flows.items():
+        function = _function_node(tree.body, function_name)
+        expected_dependency = f"Depends(rate_limit_{function_name})"
+        if function is None or expected_dependency not in ast.unparse(function):
+            fail(
+                errors, f"{function_name} must show its rate-limit dependency on the route")
+        captcha_dependency = f"Depends(require_captcha(CaptchaScene.{function_name.upper()}))"
+        if function is None or captcha_dependency not in ast.unparse(function):
+            fail(
+                errors, f"{function_name} must declare its fixed-scene CAPTCHA dependency")
+        calls = sorted(
+            (node.lineno, ast.unparse(node.value.func)) for node in ast.walk(function)
+            if isinstance(node, ast.Await) and isinstance(node.value, ast.Call)
+            and ast.unparse(node.value.func) in expected
+        ) if function is not None else []
+        if tuple(name for _, name in calls) != expected:
+            fail(
+                errors, f"{function_name} must call its complete service operation after dependencies")
+        if function is not None and any(
+            isinstance(node, ast.Call) and ast.unparse(
+                node.func).split(".")[-1] == "issue_access_token"
+            for node in ast.walk(function)
+        ):
+            fail(
+                errors, f"{function_name} route must leave Token issuance to its service")
+
+
+def _validate_captcha_dependency_wiring(
+    captcha_tree: ast.Module,
+    route_trees: dict[str, ast.Module],
+    errors: list[str],
+) -> None:
+    """
+        检查路由先声明限流或身份权限，验证码依赖只校验答案和可信所属用户。
+
+    :param captcha_tree: 验证码依赖模块语法树，只做离线检查。
+    :param route_trees: 按 auth、me、users 分组的真实路由语法树。
+    :param errors: 接收场景、路由顺序或验证码职责越界的问题。
+    :return: 无返回值；不会实例化应用或连接 Redis、数据库。
+    """
+    expected_scenes = {
+        "LOGIN": ("auth", "login", "rate_limited", "Depends(rate_limit_login)"),
+        "REGISTER": ("auth", "register", "rate_limited", "Depends(rate_limit_register)"),
+        "USER_CHANGE_PASSWORD": ("me", "change_my_password", "context",
+                                 "require_permission(PermissionKey.ACCOUNT_CHANGE_PASSWORD)"),
+        "ADMIN_CREATE_USER": ("users", "create_user", "context",
+                              "require_permission(PermissionKey.USERS_CREATE, management=True)"),
+        "ADMIN_RESET_USER_PASSWORD": ("users", "reset_user_password", "context",
+                                      "require_permission(PermissionKey.USERS_PASSWORD_RESET, management=True)"),
+    }
+    factory = _function_node(captcha_tree.body, "require_captcha")
+    factory_source = ast.unparse(factory) if factory is not None else ""
+    for scene, (module, function_name, prerequisite_name, prerequisite) in expected_scenes.items():
+        function = _function_node(route_trees[module].body, function_name)
+        if function is None or f"Depends(require_captcha(CaptchaScene.{scene}))" not in ast.unparse(function):
+            fail(
+                errors, f"{function_name} must declare its fixed-scene CAPTCHA dependency")
+        # FastAPI 按参数声明顺序执行依赖；检查前置依赖必须排在验证码参数之前。
+        arguments = function.args.args if function is not None else []
+        names = [argument.arg for argument in arguments]
+        defaults = [None] * (len(arguments) - len(function.args.defaults)
+                             ) + function.args.defaults if function else []
+        declarations = {
+            argument.arg: ast.unparse(
+                argument) + (ast.unparse(default) if default is not None else "")
+            for argument, default in zip(arguments, defaults, strict=True)
+        }
+        if (prerequisite not in declarations.get(prerequisite_name, "")
+                or prerequisite_name not in names or "captcha_checked" not in names
+                or names.index(prerequisite_name) >= names.index("captcha_checked")):
+            fail(
+                errors, f"{function_name} must declare its route prerequisite before CAPTCHA")
+
+    # 配置别名 AppSettings 可以来自 auth；验证码模块不应导入业务模型或执行限流、权限、身份依赖。
+    for node in captcha_tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module in {
+            "app.dependencies.auth", "app.dependencies.permission", "app.dependencies.rate_limit",
+            "app.schemas.auth", "app.schemas.user", "app.core.access.authorization", "app.core.access.permissions",
+        } and (node.module != "app.dependencies.auth" or any(alias.name != "AppSettings" for alias in node.names)):
+            fail(errors, "CAPTCHA dependency must not import business models, authentication, permissions or limiters")
+    if factory is not None and any(
+        isinstance(node, ast.Call) and ast.unparse(node.func) == "Depends" for node in ast.walk(factory)
+    ):
+        fail(errors, "CAPTCHA dependency must not embed business prerequisites")
+
+    dependency = _function_node(
+        factory.body, "check_captcha") if factory is not None else None
+    dependency_source = ast.unparse(
+        dependency) if dependency is not None else ""
+    calls = [node for node in ast.walk(dependency) if isinstance(
+        node, ast.Call)] if dependency is not None else []
+    reads = [node for node in calls if ast.unparse(
+        node.func) == "read_body_field"]
+    verification = [node for node in calls if ast.unparse(
+        node.func) == "captcha_service.verify_captcha"]
+    fields = {node.args[1].value for node in reads
+              if len(node.args) == 2 and isinstance(node.args[1], ast.Constant)}
+    if (len(reads) != 2 or fields != {"captcha_id", "captcha_answer"} or len(verification) != 1
+            or any(node.lineno >= verification[0].lineno for node in reads)):
+        fail(errors, "CAPTCHA dependency must validate CAPTCHA fields before one verification")
+    if ("request.json()" not in dependency_source or "except JSONDecodeError" not in dependency_source
+            or "not isinstance(body, dict)" not in dependency_source or "uuid.UUID(" not in dependency_source
+            or "raise invalid_request_400(" not in dependency_source or "scene=scene," not in dependency_source):
+        fail(errors, "CAPTCHA dependency must preserve body validation errors and its fixed scene")
+    if ("getattr(request.state, 'user_id', None)" not in dependency_source
+            or "scene.requires_login" not in dependency_source or "raise unauthenticated_401(" not in dependency_source
+            or "not isinstance(user_id, str)" not in dependency_source or "not user_id" not in dependency_source
+            or "user_id=user_id" not in dependency_source or "owner_id" in dependency_source):
+        fail(errors, "CAPTCHA dependency must bind its private user_id from trusted request state or reject it")
+    if "verify_and_consume_captcha" in ast.unparse(captcha_tree):
+        fail(errors, "retired direct CAPTCHA adapter must not remain")
+    if "return check_captcha" not in factory_source:
+        fail(errors, "require_captcha must return its request dependency")
+
+
+def _validate_captcha_service_consumption(tree: ast.Module, errors: list[str]) -> None:
+    """
+        验证验证码先通过 GETDEL 一次作废，再比较包含业务和用户的摘要。
+
+    :param tree: 验证码服务的源码语法树，不导入应用或调用 Redis。
+    :param errors: 接收单次消费、摘要绑定或旧实现残留问题的列表。
+    :return: 无返回值；将不符合现行消费约定的源码问题加入 errors。
+    """
+    service = _class_node(tree, "CaptchaService")
+    verify = _function_node(
+        service.body, "verify_captcha") if service is not None else None
+    calls = [node for node in ast.walk(verify) if isinstance(
+        node, ast.Call)] if verify is not None else []
+    consumed = [node for node in calls if ast.unparse(
+        node.func) == "redis.getdel"]
+    compared = [node for node in calls if ast.unparse(
+        node.func) == "hmac.compare_digest"]
+    # 一次 Redis 命令同时读取、删除，不能退回先比较正确答案再删除的流程。
+    if (len(consumed) != 1 or len(compared) != 1 or consumed[0].lineno >= compared[0].lineno
+            or any(ast.unparse(node.func) in {"redis.get", "redis.delete", "redis.eval"} for node in calls)):
+        fail(errors, "CAPTCHA must use one GETDEL before comparing the answer")
+
+    # 签发和校验必须使用同一份摘要绑定，不能遗漏用途或当前用户。
+    for method_name in ("create_captcha", "verify_captcha"):
+        method = _function_node(
+            service.body, method_name) if service is not None else None
+        hashes = [node for node in ast.walk(method) if isinstance(node, ast.Call)
+                  and ast.unparse(node.func) == "self.hash_captcha_code"] if method is not None else []
+        if (len(hashes) != 1 or {keyword.arg: ast.unparse(keyword.value) for keyword in hashes[0].keywords}
+                != {"scene": "scene", "user_id": "user_id"}):
+            fail(
+                errors, f"CAPTCHA {method_name} must bind scene and user_id in its digest")
+    hash_method = _function_node(
+        service.body, "hash_captcha_code") if service is not None else None
+    payloads = [node for node in ast.walk(hash_method) if isinstance(
+        node, ast.List)] if hash_method else []
+    if not any({"scene", "user_id", "captcha_id", "answer"} <= {
+        node.id for node in ast.walk(payload) if isinstance(node, ast.Name)
+    } for payload in payloads):
+        fail(errors, "CAPTCHA digest must encode scene, user_id, ID and answer together")
+    if any(marker in ast.unparse(tree) for marker in ("CONSUME_CAPTCHA_SCRIPT", "parse_captcha_record")):
+        fail(errors, "retired CAPTCHA Lua/JSON-record implementation must not remain")
+
+
+def _validate_user_rate_limit_wiring(
+    rate_limit_tree: ast.Module,
+    auth_tree: ast.Module,
+    permission_tree: ast.Module,
+    route_validation_tree: ast.Module,
+    api_route_rules_tree: ast.Module,
+    errors: list[str],
+) -> None:
+    """
+        校验已登录业务以路由名称分桶，并在账号读取前按普通或验证码窗口计数一次。
+
+    :param rate_limit_tree: 限流 HTTP 适配源码语法树。
+    :param auth_tree: JWT 与账号依赖源码语法树。
+    :param permission_tree: 接口权限依赖源码语法树。
+    :param route_validation_tree: 启动期业务路由接线校验源码语法树。
+    :param api_route_rules_tree: 声明公开入口及特殊认证依赖的 v1 校验模块语法树。
+    :param errors: 接收路由名称或运行时依赖接线缺失问题的列表。
+    :return: 无返回值；发现契约缺失时追加具体错误。
+    """
+    # 普通业务直接把路由名与当前用户 ID 交给一次 Redis 计数。
+    function = _function_node(rate_limit_tree.body, "rate_limit_user")
+    source = ast.unparse(function) if function is not None else ""
+    if any(marker not in source for marker in (
+        "getattr(request.scope.get('route'), 'name', None)",
+        "subject_type='user_id'",
+        "key_parts=[str(login_info.user_id)]",
+    )):
+        fail(errors, "rate_limit_user must show route and user_id key parts")
+
+    load_context = _function_node(
+        auth_tree.body, "_load_current_user")
+    quota_calls = ("rate_limit_private_captcha", "rate_limit_user")
+    database_calls = (
+        "user_repository.check_current_user",
+    )
+    # 数据库共用入口只查账号，不能再藏一层限流选择或重复扣次。
+    load_calls = [
+        ast.unparse(node.value.func)
+        for node in ast.walk(load_context)
+        if isinstance(node, ast.Await) and isinstance(node.value, ast.Call)
+    ] if load_context is not None else []
+    if any(load_calls.count(name) != 1 for name in database_calls) or any(
+        name in load_calls for name in quota_calls
+    ):
+        fail(errors, "current-user loading must read the account once without nested quota counting")
+
+    dependency_contracts = {
+        "get_current_user": (
+            "Depends(check_token)",
+            "rate_limit_user(request, login_info, settings)",
+            "_load_current_user",
+        ),
+        "get_captcha_user": (
+            "Depends(check_token)",
+            "_load_current_user",
+            "get_captcha_scene",
+        ),
+    }
+    for function_name, markers in dependency_contracts.items():
+        function = _function_node(auth_tree.body, function_name)
+        source = ast.unparse(function) if function is not None else ""
+        if any(marker not in source for marker in markers):
+            fail(
+                errors,
+                f"{function_name} must keep its complete authenticated rate-limit dependency",
+            )
+        # 每个用途入口直接限流一次，再读账号；验证码必须使用自己的限流函数。
+        expected_quota = "rate_limit_private_captcha" if function_name == "get_captcha_user" else "rate_limit_user"
+        call_positions = {
+            name: [
+                node.lineno for node in ast.walk(function)
+                if isinstance(node, ast.Await) and isinstance(node.value, ast.Call)
+                and ast.unparse(node.value.func) == name
+            ]
+            for name in (*quota_calls, "_load_current_user")
+        } if function is not None else {}
+        quotas = call_positions.get(expected_quota, [])
+        loads = call_positions.get("_load_current_user", [])
+        if (
+            len(quotas) != 1 or len(loads) != 1
+            or sum(len(call_positions.get(name, [])) for name in quota_calls) != 1
+            or quotas[0] >= loads[0]
+        ):
+            fail(
+                errors, f"{function_name} must count exactly once before database account load")
+
+    permission_factory = _function_node(
+        permission_tree.body, "require_permission")
+    permission_dependency = (
+        _function_node(permission_factory.body, "dependency")
+        if permission_factory is not None else None
+    )
+    permission_source = (
+        ast.unparse(permission_dependency)
+        if permission_dependency is not None
+        else ""
+    )
+    if any(marker not in permission_source for marker in (
+        "Depends(auth.check_token)",
+        "Depends(get_settings)",
+        "rate_limit_user(request, login_info, settings, management=management)",
+        "auth._load_current_user(request, login_info)",
+    )):
+        fail(errors, "require_permission must keep Token validation, selected business quota and shared account load")
+    # 权限工厂默认普通额度，由路由选择管理额度，不能因有权限检查就固定使用管理次数。
+    quota_defaults = dict(zip(
+        (argument.arg for argument in permission_factory.args.kwonlyargs),
+        permission_factory.args.kw_defaults,
+        strict=True,
+    )) if permission_factory is not None else {}
+    management_default = quota_defaults.get("management")
+    if not isinstance(management_default, ast.Constant) or management_default.value is not False:
+        fail(errors, "require_permission must default to ordinary quota with management=False")
+    # 权限入口没有中转依赖；直接核对回调内的一次限流、一次查库和指定权限判断。
+    permission_calls = {
+        name: [
+            node.lineno for node in ast.walk(permission_dependency)
+            if isinstance(node, ast.Await) and isinstance(node.value, ast.Call)
+            and ast.unparse(node.value.func) == name
+        ]
+        for name in (*quota_calls, "auth._load_current_user")
+    } if permission_dependency is not None else {}
+    management_quotas = permission_calls.get("rate_limit_user", [])
+    management_loads = permission_calls.get("auth._load_current_user", [])
+    permission_checks = [
+        node.lineno for node in ast.walk(permission_dependency)
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "required_key not in context.permissions"
+    ] if permission_dependency is not None else []
+    if (
+        len(management_quotas) != 1 or len(management_loads) != 1 or len(permission_checks) != 1
+        or sum(len(permission_calls.get(name, [])) for name in quota_calls) != 1
+        or not management_quotas[0] < management_loads[0] < permission_checks[0]
+    ):
+        fail(errors, "require_permission must count selected quota exactly once before account and permission checks")
+
+    route_validation = _function_node(
+        route_validation_tree.body, "validate_api_routes")
+    route_validation_source = (
+        ast.unparse(route_validation)
+        if route_validation is not None
+        else ""
+    )
+    required_route_checks = (
+        "route.name", "_uses_dependency", "public_routes",
+        "authenticated_dependencies", "special_routes",
+    )
+    if any(marker not in route_validation_source for marker in required_route_checks):
+        fail(errors, "route validation must inspect every authenticated runtime rate-limit dependency")
+    if any(
+        isinstance(
+            node, ast.ImportFrom) and node.module == "app.dependencies.auth"
+        for node in route_validation_tree.body
+    ):
+        fail(errors, "core route validation must not import business authentication dependencies")
+    api_route_rules_source = ast.unparse(api_route_rules_tree)
+    route_wiring = _function_node(
+        api_route_rules_tree.body, "validate_v1_api_routes")
+    required_api_rules = (
+        "check_token",
+        "get_current_user",
+        "require_permission",
+        "get_captcha_user",
+    )
+    expected_arguments = {
+        "public_routes": "_PUBLIC_ROUTES",
+        "authenticated_dependencies": "_AUTHENTICATED_DEPENDENCIES",
+        "special_routes": "_SPECIAL_ROUTES",
+    }
+    calls = (
+        [node for node in ast.walk(route_wiring)
+         if isinstance(node, ast.Call) and ast.unparse(node.func) == "validate_api_routes"]
+        if route_wiring is not None else []
+    )
+    wired = any(
+        len(call.args) == 1 and ast.unparse(call.args[0]) == "app"
+        and {keyword.arg: ast.unparse(keyword.value) for keyword in call.keywords} == expected_arguments
+        for call in calls
+    )
+    if any(marker not in api_route_rules_source for marker in required_api_rules) or not wired:
+        fail(errors, "API route rules must supply public and authenticated routes to core validation")
 
 
 def validate_rate_limiting_and_verification(errors: list[str]) -> None:
@@ -1584,27 +2525,29 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
             SKILL_ROOT / "references" / "verification-and-abuse-defense.md"
         ),
         "settings": ASSET_ROOT / "app" / "core" / "config.py",
-        "policy registry": ASSET_ROOT / "app" / "core" / "security" / "policies.py",
-        "limiter": ASSET_ROOT / "app" / "core" / "security" / "rate_limit.py",
-        "middleware": ASSET_ROOT / "app" / "core" / "middleware" / "rate_limit.py",
-        "actor dependency": ASSET_ROOT / "app" / "dependencies" / "rate_limit.py",
-        "abuse defense": ASSET_ROOT / "app" / "core" / "security" / "abuse_defense.py",
-        "identity abuse flow": ASSET_ROOT / "app" / "services" / "abuse_flow.py",
-        "captcha": ASSET_ROOT / "app" / "core" / "security" / "captcha.py",
-        "redis client": ASSET_ROOT / "app" / "db" / "redis.py",
+        "limiter": ASSET_ROOT / "app" / "core" / "rate_limit" / "limiter.py",
+        "user dependency": ASSET_ROOT / "app" / "dependencies" / "rate_limit.py",
+        "authorization dependency": ASSET_ROOT / "app" / "dependencies" / "auth.py",
+        "permission dependency": ASSET_ROOT / "app" / "dependencies" / "permission.py",
+        "route validation": ASSET_ROOT / "app" / "core" / "route_validation.py",
+        "API route rules": ASSET_ROOT / "app" / "api" / "v1" / "route_validation.py",
+        "authentication routes": ASSET_ROOT / "app" / "api" / "v1" / "endpoints" / "auth.py",
+        "current-account routes": ASSET_ROOT / "app" / "api" / "v1" / "endpoints" / "me.py",
+        "user-management routes": ASSET_ROOT / "app" / "api" / "v1" / "endpoints" / "users.py",
+        "captcha dependency": ASSET_ROOT / "app" / "dependencies" / "captcha.py",
+        "captcha service": ASSET_ROOT / "app" / "services" / "captcha_service.py",
+        "redis client": ASSET_ROOT / "app" / "db" / "redis_db.py",
         "application": ASSET_ROOT / "app" / "main.py",
+        "exception handlers": ASSET_ROOT / "app" / "core" / "exception_handlers.py",
         "environment": ASSET_ROOT / ".env.example",
         "settings tests": ASSET_ROOT / "tests" / "test_settings.py",
-        "abuse-defense tests": ASSET_ROOT / "tests" / "test_abuse_defense.py",
-        "identity-flow tests": ASSET_ROOT / "tests" / "test_abuse_flow.py",
+        "rate-limit dependency tests": ASSET_ROOT / "tests" / "test_rate_limit_dependencies.py",
+        "authentication HTTP tests": ASSET_ROOT / "tests" / "test_auth_api.py",
         "captcha tests": ASSET_ROOT / "tests" / "test_captcha.py",
         "captcha Redis tests": ASSET_ROOT
         / "tests"
         / "integration"
         / "test_captcha_redis.py",
-        "abuse-defense Redis tests": (
-            ASSET_ROOT / "tests" / "integration" / "test_abuse_defense_redis.py"
-        ),
         "compose": ASSET_ROOT / "compose.dev.yaml",
         "CI": REPO_ROOT / ".github" / "workflows" / "ci.yml",
         "README": REPO_ROOT / "README.md",
@@ -1625,12 +2568,21 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
     if missing:
         return
 
+    for retired_path in (
+        ASSET_ROOT / "app" / "dependencies" / "auth_guard.py",
+        ASSET_ROOT / "app" / "services" / "auth_guard_service.py",
+    ):
+        if retired_path.exists():
+            fail(
+                errors,
+                f"retired limiter path remains: {retired_path.relative_to(REPO_ROOT)}",
+            )
+
     required_markers = {
         "rate-limit reference": (
             "## Redis Fixed Window",
-            "Do not add an `api_global`, `api_ip`",
-            "429001",
-            "503001",
+            "42901",
+            "50301",
         ),
         "verification reference": (
             "CAPTCHA",
@@ -1638,25 +2590,16 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
             "register",
         ),
         "settings": (
-            "app_environment: str = Field(",
             "rate_limit_redis_url: str | None = Field(default=None, repr=False)",
             "rate_limit_hmac_key: SecretStr",
             "max_active_sessions_per_user: int = Field(ge=1)",
             "rate_limit_captcha_create_per_five_minutes: int = Field(default=10",
-            "rate_limit_authenticated_read_per_minute: int = Field(default=600",
-            "rate_limit_ordinary_write_per_minute: int = Field(default=120",
-            "rate_limit_management_read_per_minute: int = Field(default=300",
-            "rate_limit_authorization_write_per_minute: int = Field(default=60",
+            "rate_limit_user_read: int = Field(default=600",
+            "rate_limit_user_write: int = Field(default=120",
+            "rate_limit_admin_read: int = Field(default=300",
+            "rate_limit_admin_write: int = Field(default=60",
             "rate_limit_login_ip_per_five_minutes: int = Field(default=20",
-            "rate_limit_registration_ip_per_hour: int = Field(default=5",
-            "rate_limit_temporary_complete_ip_per_five_minutes: int = Field(",
-        ),
-        "policy registry": (
-            "class SecurityPolicies:",
-            "captcha_create=RateLimitPolicy(",
-            "login=RateLimitPolicy(",
-            "registration=RateLimitPolicy(",
-            "temporary_complete=RateLimitPolicy(",
+            "rate_limit_register_ip_per_hour: int = Field(default=5",
         ),
         "limiter": (
             "FIXED_WINDOW_SCRIPT:",
@@ -1665,71 +2608,75 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
             "redis.call('PTTL', KEYS[1])",
             "async def check_rate_limit(",
         ),
-        "middleware": (
-            "def trusted_client_ip(",
+        "user dependency": (
+            "def get_limit_ip(",
             "return ipaddress.ip_address(host).compressed",
             'return ""',
-            "def semantic_rate_limit_headers(",
+            "async def rate_limit_user(",
+            'getattr(request.scope.get("route"), "name", None)',
+            "async def rate_limit_login(",
+            "async def rate_limit_register(",
+            "async def rate_limit_public_captcha(",
+            "key_parts=[get_limit_ip(request)]",
+            "key_parts=[str(login_info.user_id)]",
         ),
-        "actor dependency": (
-            "def actor_policy_for(",
-            "async def enforce_principal_rate_limit(",
-            "name=operation_id",
-            "policies.authorization_write",
-        ),
-        "abuse defense": (
-            "class AbuseDefenseService:",
-            "async def check_login_attempt(",
-            "async def check_registration_attempt(",
-            "async def check_temporary_password_completion(",
-            "async def check_captcha_create(",
-        ),
-        "identity abuse flow": (
-            "class InvalidLoginCredentialsError(RuntimeError):",
-            "class IdentityAbuseFlow:",
-            "async def authenticate(",
-            "verify_real_or_dummy_credentials",
-            "async def complete_temporary_password_reset(",
+        "authentication routes": (
+            "async def login(",
+            "auth_service.login(",
             "async def register(",
-            "registration_action",
+            "auth_service.register(",
+            "captcha_service.create_captcha(",
         ),
-        "captcha": ("class ", "async def "),
+        "current-account routes": (
+            "async def create_authenticated_captcha(",
+            "captcha_service.create_captcha(",
+        ),
+        "captcha dependency": (
+            "def require_captcha(",
+            ".verify_captcha(",
+        ),
+        "captcha service": (
+            "class CaptchaService:",
+            "async def create_captcha(",
+            ") -> CaptchaResponse:",
+            "async def verify_captcha(",
+            "def build_redis_key(",
+            "def hash_captcha_code(",
+            "def build_png_base64_image(",
+            "EXPIRE_SECONDS",
+            "captcha_service = CaptchaService()",
+        ),
         "redis client": ("def create_rate_limit_redis_client(",),
         "application": (
             "create_rate_limit_redis_client(settings)",
             "app.state.rate_limit_redis",
-            "@app.exception_handler(RateLimitExceeded)",
-            "@app.exception_handler(RateLimitUnavailable)",
+            "register_exception_handlers(app)",
+        ),
+        "exception handlers": (
+            "async def handle_rate_limit_exceeded(",
+            "async def handle_rate_limit_unavailable(",
         ),
         "environment": (
             "# RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6380/0",
-            "APP_ENVIRONMENT=development",
             "RATE_LIMIT_HMAC_KEY=",
             "MAX_ACTIVE_SESSIONS_PER_USER=",
-            "ADMIN_PASSWORD_RESET_MODE=direct",
             "RATE_LIMIT_CAPTCHA_CREATE_PER_FIVE_MINUTES=10",
             "RATE_LIMIT_LOGIN_IP_PER_FIVE_MINUTES=20",
-            "RATE_LIMIT_REGISTRATION_IP_PER_HOUR=5",
-            "RATE_LIMIT_TEMPORARY_COMPLETE_IP_PER_FIVE_MINUTES=20",
+            "RATE_LIMIT_REGISTER_IP_PER_HOUR=5",
         ),
         "settings tests": (
-            "test_app_environment_is_required_for_every_rate_limit_mode",
+            "test_app_environment_is_not_a_runtime_setting",
             "test_rate_limit_defaults_are_explicit_and_configurable",
             "test_session_limit_must_be_positive_and_explicit",
-            "test_admin_password_reset_defaults_to_direct_and_accepts_temporary",
         ),
-        "abuse-defense tests": (
-            "test_anonymous_quota_uses_only_named_business_and_trusted_ip",
-            "test_missing_trusted_ip_never_enters_a_shared_bucket",
-            "test_captcha_scene_is_independent_and_private_subject_is_actor",
+        "rate-limit dependency tests": (
+            "test_missing_route_name_fails_closed",
+            "test_denied_user_check_raises_rate_limit_exceeded",
+            "test_authenticated_captcha_charges_its_exact_window_once",
         ),
-        "identity-flow tests": (
-            "test_invalid_credentials_have_one_generic_error_without_failure_counter",
-            "test_admission_fails_before_credential_callback",
-        ),
-        "abuse-defense Redis tests": (
-            "test_login_uses_only_per_business_ip_key",
-            "test_captcha_scenes_and_subjects_do_not_share_quota",
+        "authentication HTTP tests": (
+            "test_register_http_flow_admits_before_captcha_and_write",
+            "test_login_http_flow_admits_before_captcha_and_complete_login",
         ),
         "captcha tests": ("test_",),
         "captcha Redis tests": ("test_",),
@@ -1750,7 +2697,8 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
         "release checklist": ("rate",),
         "Chinese release checklist": ("限流",),
     }
-    text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
+    text = {name: path.read_text(encoding="utf-8")
+            for name, path in paths.items()}
     for name, markers in required_markers.items():
         for marker in markers:
             if marker not in text[name]:
@@ -1768,38 +2716,16 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
     if settings_tree is None:
         return
     settings_class = _class_node(settings_tree, "Settings")
-    app_environment_field = None
-    if settings_class is not None:
-        app_environment_field = next(
-            (
-                node
-                for node in settings_class.body
-                if isinstance(node, ast.AnnAssign)
-                and isinstance(node.target, ast.Name)
-                and node.target.id == "app_environment"
-            ),
-            None,
-        )
-    app_environment_value = (
-        app_environment_field.value
-        if isinstance(app_environment_field, ast.AnnAssign)
-        else None
-    )
-    app_environment_is_required = (
-        isinstance(app_environment_value, ast.Call)
-        and isinstance(app_environment_value.func, ast.Name)
-        and app_environment_value.func.id == "Field"
-        and not app_environment_value.args
-        and all(
-            keyword.arg not in {"default", "default_factory"}
-            for keyword in app_environment_value.keywords
-        )
-    )
-    if not app_environment_is_required:
+    # 单项目不再为了日志要求填写运行环境；测试夹具自己的环境安全检查不在这里删除。
+    if settings_class is not None and any(
+        isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "app_environment"
+        for node in settings_class.body
+    ):
         fail(
             errors,
-            "Settings.app_environment must be a required Field with no default or "
-            "default_factory",
+            "Settings must not restore the retired app_environment logging field",
         )
 
     active_environment = {
@@ -1808,8 +2734,27 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
         if line.strip() and not line.lstrip().startswith("#") and "=" in line
         for key, value in (line.split("=", 1),)
     }
-    if not active_environment.get("APP_ENVIRONMENT"):
-        fail(errors, ".env.example must explicitly set a non-empty APP_ENVIRONMENT")
+    if "APP_ENVIRONMENT" in active_environment:
+        fail(errors, ".env.example must not restore the retired APP_ENVIRONMENT logging setting")
+
+    for name in (
+        "settings",
+        "environment",
+        "user dependency",
+        "authentication routes",
+    ):
+        for retired_marker in (
+            "rate_limit_enabled",
+            "RATE_LIMIT_ENABLED",
+            "AuthGuardService",
+            "get_auth_guard",
+        ):
+            if retired_marker in text[name]:
+                relative = paths[name].relative_to(REPO_ROOT)
+                fail(
+                    errors,
+                    f"{relative} retains retired limiter marker {retired_marker!r}",
+                )
 
     retired_shared_quota_markers = (
         "api_global",
@@ -1826,9 +2771,8 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
     )
     for name in (
         "settings",
-        "policy registry",
-        "abuse defense",
-        "identity abuse flow",
+        "user dependency",
+        "authentication routes",
         "environment",
     ):
         for marker in retired_shared_quota_markers:
@@ -1839,27 +2783,53 @@ def validate_rate_limiting_and_verification(errors: list[str]) -> None:
                     f"{relative} reintroduces retired quota marker: {marker!r}",
                 )
 
-    login_check_start = text["abuse defense"].find("async def check_login_attempt(")
-    registration_check_start = text["abuse defense"].find(
-        "async def check_registration_attempt(", login_check_start
-    )
-    login_check_body = text["abuse defense"][login_check_start:registration_check_start]
-    if "self._policies.login" not in login_check_body:
-        fail(errors, "login admission must use its single per-IP business quota")
-    # Subject selection is verified by the abuse-defense behavior tests;
-    # matching an old parameter spelling cannot prove which Redis key is used.
+    # Dimension and exact behavior are also exercised by the dependency tests.
 
-    flow_source = text["identity abuse flow"]
-    flow_order = (
-        flow_source.find("await self._abuse_defense.check_login_attempt("),
-        flow_source.find("result = await verify_real_or_dummy_credentials()"),
-    )
-    if any(position < 0 for position in flow_order) or flow_order != tuple(
-        sorted(flow_order)
+    rate_limit_tree = _parse_python(
+        errors, paths["user dependency"], label="user rate-limit dependency")
+    authorization_tree = _parse_python(
+        errors, paths["authorization dependency"], label="authorization dependency")
+    permission_tree = _parse_python(
+        errors, paths["permission dependency"], label="permission dependency")
+    route_validation_tree = _parse_python(
+        errors, paths["route validation"], label="route validation")
+    api_route_rules_tree = _parse_python(
+        errors, paths["API route rules"], label="API route rules")
+    if (
+        rate_limit_tree is not None
+        and authorization_tree is not None
+        and permission_tree is not None
+        and route_validation_tree is not None
+        and api_route_rules_tree is not None
     ):
-        fail(
+        _validate_user_rate_limit_wiring(
+            rate_limit_tree,
+            authorization_tree,
+            permission_tree,
+            route_validation_tree,
+            api_route_rules_tree,
             errors,
-            "login flow must admit by IP before real/dummy credentials",
+        )
+
+    authentication_routes_tree = _parse_python(
+        errors, paths["authentication routes"], label="authentication routes")
+    if authentication_routes_tree is not None:
+        _validate_auth_entry_order(authentication_routes_tree, errors)
+    captcha_tree = _parse_python(
+        errors, paths["captcha dependency"], label="captcha dependency")
+    me_tree = _parse_python(
+        errors, paths["current-account routes"], label="current-account routes")
+    users_tree = _parse_python(
+        errors, paths["user-management routes"], label="user-management routes")
+    service_tree = _parse_python(
+        errors, paths["captcha service"], label="captcha service")
+    if service_tree is not None:
+        _validate_captcha_service_consumption(service_tree, errors)
+    if (captcha_tree is not None and authentication_routes_tree is not None
+            and me_tree is not None and users_tree is not None):
+        _validate_captcha_dependency_wiring(
+            captcha_tree, {"auth": authentication_routes_tree,
+                           "me": me_tree, "users": users_tree}, errors,
         )
 
 
@@ -1872,13 +2842,14 @@ def validate_simplified_authentication_and_administration(errors: list[str]) -> 
         "tests/test_verification.py",
         "tests/test_verification_flow.py",
         "tests/integration/test_verification_redis.py",
-        "app/authentication.py",
+        "app/auth.py",
+        "app/repositories/postgres/user_authority_repository.py",
     )
     for relative in retired_files:
         if (ASSET_ROOT / relative).exists():
             fail(
                 errors,
-                f"retired optional authentication module is still bundled: {relative}",
+                f"retired baseline module is still bundled: {relative}",
             )
 
     app_root = ASSET_ROOT / "app"
@@ -1886,9 +2857,10 @@ def validate_simplified_authentication_and_administration(errors: list[str]) -> 
         if any(part in FORBIDDEN_DIRECTORY_NAMES for part in path.parts):
             continue
         content = path.read_text(encoding="utf-8")
-        for marker in ("can_delegate", "super_admin_transfer", "logout-all"):
+        for marker in ("can_delegate", "super_admin_transfer"):
             if marker in content:
-                fail(errors, f"{path.relative_to(REPO_ROOT)} reintroduces {marker!r}")
+                fail(
+                    errors, f"{path.relative_to(REPO_ROOT)} reintroduces {marker!r}")
 
     migration_path = ASSET_ROOT / "alembic" / "versions" / "0004_password_auth.py"
     if migration_path.is_file():
@@ -1899,7 +2871,7 @@ def validate_simplified_authentication_and_administration(errors: list[str]) -> 
         ):
             fail(
                 errors,
-                "registration switch must be persisted with a true database default",
+                "historical 0004 migration must retain its published registration column",
             )
 
     reference_paths = (
@@ -1955,25 +2927,26 @@ def validate_single_project_scope(errors: list[str]) -> None:
             continue
         content = path.read_text(encoding="utf-8")
         for pattern in forbidden_patterns:
-            match = pattern.search(content)
-            if match is None:
-                continue
-            line_start = content.rfind("\n", 0, match.start()) + 1
-            line_end = content.find("\n", match.end())
-            if line_end < 0:
-                line_end = len(content)
-            matched_line = content[line_start:line_end].casefold()
-            if re.search(r"\b(?:do not|does not|without|no)\b", matched_line) or any(
-                marker in matched_line for marker in ("不", "无", "禁止")
-            ):
-                continue
-            line = content.count("\n", 0, match.start()) + 1
-            relative = path.relative_to(REPO_ROOT)
-            fail(
-                errors,
-                f"{relative}:{line} introduces a forbidden multi-project "
-                "authorization scope",
-            )
+            for match in pattern.finditer(content):
+                # Markdown 会把同一句禁令折成多行；句号、空段和下一条列表才切断它。
+                # 只认目标词前面的否定，不能借上一句或后面的“不”掩盖实际新增范围。
+                boundaries = list(re.finditer(
+                    r"\n[ \t]*\n|[.!?;。！？；](?:\s+|$)|\n(?=[ \t]*(?:[-*+] |#{1,6} ))",
+                    content[:match.start()],
+                ))
+                sentence_start = boundaries[-1].end() if boundaries else 0
+                before_scope = content[sentence_start:match.start()].casefold()
+                if re.search(r"\b(?:do not|does not|without|no)\b", before_scope) or any(
+                    marker in before_scope for marker in ("不", "无", "禁止")
+                ):
+                    continue
+                line = content.count("\n", 0, match.start()) + 1
+                relative = path.relative_to(REPO_ROOT)
+                fail(
+                    errors,
+                    f"{relative}:{line} introduces a forbidden multi-project "
+                    "authorization scope",
+                )
 
 
 def validate_user_role_limit(errors: list[str]) -> None:
@@ -1986,10 +2959,15 @@ def validate_user_role_limit(errors: list[str]) -> None:
         / "postgresql-rbac-implementation.md",
         "migration reference": SKILL_ROOT / "references" / "migrations.md",
         "testing reference": SKILL_ROOT / "references" / "testing.md",
-        "domain": ASSET_ROOT / "app" / "core" / "security" / "domain.py",
-        "schemas": ASSET_ROOT / "app" / "schemas" / "access.py",
-        "queries": ASSET_ROOT / "app" / "repositories" / "access.py",
-        "service": ASSET_ROOT / "app" / "services" / "access.py",
+        "role definitions": ASSET_ROOT / "app" / "core" / "access" / "roles.py",
+        "schemas": ASSET_ROOT / "app" / "schemas" / "user.py",
+        "role schemas": ASSET_ROOT / "app" / "schemas" / "role.py",
+        "queries": ASSET_ROOT
+        / "app"
+        / "repositories"
+        / "postgres"
+        / "user_role_repository.py",
+        "service": ASSET_ROOT / "app" / "services" / "user_service.py",
         "migration": ASSET_ROOT
         / "alembic"
         / "versions"
@@ -2014,7 +2992,8 @@ def validate_user_role_limit(errors: list[str]) -> None:
     if missing:
         return
 
-    text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
+    text = {name: path.read_text(encoding="utf-8")
+            for name, path in paths.items()}
     required_markers = {
         "RBAC reference": (
             "each user may have at most 10",
@@ -2030,24 +3009,24 @@ def validate_user_role_limit(errors: list[str]) -> None:
         ),
         "migration reference": (
             "Enforce at most 10 live `user_roles` rows per user",
-            "disabled roles still occupy a slot, tombstones release one",
+            "a binding to a disabled role still counts",
+            "tombstone does not",
         ),
         "testing reference": (
             "the 10-live-role limit",
             "concurrent race for the tenth slot",
         ),
-        "domain": ("MAX_ROLES_PER_USER = 10",),
+        "role definitions": ("MAX_ROLES_PER_USER = 10",),
         "schemas": (
             "max_length=MAX_ROLES_PER_USER",
-            "permission_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)",
         ),
         "queries": (
-            "async def count_live_user_roles(",
+            "async def count_roles(",
             "UserRole.deleted_at.is_(None)",
         ),
         "service": (
-            "live_role_count + len(changed_ids) > MAX_ROLES_PER_USER",
-            'conflict("user_role_limit_exceeded")',
+            "bound_role_count + len(changed_ids) > MAX_ROLES_PER_USER",
+            'conflict_409("user_role_limit_exceeded", business_code=BusinessCode.USER_ROLE_LIMIT_EXCEEDED)',
         ),
         "migration": (
             'revision: str = "0001_single_project_rbac"',
@@ -2090,13 +3069,14 @@ def validate_user_role_limit(errors: list[str]) -> None:
                     f"{relative} is missing user-role-limit marker: {marker!r}",
                 )
 
-    role_request_start = text["schemas"].find("class RoleIdsRequest(BaseModel):")
+    role_request_start = text["schemas"].find(
+        "class UserRoleIdsRequest(RequestBase):")
     role_request_end = text["schemas"].find("\nclass ", role_request_start + 1)
     role_request = text["schemas"][
-        role_request_start : role_request_end if role_request_end >= 0 else None
+        role_request_start: role_request_end if role_request_end >= 0 else None
     ]
     if "max_length=100" in role_request:
-        fail(errors, "RoleIdsRequest must not retain the old 100-item batch limit")
+        fail(errors, "UserRoleIdsRequest must not retain the old 100-item batch limit")
 
 
 def validate_administrative_read_visibility(errors: list[str]) -> None:
@@ -2110,16 +3090,33 @@ def validate_administrative_read_visibility(errors: list[str]) -> None:
         / "references"
         / "postgresql-rbac-implementation.md",
         "testing reference": SKILL_ROOT / "references" / "testing.md",
-        "queries": ASSET_ROOT / "app" / "repositories" / "access.py",
-        "policy": ASSET_ROOT / "app" / "core" / "security" / "policy.py",
-        "routes": ASSET_ROOT / "app" / "api" / "access.py",
-        "service": ASSET_ROOT / "app" / "services" / "access.py",
+        "queries": ASSET_ROOT
+        / "app"
+        / "repositories"
+        / "postgres"
+        / "user_repository.py",
+        "role queries": ASSET_ROOT
+        / "app"
+        / "repositories"
+        / "postgres"
+        / "role_repository.py",
+        "user policy": ASSET_ROOT / "app" / "core" / "access" / "user_policy.py",
+        "role policy": ASSET_ROOT / "app" / "core" / "access" / "role_policy.py",
+        "routes": ASSET_ROOT / "app" / "api" / "v1" / "endpoints" / "users.py",
+        "role routes": ASSET_ROOT / "app" / "api" / "v1" / "endpoints" / "roles.py",
+        "service": ASSET_ROOT / "app" / "services" / "user_service.py",
+        "role service": ASSET_ROOT / "app" / "services" / "role_service.py",
+        "transaction service": ASSET_ROOT
+        / "app"
+        / "services"
+        / "user_role_transaction.py",
+        "audit service": ASSET_ROOT / "app" / "services" / "audit_service.py",
         "policy tests": ASSET_ROOT / "tests" / "test_policy.py",
-        "dependency tests": ASSET_ROOT / "tests" / "test_dependency_observability.py",
+        "dependency tests": ASSET_ROOT / "tests" / "test_dependency_logging.py",
         "query tests": ASSET_ROOT / "tests" / "test_rbac_queries.py",
         "service audit tests": ASSET_ROOT
         / "tests"
-        / "test_rbac_service_observability.py",
+        / "test_rbac_service_logging.py",
         "read integration tests": ASSET_ROOT
         / "tests"
         / "integration"
@@ -2145,65 +3142,82 @@ def validate_administrative_read_visibility(errors: list[str]) -> None:
     if missing:
         return
 
-    text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
+    text = {name: path.read_text(encoding="utf-8")
+            for name, path in paths.items()}
+    text["queries"] += "\n" + text["role queries"]
+    text["routes"] += "\n" + text["role routes"]
+    text["service"] += "\n" + text["role service"] + \
+        "\n" + text["transaction service"]
     required_markers = {
         "hierarchy reference": (
             "## Administrative Read Visibility",
             "### Administrative Write Visibility",
-            "the current `super_admin` may list and inspect every non-deleted user and role",
-            "strictly lower than the actor's tier",
+            "the current `super_admin` may inspect every non-deleted user and role, and",
+            "strictly lower than the current user's `role_level`",
             "Batch-load role grants and user authority",
-            "collections such as `assigned_role_ids` contain only roles visible to the",
-            "A caller without that capability receives `403001`",
-            "is concealed with the same `404001`",
+            "collections such as `bound_role_ids` contain only roles visible to the",
+            "A caller without that capability receives `40301`",
+            "is concealed with the same `40401`",
         ),
         "atomic reference": (
-            "Public nested collections such as `assigned_role_ids` use the",
+            "Public nested collections such as `bound_role_ids` use the",
             "Do not reopen a route/request `Session`",
         ),
         "PostgreSQL reference": (
             "Assemble page authorities and role grants in bounded",
-            "`assigned_role_ids` contains only roles visible to the actor",
+            "`bound_role_ids` contains only roles visible to the current user",
         ),
         "testing reference": (
             "role and user pages loading grants and authority in a bounded number of",
-            "nested `assigned_role_ids`",
+            "nested `bound_role_ids`",
         ),
         "queries": (
-            "def _actor_is_super_admin(",
-            "async def load_role_grants_for_roles(",
-            "async def load_user_access_views(",
-            "actor: AuthoritySnapshot",
-            "if not _actor_is_super_admin(actor):",
-            "Role.management_tier < actor.management_tier",
+            "class UserRepository:",
+            "async def get_user(",
+            "async def check_current_user(",
+            "class UserPermissions:",
+            "class UserDetails:",
+            "class RoleRepository:",
+            "def _is_super_admin(",
+            "async def get_role_permissions(",
+            "async def get_users_info(",
+            "current_user: UserInfo",
+            "self._is_super_admin(current_user)",
+            "Role.level < current_user.role_level",
             "Role.is_protected.is_(False)",
-            "async def list_visible_roles_page(",
-            "async def list_visible_users_page(",
-            "async def load_authority_snapshots_for_users(",
+            "async def list_roles(",
+            "async def list_users(",
+            "async def get_user_detail(",
+            "async def get_user_permissions(",
+            "async def _load_user_permissions(",
         ),
-        "policy": (
+        "user policy": (
             "def is_administrative_user_visible(",
-            "actor.user_id != target.user_id",
-            "target.management_tier < actor.management_tier",
+            "current_user.user_id != target.user_id",
+            "target.role_level < current_user.role_level",
+        ),
+        "role policy": (
             "def is_administrative_role_visible(",
-            "role.management_tier < actor.management_tier",
+            "role.level < current_user.role_level",
         ),
         "routes": (
-            "roles, total = await list_visible_roles_page(",
-            "grants = await load_role_grants_for_roles(session, roles=roles)",
-            "users, total = await list_visible_users_page(",
-            "access_by_user_id = await load_user_access_views(",
+            "await role_service.list_roles(",
+            "await role_service.get_role_detail(",
+            "await user_service.list_users(",
+            "await user_service.get_user_detail(",
         ),
         "service": (
-            "async def _lock_actor_and_target_user(",
-            "not is_administrative_user_visible(actor=actor, target=visible_target)",
-            "not is_administrative_role_visible(actor=actor, role=grant)",
-            "async def _lock_shared_role_change(",
-            "not is_administrative_role_visible(actor=actor, role=role_before)",
-            "affected_by_user_id = await load_authority_snapshots_for_users(",
-            "except RbacError as exc:",
-            "except Exception as audit_exc:",
-            '"audit.write.failed"',
+            "async def _lock_current_and_target_user(",
+            "not is_administrative_user_visible(current_user=current_user, target=target_permissions.user_info)",
+            "not is_administrative_role_visible(current_user=locked.current_user, role=grant)",
+            "async def _lock_role(",
+            "not is_administrative_role_visible(current_user=current_user, role=role_info)",
+            "await user_repository.get_user_permissions(",
+            "await role_repository.get_role_permissions(",
+            "await user_repository.list_users(",
+            "await role_repository.list_roles(",
+            "await user_repository.get_users_info(",
+            "except AppError as exc:",
         ),
         "policy tests": (
             "test_administrative_user_visibility_is_strictly_downward_for_admin",
@@ -2219,7 +3233,7 @@ def validate_administrative_read_visibility(errors: list[str]) -> None:
         ),
         "service audit tests": (
             "test_denied_audit_failure_preserves_original_rbac_error",
-            "((forbidden, 403), (not_found, 404), (conflict, 409))",
+            "((forbidden_403, 403), (not_found_404, 404), (conflict_409, 409))",
         ),
         "read integration tests": (
             "test_user_reads_apply_strict_visibility_and_filtered_pagination",
@@ -2247,42 +3261,84 @@ def validate_administrative_read_visibility(errors: list[str]) -> None:
                     f"{marker!r}",
                 )
 
+    def function_source(source: str, function_name: str) -> str:
+        """
+        按 AST 定位函数并统一格式，避免校验依赖缩进、换行或相邻函数顺序。
+
+        :param source: 已通过语法校验的 Python 源码，可以包含多个模块的文本。
+        :param function_name: 需要检查的唯一函数或方法名称。
+        :return: 格式规范化后的函数源码；找不到时返回空字符串并由调用方报错。
+        """
+        for node in ast.walk(ast.parse(source)):
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == function_name
+            ):
+                return ast.unparse(node)
+        return ""
+
     query_sections = {
-        "user projection": (
-            "async def load_user_access_views(",
-            "def _select_visible_users(",
+        "shared user permissions read": (
+            "_load_user_permissions",
             (
-                "if not _actor_is_super_admin(actor):",
-                "Role.management_tier < actor.management_tier",
-                "assigned_role_ids[row.user_id].add(row.role_id)",
+                "UserRole.user_id",
+                "Role",
+                "Permission.key.label('permission_key')",
+                "UserRole.deleted_at.is_(None)",
+                "Role.deleted_at.is_(None)",
+                "RolePermission.deleted_at.is_(None)",
+                "Permission.deleted_at.is_(None)",
+                "populate_existing=True",
+                "Role.level < current_user.role_level",
+                "Role.is_protected.is_(False)",
+                "await session.execute(role_permissions_query)",
+                "role.is_active",
+                "UserPermissions(",
+                "user_info=self._build_user_info(",
+                "user_info_with_disabled_roles=self._build_user_info(",
+            ),
+        ),
+        "user permissions": (
+            "get_user_permissions",
+            (
+                "users: Sequence[User]",
+                "await self._load_user_permissions(",
+            ),
+        ),
+        "user projection": (
+            "get_users_info",
+            (
+                "await self._load_user_permissions(",
+                "current_user=current_user",
+                "permissions.user_info_with_disabled_roles.roles",
+                "user_info = permissions.user_info",
+                "user_info=user_info",
             ),
         ),
         "visible users": (
-            "def _select_visible_users(",
-            "def _select_visible_roles(",
+            "_build_user_query",
             (
-                "if _actor_is_super_admin(actor):",
-                "User.id != actor.user_id",
-                "active_authority.c.management_tier, 0) < actor.management_tier",
+                "if self._is_super_admin(current_user):",
+                "User.user_id != current_user.user_id",
+                "if current_user.role_level <= 0:",
+                "UserRole.user_id == User.user_id",
+                "Role.level >= current_user.role_level",
+                "~has_hidden_role",
             ),
         ),
         "visible roles": (
-            "def _select_visible_roles(",
-            "async def list_visible_roles_page(",
+            "_build_role_query",
             (
-                "if _actor_is_super_admin(actor):",
-                "Role.management_tier < actor.management_tier",
+                "if any(",
+                "role.key == SystemRoleKey.SUPER_ADMIN.value and role.is_super_admin",
+                "Role.level < current_user.role_level",
                 "Role.is_protected.is_(False)",
             ),
         ),
     }
     query_source = text["queries"]
-    for name, (start_marker, end_marker, markers) in query_sections.items():
-        start = query_source.find(start_marker)
-        end = query_source.find(end_marker, start + 1)
-        if start < 0 or end < 0:
-            continue
-        section = query_source[start:end]
+    for name, (function_name, markers) in query_sections.items():
+        section = function_source(query_source, function_name)
         for marker in markers:
             if marker not in section:
                 fail(
@@ -2291,19 +3347,66 @@ def validate_administrative_read_visibility(errors: list[str]) -> None:
                     f"is missing {marker!r}",
                 )
 
+    # 已读取或锁住的用户直接复用；权限入口不能再按 ID 重查同一用户。
+    for function_name in ("get_user_permissions", "_load_user_permissions"):
+        section = function_source(query_source, function_name)
+        if "self.get_user(" in section:
+            fail(errors, f"{function_name} must reuse loaded users without another account query")
+
+    # 完整权限只保留一个固定返回映射的入口；页面可见过滤仅供内部页面读取使用。
+    repository = _class_node(ast.parse(text["queries"]), "UserRepository")
+    if repository is not None:
+        permissions_loader = _function_node(repository.body, "get_user_permissions")
+        if permissions_loader is not None and (
+            tuple(argument.arg for argument in permissions_loader.args.kwonlyargs) != ("users",)
+            or permissions_loader.returns is None
+            or ast.unparse(permissions_loader.returns) != "dict[str, UserPermissions]"
+        ):
+            fail(errors, "get_user_permissions must accept users only and return a user-ID mapping")
+        if any(_function_node(repository.body, name) is not None for name in (
+            "get_users_permissions", "_select_user_role_permissions", "_get_user_permissions",
+        )):
+            fail(errors, "user permission reads must not restore separate singular/batch or query wrappers")
+
     service_source = text["service"]
-    denial = service_source.find("except RbacError as exc:")
-    audit_failure = service_source.find("except Exception as audit_exc:", denial + 1)
-    reraises_original = service_source.find("\n            raise\n", audit_failure + 1)
-    outcome_return = service_source.find(
-        "\n        return outcome.value", audit_failure + 1
-    )
-    if not (
-        denial >= 0
-        and audit_failure > denial
-        and reraises_original > audit_failure
-        and outcome_return > reraises_original
-    ):
+    transaction_tree = ast.parse(text["transaction service"])
+    transaction = _function_node(transaction_tree.body, "user_role_transaction")
+    audit_class = _class_node(ast.parse(text["audit service"]), "AuditService")
+    audit_writer = _function_node(
+        audit_class.body, "audit_denied") if audit_class is not None else None
+    denial_preserves_error = False
+    if transaction is not None and audit_writer is not None:
+        calls_shared_writer = ".audit_denied(" in ast.unparse(transaction)
+        reraises_original = any(
+            isinstance(node, ast.ExceptHandler)
+            and isinstance(node.type, ast.Name)
+            and node.type.id == "AppError"
+            and node.body
+            and isinstance(node.body[-1], ast.Raise)
+            and node.body[-1].exc is None
+            for node in ast.walk(transaction)
+        )
+        handles_audit_failure = any(
+            isinstance(node, ast.ExceptHandler)
+            and isinstance(node.type, ast.Name)
+            and node.type.id == "Exception"
+            and any(
+                isinstance(call, ast.Call)
+                and ast.unparse(call.func) == "safe_log"
+                and any(
+                    isinstance(argument, ast.Constant)
+                    and argument.value == "audit.write.failed"
+                    for argument in call.args
+                )
+                for call in ast.walk(node)
+            )
+            and not any(isinstance(child, ast.Raise) for child in ast.walk(node))
+            for node in ast.walk(audit_writer)
+        )
+        denial_preserves_error = (
+            calls_shared_writer and reraises_original and handles_audit_failure
+        )
+    if not denial_preserves_error:
         fail(
             errors,
             "RBAC service must log denied-audit failure and re-raise the original "
@@ -2312,43 +3415,39 @@ def validate_administrative_read_visibility(errors: list[str]) -> None:
 
     service_sections = {
         "user write gate": (
-            "async def _lock_actor_and_target_user(",
-            "async def update_user_status(",
+            "_lock_current_and_target_user",
             (
-                "if required_permission.value not in actor.permissions:",
+                "if required_permission.value not in current_user.permissions:",
                 "if target_user_id not in users:",
-                "if not is_administrative_user_visible(actor=actor, target=visible_target):",
+                "if not is_administrative_user_visible(current_user=current_user, "
+                "target=target_permissions.user_info):",
             ),
         ),
         "user-role batch gate": (
-            "async def change_user_roles(",
-            "async def create_role(",
+            "change_user_roles",
             (
-                "grants_by_role_id = await load_role_grants_for_roles(",
-                "not is_administrative_role_visible(actor=actor, role=grant)",
+                "role_info_by_id = await role_repository.get_role_permissions(",
+                "not is_administrative_role_visible(current_user=locked.current_user, role=grant)",
                 "decision = decide_role_change(",
             ),
         ),
         "role write gate": (
-            "async def _lock_shared_role_change(",
-            "def _require_role_administration(",
+            "_lock_role",
             (
-                "if required_permission.value not in actor.permissions:",
+                "if required_permission.value not in current_user.permissions:",
                 "role = locked_roles.get(role_id)",
-                "if not is_administrative_role_visible(actor=actor, role=role_before):",
+                "if not is_administrative_role_visible(current_user=current_user, role=role_info):",
             ),
         ),
     }
-    for name, (start_marker, end_marker, ordered_markers) in service_sections.items():
-        start = service_source.find(start_marker)
-        end = service_source.find(end_marker, start + 1)
-        if start < 0 or end < 0:
+    for name, (function_name, ordered_markers) in service_sections.items():
+        section = function_source(service_source, function_name)
+        if not section:
             fail(
                 errors,
                 f"{paths['service'].relative_to(REPO_ROOT)} {name} section missing",
             )
             continue
-        section = service_source[start:end]
         positions = [section.find(marker) for marker in ordered_markers]
         if any(position < 0 for position in positions) or positions != sorted(
             positions
@@ -2381,8 +3480,7 @@ def validate_super_admin_bootstrap(errors: list[str]) -> None:
         "FOR UPDATE",
         "target user account does not exist",
         "INSERT INTO user_roles",
-        "SET authz_version = authz_version + 1",
-        "SET epoch = epoch + 1",
+        # 留存 SQL 面向旧 UUID schema，不能假装已经适配当前统一审计表。
         "INSERT INTO rbac_audit_events",
         "super_admin.bootstrap",
         "COMMIT;",
@@ -2390,7 +3488,8 @@ def validate_super_admin_bootstrap(errors: list[str]) -> None:
     for marker in required_markers:
         if marker not in sql:
             relative = sql_path.relative_to(REPO_ROOT)
-            fail(errors, f"{relative} is missing bootstrap invariant: {marker!r}")
+            fail(
+                errors, f"{relative} is missing bootstrap invariant: {marker!r}")
 
     if "INSERT INTO users" in sql:
         fail(errors, "super-admin bootstrap SQL must require an existing user")
@@ -2409,14 +3508,17 @@ def validate_super_admin_bootstrap(errors: list[str]) -> None:
         "COMMIT;",
     ):
         if marker not in handover:
-            fail(errors, f"offline super-admin handover SQL is missing {marker!r}")
+            fail(
+                errors, f"offline super-admin handover SQL is missing {marker!r}")
     if "INSERT INTO users" in handover:
         fail(errors, "offline super-admin handover must require an existing user")
 
 
 def validate_rbac_database_naming(errors: list[str]) -> None:
     paths = {
-        "model": ASSET_ROOT / "app" / "models" / "access.py",
+        "state model": ASSET_ROOT / "app" / "models" / "postgres" / "rbac_state.py",
+        "audit model": ASSET_ROOT / "app" / "models" / "postgres" / "operation_audit.py",
+        "role model": ASSET_ROOT / "app" / "models" / "postgres" / "role.py",
         "migration": ASSET_ROOT
         / "alembic"
         / "versions"
@@ -2430,13 +3532,15 @@ def validate_rbac_database_naming(errors: list[str]) -> None:
         return
 
     required_markers = {
-        "model": (
+        "state model": (
             "class RbacState(Base):",
             '__tablename__ = "rbac_state"',
-            "class RbacAuditEvent(Base):",
-            '__tablename__ = "rbac_audit_events"',
-            'Index("ix_rbac_audit_actor_created"',
-            'Index("ix_rbac_audit_request_id"',
+        ),
+        "audit model": (
+            "class OperationAuditEvent(Base):",
+            '__tablename__ = "operation_audit_events"',
+        ),
+        "role model": (
             "is_super_admin: Mapped[bool]",
             '"uq_roles_single_super_admin"',
         ),
@@ -2447,6 +3551,7 @@ def validate_rbac_database_naming(errors: list[str]) -> None:
             'name="epoch_nonnegative"',
             '"rbac_audit_events"',
             'name="pk_rbac_audit_events"',
+            # 已发布迁移保留当时名称，当前模型单独核对 user_id 命名。
             '"ix_rbac_audit_actor_created"',
             '"ix_rbac_audit_request_id"',
             '"is_super_admin"',
@@ -2454,17 +3559,18 @@ def validate_rbac_database_naming(errors: list[str]) -> None:
         ),
         "bootstrap": (
             "FROM rbac_state",
-            "UPDATE rbac_state",
+            "FOR UPDATE",
             "INSERT INTO rbac_audit_events",
         ),
-        "schema reference": ("`rbac_state`", "`rbac_audit_events`"),
+        "schema reference": ("`rbac_state`", "`operation_audit_events`"),
     }
     for name, markers in required_markers.items():
         content = paths[name].read_text(encoding="utf-8")
         for marker in markers:
             if marker not in content:
                 relative = paths[name].relative_to(REPO_ROOT)
-                fail(errors, f"{relative} is missing RBAC database marker: {marker!r}")
+                fail(
+                    errors, f"{relative} is missing RBAC database marker: {marker!r}")
 
     stale_markers = (
         "authorization_audit_events",
@@ -2496,7 +3602,8 @@ def validate_rbac_database_naming(errors: list[str]) -> None:
         for marker in stale_markers:
             if marker in content:
                 relative = path.relative_to(REPO_ROOT)
-                fail(errors, f"{relative} contains obsolete RBAC name: {marker!r}")
+                fail(
+                    errors, f"{relative} contains obsolete RBAC name: {marker!r}")
 
 
 def validate_api_internationalization(errors: list[str]) -> None:
@@ -2514,10 +3621,14 @@ def validate_api_internationalization(errors: list[str]) -> None:
         "Chinese changelog": REPO_ROOT / "CHANGELOG.zh-CN.md",
         "release checklist": REPO_ROOT / "RELEASE_CHECKLIST.md",
         "Chinese release checklist": REPO_ROOT / "RELEASE_CHECKLIST.zh-CN.md",
-        "implementation": ASSET_ROOT / "app" / "core" / "i18n.py",
-        "contract": ASSET_ROOT / "app" / "core" / "api_contract.py",
-        "application": ASSET_ROOT / "app" / "main.py",
-        "errors": ASSET_ROOT / "app" / "core" / "errors.py",
+        "implementation": ASSET_ROOT / "app" / "core" / "i18n" / "messages.py",
+        "language": ASSET_ROOT / "app" / "core" / "i18n" / "language.py",
+        "validation": ASSET_ROOT / "app" / "core" / "i18n" / "validation_messages.py",
+        "contract": ASSET_ROOT / "app" / "core" / "response.py",
+        "codes": ASSET_ROOT / "app" / "core" / "codes.py",
+        "request middleware": ASSET_ROOT / "app" / "core" / "middleware" / "request_logging.py",
+        "exception handlers": ASSET_ROOT / "app" / "core" / "exception_handlers.py",
+        "errors": ASSET_ROOT / "app" / "core" / "exceptions.py",
         "pyproject": ASSET_ROOT / "pyproject.toml",
         "tests": ASSET_ROOT / "tests" / "test_i18n.py",
         "Chinese catalog": ASSET_ROOT / "app" / "assets" / "locales" / "zh-CN.json",
@@ -2558,13 +3669,12 @@ def validate_api_internationalization(errors: list[str]) -> None:
                 (r"Never turn a request value into a file path or dynamic import",),
             ),
             (
-                "specific language exclusions override broad fallbacks",
-                (r"specific language range.*q=0.*wildcard",),
+                "zero-weight languages are skipped and wildcard does not choose a language",
+                (r"q=0.*skips.*\*.*does not choose",),
             ),
         ),
     )
     for label in (
-        "entrypoint",
         "response reference",
         "Chinese architecture",
         "README",
@@ -2579,18 +3689,19 @@ def validate_api_internationalization(errors: list[str]) -> None:
     document_markers = {
         "Chinese architecture": (
             "api-internationalization.md",
-            "OpenAPI",
+            "静态 Schema",
             "数据库",
         ),
-        "README": ("API internationalization", "Database-authored", "OpenAPI"),
-        "Chinese README": ("API 多语言", "数据库", "OpenAPI"),
-        "asset README": ("Database-authored", "OpenAPI developer metadata"),
+        "README": ("API internationalization", "Database-authored", "static schema"),
+        "Chinese README": ("API 多语言", "数据库", "静态 Schema"),
+        "asset README": ("Database-authored", "static schema descriptions"),
     }
     for label, markers in document_markers.items():
         content = paths[label].read_text(encoding="utf-8")
         for marker in markers:
             if marker not in content:
-                fail(errors, f"{label} is missing API i18n boundary {marker!r}")
+                fail(
+                    errors, f"{label} is missing API i18n boundary {marker!r}")
 
     release_documents = {
         "changelog": (
@@ -2618,7 +3729,8 @@ def validate_api_internationalization(errors: list[str]) -> None:
             continue
         release_section = remainder.split("\n## ", maxsplit=1)[0]
         if marker not in release_section:
-            fail(errors, f"{label} does not document API i18n under {heading!r}")
+            fail(
+                errors, f"{label} does not document API i18n under {heading!r}")
 
     implementation_tree = _parse_python(
         errors, paths["implementation"], label="API i18n implementation"
@@ -2666,21 +3778,26 @@ def validate_api_internationalization(errors: list[str]) -> None:
             ):
                 fail(errors, f"{label} contains an unsafe value for {key!r}")
 
-    implementation = paths["implementation"].read_text(encoding="utf-8")
-    for marker in (
-        'DEFAULT_LOCALE = "zh-CN"',
-        'SUPPORTED_LOCALES = ("zh-CN", "en")',
-        "_MAX_ACCEPT_LANGUAGE_LENGTH",
-        "_MAX_LANGUAGE_RANGES",
-        "_match_specificity",
-        "def validation_field",
-        "request.state.locale",
-        'headers["Content-Language"]',
-        'headers["Vary"]',
-        "CATALOGS[locale][key.value]",
-    ):
-        if marker not in implementation:
-            fail(errors, f"API i18n implementation is missing {marker!r}")
+    module_markers = {
+        "implementation": ("CATALOGS.get(locale, CATALOGS[DEFAULT_LOCALE])[key.value]",),
+        "language": (
+            'DEFAULT_LOCALE = "zh-CN"',
+            'SUPPORTED_LOCALES = ("zh-CN", "en")',
+            "_MAX_ACCEPT_LANGUAGE_LENGTH",
+            "_MAX_LANGUAGE_RANGES",
+            "def select_locale(",
+            "if 0.0 < quality <= 1.0",
+            "request.state.locale",
+            'headers["Content-Language"]',
+            'headers["Vary"]',
+        ),
+        "validation": ("def validation_field", "def validation_message"),
+    }
+    for label, markers in module_markers.items():
+        content = paths[label].read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in content:
+                fail(errors, f"API i18n {label} is missing {marker!r}")
 
     required_code_markers = {
         "contract": (
@@ -2688,9 +3805,11 @@ def validate_api_internationalization(errors: list[str]) -> None:
             "translate(request, message_key)",
             "apply_language_headers(localized_headers, locale_for_request(request))",
         ),
-        "application": (
+        "request middleware": (
             "request.state.locale = locale_for_request(request)",
             "apply_language_headers(response_headers, request.state.locale)",
+        ),
+        "exception handlers": (
             "field=validation_field(error)",
             "message=validation_message(request, error)",
         ),
@@ -2718,15 +3837,14 @@ def validate_api_internationalization(errors: list[str]) -> None:
         source = source_path.read_text(encoding="utf-8")
         relative = source_path.relative_to(REPO_ROOT)
         if "public_message" in source:
-            fail(errors, f"{relative} stores rendered public_message instead of a key")
-        if source_path.name != "i18n.py" and re.search(r"[\u4e00-\u9fff]", source):
             fail(
-                errors,
-                f"{relative} contains rendered Chinese API text outside catalogs",
-            )
+                errors, f"{relative} stores rendered public_message instead of a key")
         tree = _parse_python(errors, source_path, label=str(relative))
         if tree is None:
             continue
+        if source_path != paths["implementation"]:
+            _validate_runtime_message_literals(
+                tree, errors, label=str(relative))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -2740,23 +3858,34 @@ def validate_api_internationalization(errors: list[str]) -> None:
             keyword_names = {keyword.arg for keyword in node.keywords}
             if call_name in {"api_response", "error_content"}:
                 if "message" in keyword_names or "message_key" not in keyword_names:
-                    fail(errors, f"{relative} has a response call without message_key")
-            if call_name == "RbacError" and (
+                    fail(
+                        errors, f"{relative} has a response call without message_key")
+            if call_name == "AppError" and (
                 "public_message" in keyword_names or "message_key" not in keyword_names
             ):
-                fail(errors, f"{relative} constructs RbacError without message_key")
+                fail(
+                    errors, f"{relative} constructs AppError without message_key")
 
 
 def validate_api_response_contract(errors: list[str]) -> None:
     paths = {
         "entrypoint": SKILL_ROOT / "SKILL.md",
         "reference": SKILL_ROOT / "references" / "api-response-standard.md",
-        "contract": ASSET_ROOT / "app" / "core" / "api_contract.py",
-        "application": ASSET_ROOT / "app" / "main.py",
-        "routes": ASSET_ROOT / "app" / "api" / "access.py",
-        "errors": ASSET_ROOT / "app" / "core" / "errors.py",
-        "schemas": ASSET_ROOT / "app" / "schemas" / "access.py",
-        "service": ASSET_ROOT / "app" / "services" / "access.py",
+        "contract": ASSET_ROOT / "app" / "core" / "response.py",
+        "codes": ASSET_ROOT / "app" / "core" / "codes.py",
+        "request middleware": ASSET_ROOT / "app" / "core" / "middleware" / "request_logging.py",
+        "exception handlers": ASSET_ROOT / "app" / "core" / "exception_handlers.py",
+        "routes": ASSET_ROOT / "app" / "api" / "v1" / "endpoints" / "roles.py",
+        "user routes": ASSET_ROOT / "app" / "api" / "v1" / "endpoints" / "users.py",
+        "permission routes": ASSET_ROOT
+        / "app"
+        / "api"
+        / "v1"
+        / "endpoints"
+        / "permissions.py",
+        "errors": ASSET_ROOT / "app" / "core" / "exceptions.py",
+        "schemas": ASSET_ROOT / "app" / "schemas" / "role.py",
+        "service": ASSET_ROOT / "app" / "services" / "role_service.py",
         "proxy backend": SKILL_ROOT / "references" / "proxy-availability-backend.md",
         "proxy frontend": SKILL_ROOT / "references" / "proxy-availability-frontend.md",
     }
@@ -2768,7 +3897,7 @@ def validate_api_response_contract(errors: list[str]) -> None:
             "references/api-response-standard.md",
             "`code`, `message`, `data`",
             "`expected_version`",
-            "`409002`",
+            "`40931`",
         ),
         "reference": (
             "`items`, `page`, `page_size`, and `total`",
@@ -2776,18 +3905,22 @@ def validate_api_response_contract(errors: list[str]) -> None:
             "Resource Version Instead Of A Strong Envelope ETag",
         ),
         "contract": (
-            "class BusinessCode(IntEnum):",
-            "STALE_RESOURCE_VERSION = 409002",
-            "class ApiResponse[T](BaseModel):",
-            "class PageData[T](BaseModel):",
+            "class ResponseBase(BaseModel):",
+            "class ApiResponse(ResponseBase, Generic[T]):",
+            "class PageResponse(ResponseBase, Generic[T]):",
             'ConfigDict(extra="forbid", frozen=True)',
-            "code: int = Field(strict=True",
             "request_id: UUID4",
-            "class RequestIdRoute(APIRoute):",
         ),
-        "application": (
+        "codes": (
+            "class BusinessCode(IntEnum):",
+            "ROLE_VERSION_STALE = 40931",
+            "return status_code * 100 + 1",
+        ),
+        "request middleware": (
             "request.state.request_id = str(uuid.uuid4())",
             'response_headers["X-Request-ID"]',
+        ),
+        "exception handlers": (
             "handle_request_validation_error",
             "handle_unexpected_error",
             "handle_database_unavailable",
@@ -2795,55 +3928,69 @@ def validate_api_response_contract(errors: list[str]) -> None:
             "500: (BusinessCode.INTERNAL_ERROR",
         ),
         "routes": (
-            "route_class=RequestIdRoute",
-            "response_model=ApiResponse[PageData[PermissionResponse]]",
-            "response_model=ApiResponse[PageData[RoleResponse]]",
-            "response_model=ApiResponse[PageData[UserResponse]]",
+            "response_model=ApiResponse[PageResponse[PermissionResponse]]",
+            "response_model=ApiResponse[PageResponse[RoleResponse]]",
+            "response_model=ApiResponse[PageResponse[UserResponse]]",
             "expected_version=body.expected_version",
         ),
         "errors": (
             "status_code=status.HTTP_400_BAD_REQUEST",
-            "business_code=BusinessCode.BAD_REQUEST",
+            "business_code: BusinessCode = BusinessCode.BAD_REQUEST",
+            "business_code=business_code",
         ),
-        "schemas": ("expected_version: int = Field(strict=True, ge=0)",),
         "service": (
-            "_require_expected_role_version",
+            "_check_role_version",
             "decide_role_permissions_change",
         ),
-        "proxy backend": ("business code `503002`",),
-        "proxy frontend": ("business code\n`503002`",),
+        "proxy backend": ("business code `50302`",),
+        "proxy frontend": ("business code\n`50302`",),
     }
+    route_text = "\n".join(
+        paths[name].read_text(encoding="utf-8")
+        for name in ("routes", "user routes", "permission routes")
+    )
     for name, markers in required_markers.items():
-        content = paths[name].read_text(encoding="utf-8")
+        content = (
+            route_text if name == "routes" else paths[name].read_text(
+                encoding="utf-8")
+        )
         for marker in markers:
             if marker not in content:
                 relative = paths[name].relative_to(REPO_ROOT)
-                fail(errors, f"{relative} is missing API contract marker: {marker!r}")
+                fail(
+                    errors, f"{relative} is missing API contract marker: {marker!r}")
 
-    route_text = paths["routes"].read_text(encoding="utf-8")
     for stale_marker in ("IfMatchHeader", 'response.headers["ETag"]'):
         if stale_marker in route_text:
             relative = paths["routes"].relative_to(REPO_ROOT)
-            fail(errors, f"{relative} contains stale API contract: {stale_marker!r}")
+            fail(
+                errors, f"{relative} contains stale API contract: {stale_marker!r}")
 
-    schema_text = paths["schemas"].read_text(encoding="utf-8")
-    strict_version_marker = "expected_version: int = Field(strict=True, ge=0)"
-    if schema_text.count(strict_version_marker) != 3:
-        fail(errors, "all three role version request fields must be strict integers")
+    # 按每个模型真实字段检查，既不依赖排版，也不会让另一类中的同名字面量冒充所需约束。
+    schema_tree = _parse_python(errors, paths["schemas"], label="role schemas")
+    if schema_tree is not None:
+        _validate_role_schema_contract(schema_tree, errors)
+    contract_tree = _parse_python(
+        errors, paths["contract"], label="API response contract")
+    if contract_tree is not None:
+        _validate_field_contract(
+            contract_tree, "ApiResponse", "code", "int",
+            {"strict": "True", "ge": "10000", "le": "59999"}, errors,
+        )
 
     service_text = paths["service"].read_text(encoding="utf-8")
     policy_markers = {
-        "update_role": "_require_role_administration",
-        "set_role_active": "_require_role_administration",
-        "soft_delete_role": "_require_role_administration",
+        "update_role": "_check_role_change",
+        "set_role_active": "_check_role_change",
+        "delete_role": "_check_role_change",
         "change_role_permissions": "decide_role_permissions_change",
     }
     for method_name, policy_marker in policy_markers.items():
         start = service_text.find(f"    async def {method_name}(")
         end = service_text.find("\n    async def ", start + 1)
-        method_text = service_text[start : end if end >= 0 else None]
+        method_text = service_text[start: end if end >= 0 else None]
         policy_position = method_text.find(policy_marker)
-        version_position = method_text.find("_require_expected_role_version")
+        version_position = method_text.find("_check_role_version")
         if (
             start < 0
             or policy_position < 0
@@ -2862,27 +4009,31 @@ def validate_api_response_contract(errors: list[str]) -> None:
             fail(errors, f"{relative} contains an invalid fifth envelope flag")
 
 
-def validate_observability_and_audit(errors: list[str]) -> None:
+def validate_logging_and_audit(errors: list[str]) -> None:
     paths = {
         "entrypoint": SKILL_ROOT / "SKILL.md",
         "logging reference": SKILL_ROOT / "references" / "operational-logging.md",
         "audit reference": SKILL_ROOT / "references" / "audit-module.md",
-        "logging implementation": ASSET_ROOT / "app" / "core" / "observability.py",
+        "logging implementation": ASSET_ROOT / "app" / "core" / "logging" / "events.py",
+        "logging context": ASSET_ROOT / "app" / "core" / "logging" / "context.py",
+        "logging output": ASSET_ROOT / "app" / "core" / "logging" / "output.py",
         "audit implementation": ASSET_ROOT / "app" / "core" / "audit.py",
+        "audit service": ASSET_ROOT / "app" / "services" / "audit_service.py",
         "application": ASSET_ROOT / "app" / "main.py",
-        "database": ASSET_ROOT / "app" / "db" / "postgres.py",
+        "request middleware": ASSET_ROOT / "app" / "core" / "middleware" / "request_logging.py",
+        "database": ASSET_ROOT / "app" / "db" / "postgres_db.py",
         "settings": ASSET_ROOT / "app" / "core" / "config.py",
-        "model": ASSET_ROOT / "app" / "models" / "access.py",
+        "model": ASSET_ROOT / "app" / "models" / "postgres" / "operation_audit.py",
         "migration": ASSET_ROOT
         / "alembic"
         / "versions"
         / "0001_single_project_rbac.py",
         "bootstrap": ASSET_ROOT / "sql" / "bootstrap_super_admin.sql",
-        "logging tests": ASSET_ROOT / "tests" / "test_observability.py",
+        "logging tests": ASSET_ROOT / "tests" / "test_logging.py",
         "logging formatter tests": ASSET_ROOT
         / "tests"
-        / "test_observability_formatter.py",
-        "request logging tests": ASSET_ROOT / "tests" / "test_request_observability.py",
+        / "test_logging_formatter.py",
+        "request logging tests": ASSET_ROOT / "tests" / "test_request_logging.py",
         "audit tests": ASSET_ROOT / "tests" / "test_audit.py",
         "database tests": ASSET_ROOT
         / "tests"
@@ -2912,10 +4063,9 @@ def validate_observability_and_audit(errors: list[str]) -> None:
             "## Required Verification",
             "http.request.completed",
             "http.request.post_response_failed",
-            "background.task.failed",
         ),
         "audit reference": (
-            "## `rbac_audit_events` Schema",
+            "## `operation_audit_events` Schema",
             "## Transaction Outcomes",
             "## Integrity And Database Access",
             "## Retention, Partitioning, And Recovery",
@@ -2923,16 +4073,21 @@ def validate_observability_and_audit(errors: list[str]) -> None:
         ),
         "logging implementation": (
             "class SafeJsonFormatter(logging.Formatter):",
-            "def bind_request_context(",
-            "def deactivate_request_context(",
-            "def reset_request_context(",
             "def request_log_level(",
             "def safe_exception_metadata(",
             "def safe_log(",
-            "def create_detached_task",
+        ),
+        "logging context": (
+            "def bind_request_context(",
+            "def deactivate_request_context(",
+            "def reset_request_context(",
+            "def current_request_id(",
+        ),
+        "logging output": (
+            "class SafeStreamHandler(logging.StreamHandler[TextIO]):",
             "def configure_logging(",
             '"uvicorn.access"',
-            "third_party_logger.disabled = True",
+            'logging.getLogger("uvicorn.access").disabled = True',
         ),
         "audit implementation": (
             "class AuditSource(StrEnum):",
@@ -2940,9 +4095,21 @@ def validate_observability_and_audit(errors: list[str]) -> None:
             "def validate_audit_action(",
             "def validate_audit_reason(",
             "def validate_audit_request_id(",
+            "def get_audit_request_id(",
+        ),
+        "audit service": (
+            "class AuditService:",
+            "def audit_success(",
+            "async def audit_denied(",
+            "def _build_event(",
+            "def _response_snapshot(",
         ),
         "application": (
             "configure_logging(",
+            "title=settings.service_name",
+            "version=settings.service_version",
+        ),
+        "request middleware": (
             "bind_request_context(",
             "reset_request_context(",
             '"http.request.completed"',
@@ -2955,16 +4122,14 @@ def validate_observability_and_audit(errors: list[str]) -> None:
         ),
         "database": ("hide_parameters=True",),
         "settings": (
-            "service_name: str",
-            "service_version: str",
             "log_level: str",
             "log_include_exception_details: bool",
         ),
         "model": (
             "source IN ('http', 'service', 'job', 'operator', 'migration')",
-            'CheckConstraint("schema_version = 1"',
-            'Index("ix_rbac_audit_created_id"',
-            '@validates("before_state", "after_state")',
+            '@validates("request_data", "response_data", "before_state", "after_state")',
+            'Index("ix_operation_audit_created_id"',
+            'Index("ix_operation_audit_request_id"',
         ),
         "migration": (
             "CREATE FUNCTION reject_rbac_audit_event_mutation()",
@@ -2979,7 +4144,7 @@ def validate_observability_and_audit(errors: list[str]) -> None:
         ),
         "logging formatter tests": (
             "test_safe_exception_metadata_is_unique_and_omits_message_and_locals",
-            "test_detached_task_clears_request_context_and_reports_failure",
+            "test_safe_log_contains_logger_failures",
         ),
         "request logging tests": (
             "test_stream_failure_emits_one_error_completion_with_started_status",
@@ -2990,7 +4155,7 @@ def validate_observability_and_audit(errors: list[str]) -> None:
         "audit tests": (
             "test_audit_state_rejects_credentials_tokens_and_direct_identifiers",
         ),
-        "database tests": ("test_rbac_audit_rows_are_append_only",),
+        "database tests": ("test_operation_audit_rows_are_append_only",),
     }
     for name, markers in required_markers.items():
         content = paths[name].read_text(encoding="utf-8")
@@ -2999,8 +4164,37 @@ def validate_observability_and_audit(errors: list[str]) -> None:
                 relative = paths[name].relative_to(REPO_ROOT)
                 fail(
                     errors,
-                    f"{relative} is missing observability/audit marker: {marker!r}",
+                    f"{relative} is missing logging/audit marker: {marker!r}",
                 )
+
+    # 统一表只保留已确认的 16 个字段；避免旧版本计数或操作人类型随重构被加回来。
+    audit_tree = _parse_python(errors, paths["model"], label="operation audit")
+    audit_model = _class_node(
+        audit_tree, "OperationAuditEvent") if audit_tree is not None else None
+    audit_fields = {
+        node.target.id for node in audit_model.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    } if audit_model is not None else set()
+    expected_fields = {
+        "id", "category", "action", "outcome", "reason_code", "user_id",
+        "target_user_id", "target_role_id", "source", "request_data", "response_data",
+        "password_fingerprint", "before_state", "after_state", "request_id", "created_at",
+    }
+    if audit_fields != expected_fields:
+        fail(errors, "operation audit fields must match the approved 16-field contract: "
+             f"missing={sorted(expected_fields - audit_fields)!r}, "
+             f"extra={sorted(audit_fields - expected_fields)!r}")
+    # 业务只使用两个 audit_ 入口；旧构造器或重复包装不能以兼容别名重新暴露。
+    service_tree = _parse_python(
+        errors, paths["audit service"], label="audit service")
+    service_class = _class_node(
+        service_tree, "AuditService") if service_tree is not None else None
+    methods = {node.name for node in service_class.body
+               if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))} if service_class else set()
+    obsolete_methods = {"build_event", "response_snapshot",
+                        "write_denied_event", "write_client_denial"}
+    if methods.intersection(obsolete_methods):
+        fail(errors, "AuditService must expose audit_success/audit_denied without old public wrappers")
 
 
 def validate_business_audit(errors: list[str]) -> None:
@@ -3013,11 +4207,12 @@ def validate_business_audit(errors: list[str]) -> None:
         "operations reference": SKILL_ROOT
         / "references"
         / "business-audit-operations.md",
-        "implementation": ASSET_ROOT / "app" / "services" / "business_audit.py",
+        "implementation": ASSET_ROOT / "app" / "services" / "business_audit_service.py",
         "contract": ASSET_ROOT / "app" / "core" / "business_audit.py",
-        "model": ASSET_ROOT / "app" / "models" / "business_audit.py",
+        "model": ASSET_ROOT / "app" / "models" / "postgres" / "business_audit.py",
         "migration": ASSET_ROOT / "alembic" / "versions" / "0003_business_audit.py",
         "alembic environment": ASSET_ROOT / "alembic" / "env.py",
+        "model registry": ASSET_ROOT / "app" / "models" / "postgres" / "__init__.py",
         "unit tests": ASSET_ROOT / "tests" / "test_business_audit.py",
         "database tests": ASSET_ROOT
         / "tests"
@@ -3049,7 +4244,7 @@ def validate_business_audit(errors: list[str]) -> None:
     )
     required_markers = {
         "policy reference": (
-            "`rbac_audit_events`",
+            "`operation_audit_events`",
             "business_audit_events",
             "## Core Event Contract",
             "## Outcome Semantics",
@@ -3059,20 +4254,25 @@ def validate_business_audit(errors: list[str]) -> None:
             "## Transaction Decision Table",
         ),
         "postgresql reference": (
-            "CREATE TABLE business_audit_events",
-            "ck_business_audit_id_uuid4",
+            "## PostgreSQL Model Baseline",
+            "The Skill delivers models and application code.",
+            "BusinessAuditEvent",
             "BusinessAuditActionSpec",
-            "BusinessAuditWriter",
+            "BusinessAuditService",
             "action_specs=BUSINESS_AUDIT_CATALOG",
-            "actor_type=BusinessAuditActorType.USER",
-            "event_id=uuid.uuid4()",
+            "source_type=BusinessAuditSourceType.USER",
+            "user_id=authenticated_user.user_id",
+            "target_user_id=refund.user_id",
+            "entrypoint=AuditSource.HTTP",
+            'event_id=new_audit_id("BA")',
             "event_id=command.audit_event_id",
             "add_succeeded(",
             "add_after_savepoint_rollback(",
             "write_after_rollback(",
             "## Append-Only Controls",
-            "BEFORE UPDATE OR DELETE ON business_audit_events",
-            "BEFORE TRUNCATE ON business_audit_events",
+            "writers receive `INSERT`, not `UPDATE`, `DELETE`, or `TRUNCATE`",
+            "row mutation and table truncation",
+            "ORM metadata does not generate those",
         ),
         "operations reference": (
             "append-only source of truth",
@@ -3083,19 +4283,31 @@ def validate_business_audit(errors: list[str]) -> None:
         ),
         "contract": (
             "class BusinessAuditOutcome(StrEnum):",
-            "class BusinessAuditActorType(StrEnum):",
+            "class BusinessAuditSourceType(StrEnum):",
             "class BusinessAuditActionSpec:",
             "class BusinessAuditFacts:",
+            "source_type: BusinessAuditSourceType",
+            "user_id: str | None",
+            "source_id: str | None",
+            "target_user_id:",
+            "target_type:",
+            "target_id:",
+            "entrypoint: AuditSource",
+            "source_types:",
         ),
         "model": (
             "class BusinessAuditEvent(Base):",
             '__tablename__ = "business_audit_events"',
-            'name=conv("ck_business_audit_id_uuid4")',
-            'name=conv("ck_business_audit_actor_presence")',
+            'name=conv("ck_business_audit_id_format")',
+            'name=conv("ck_business_audit_source_identity")',
+            'name=conv("ck_business_audit_user_id_format")',
+            'name=conv("ck_business_audit_target_user_id_format")',
+            'name=conv("ck_business_audit_user_target")',
+            'name=conv("ck_business_audit_entrypoint")',
             'name=conv("ck_business_audit_non_success_after")',
         ),
         "implementation": (
-            "class BusinessAuditWriter:",
+            "class BusinessAuditService:",
             "def add_succeeded(",
             "def add_after_savepoint_rollback(",
             "async def write_after_rollback(",
@@ -3108,6 +4320,7 @@ def validate_business_audit(errors: list[str]) -> None:
             '"business_audit_events"',
             'name=op.f("ck_business_audit_id_uuid4")',
             'name=op.f("ck_business_audit_outcome")',
+            # 历史迁移保留旧 actor 字段，当前模型使用明确的用户、来源和目标字段。
             'name=op.f("ck_business_audit_actor_presence")',
             'name=op.f("ck_business_audit_non_success_after")',
             "CREATE FUNCTION reject_business_audit_mutation()",
@@ -3117,7 +4330,7 @@ def validate_business_audit(errors: list[str]) -> None:
             "BEFORE TRUNCATE ON business_audit_events",
         ),
         "alembic environment": (
-            "from app.models import business_audit as business_audit_models",
+            "from app.models.postgres import Base",
             "target_metadata = Base.metadata",
         ),
         "unit tests": (
@@ -3150,7 +4363,8 @@ def validate_business_audit(errors: list[str]) -> None:
             '"postgresql: requires the PostgreSQL and Redis services',
         ),
     }
-    text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
+    text = {name: path.read_text(encoding="utf-8")
+            for name, path in paths.items()}
     for name, markers in required_markers.items():
         for marker in markers:
             if marker not in text[name]:
@@ -3197,17 +4411,42 @@ def validate_business_audit(errors: list[str]) -> None:
             )
 
     if (
-        "Never put business activity into `rbac_audit_events`"
+        "Never put unrelated business activity into `operation_audit_events`"
         not in text["policy reference"]
     ):
-        fail(errors, "business and RBAC audit event catalogs must remain separate")
+        fail(errors, "business and default operation audit catalogs must remain separate")
+
+    # 可选模型保留为 Skill 资源，但默认注册会让用户误以为必须创建第三张审计表。
+    registry_tree = ast.parse(text["model registry"])
+    if any(isinstance(node, ast.ImportFrom) and node.module == "app.models.postgres.business_audit"
+           for node in registry_tree.body):
+        fail(errors, "default model registry must not import optional business audit")
+    exporter = SKILL_ROOT / "scripts" / "create_project.py"
+    exporter_tree = _parse_python(errors, exporter, label="project exporter")
+    optional_files = _module_literals(exporter_tree).get(
+        "OPTIONAL_RUNTIME_FILES") if exporter_tree else None
+    # 集合由 frozenset 构造，直接读取其语法参数而不执行导出器或导入应用。
+    if exporter_tree is not None:
+        optional_node = next((node.value for node in exporter_tree.body
+                              if isinstance(node, ast.Assign)
+                              and any(isinstance(target, ast.Name) and target.id == "OPTIONAL_RUNTIME_FILES"
+                                      for target in node.targets)), None)
+        if isinstance(optional_node, ast.Call) and optional_node.args:
+            optional_files = ast.literal_eval(optional_node.args[0])
+    expected_optional = {
+        "app/core/business_audit.py", "app/models/postgres/business_audit.py",
+        "app/services/business_audit_service.py",
+    }
+    if not isinstance(optional_files, (set, frozenset)) or not expected_optional.issubset(optional_files):
+        fail(errors, "project exporter must explicitly omit all optional business audit resources")
 
     outcome_values = ("succeeded", "failed", "denied")
     for name in ("policy reference", "contract", "migration"):
         for outcome in outcome_values:
             if outcome not in text[name]:
                 relative = paths[name].relative_to(REPO_ROOT)
-                fail(errors, f"{relative} is missing business-audit outcome: {outcome}")
+                fail(
+                    errors, f"{relative} is missing business-audit outcome: {outcome}")
 
 
 def validate_country_catalog(errors: list[str]) -> None:
@@ -3228,7 +4467,8 @@ def validate_country_catalog(errors: list[str]) -> None:
     if any(not path.is_file() for path in paths.values()):
         return
 
-    text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
+    text = {name: path.read_text(encoding="utf-8")
+            for name, path in paths.items()}
     require_semantics(
         errors,
         path=paths["entrypoint"],
@@ -3236,7 +4476,8 @@ def validate_country_catalog(errors: list[str]) -> None:
             (
                 "country policy and PostgreSQL implementation are routed only on explicit request",
                 (
-                    r"Explicitly requested country/region catalog.*references/country-catalog\.md.*references/country-catalog-postgresql\.md",
+                    r"Explicitly requested country/region catalog.*references/country-catalog\.md.*"
+                    r"references/country-catalog-postgresql\.md",
                 ),
             ),
         ),
@@ -3402,15 +4643,16 @@ def validate_ci_and_current_documentation(errors: list[str]) -> None:
     for action, commit in action_pins.items():
         references = re.findall(rf"uses:\s*{re.escape(action)}@([^\s#]+)", ci)
         if not references or any(reference != commit for reference in references):
-            fail(errors, f"CI must pin every {action} use to full commit {commit}")
+            fail(
+                errors, f"CI must pin every {action} use to full commit {commit}")
 
     for command in (
         'python -B -m pip install --upgrade "pip==26.2.1" "setuptools==84.0.0"',
         'python -B -m pip install -c constraints-ci-py312.txt -e ".[test]"',
         "python -B ../../../../scripts/validate_asset_wheel.py . ../../VERSION",
-        "ruff format --check --no-cache .",
+        "python -B -m autopep8 --diff --exit-code --recursive .",
         "ruff check --no-cache .",
-        "mypy app tests",
+        'python -B -m mypy --cache-dir "$RUNNER_TEMP/fastapi-templates-xtn-mypy" app tests',
         "pip-audit --local --skip-editable --progress-spinner off",
     ):
         if command not in ci:
@@ -3436,21 +4678,35 @@ def validate_ci_and_current_documentation(errors: list[str]) -> None:
 
     limiter = limiter_path.read_text(encoding="utf-8")
     limiter_tests = limiter_tests_path.read_text(encoding="utf-8")
-    for marker in (
+    for retired_marker in (
         "AUTHENTICATED_RATE_LIMIT_RULES",
         "AUTHENTICATED_RATE_LIMIT_EXEMPT_OPERATIONS",
+        "rate_limit_enabled",
+        "RATE_LIMIT_ENABLED",
+    ):
+        if retired_marker in limiter:
+            fail(
+                errors,
+                "route-local rate limiting must not retain hidden registry or disable "
+                f"marker {retired_marker!r}",
+            )
+    for marker in (
+        'getattr(request.scope.get("route"), "name", None)',
+        'key_parts=[str(login_info.user_id)]',
+        "protected operation needs a stable route name",
     ):
         if marker not in limiter:
-            fail(errors, f"authenticated route policy mapping is missing {marker!r}")
-    if not re.search(
-        r'"revoke_user_sessions"\s*:\s*\(\s*"POST"\s*,\s*"authorization_write"',
-        limiter,
+            fail(errors, f"route-local rate limiting is missing {marker!r}")
+    for marker in (
+        "test_each_operation_gets_its_own_key_and_class_quota",
+        "test_allowed_user_check_hides_user_id_in_redis_key",
+        "test_missing_route_name_fails_closed",
+        "test_denied_user_check_raises_rate_limit_exceeded",
+        "test_authenticated_captcha_charges_its_exact_window_once",
     ):
-        fail(errors, "revoke_user_sessions must use the authorization-write quota")
-    if "test_every_registered_operation_has_an_explicit_admission_class" not in (
-        limiter_tests
-    ):
-        fail(errors, "route policy tests must enumerate every registered operation")
+        if marker not in limiter_tests:
+            fail(
+                errors, f"route-local rate-limit tests are missing {marker!r}")
 
     openai = openai_path.read_text(encoding="utf-8")
     for marker in (
@@ -3459,10 +4715,12 @@ def validate_ci_and_current_documentation(errors: list[str]) -> None:
         "email/SMS verification or MFA only when explicitly requested",
     ):
         if marker not in openai:
-            fail(errors, f"agents/openai.yaml is missing current behavior: {marker!r}")
+            fail(
+                errors, f"agents/openai.yaml is missing current behavior: {marker!r}")
     for stale in ("optional verification", "authentication and recovery"):
         if stale in openai.casefold():
-            fail(errors, f"agents/openai.yaml retains stale wording: {stale!r}")
+            fail(
+                errors, f"agents/openai.yaml retains stale wording: {stale!r}")
 
     active_references = (
         SKILL_ROOT / "references" / "jwt-session-security.md",
@@ -3495,9 +4753,7 @@ def validate_ci_and_current_documentation(errors: list[str]) -> None:
             "Python 3.12",
             "PostgreSQL 17",
             "Redis 7",
-            "/health/live",
-            "/health/ready",
-            "ruff format --check --no-cache",
+            "python -B -m autopep8 --diff --exit-code --recursive",
             "pip-audit --local --skip-editable --progress-spinner off",
             "constraints-ci-py312.txt",
             "INSTALL.md",
@@ -3507,9 +4763,7 @@ def validate_ci_and_current_documentation(errors: list[str]) -> None:
             "Python 3.12",
             "PostgreSQL 17",
             "Redis 7",
-            "/health/live",
-            "/health/ready",
-            "ruff format --check --no-cache",
+            "python -B -m autopep8 --diff --exit-code --recursive",
             "pip-audit --local --skip-editable --progress-spinner off",
             "constraints-ci-py312.txt",
             "INSTALL.zh-CN.md",
@@ -3572,6 +4826,237 @@ def validate_ci_and_current_documentation(errors: list[str]) -> None:
             fail(errors, "the archived v0.4.0 design review lacks a historical warning")
 
 
+def _validate_runtime_entrypoint(tree: ast.Module, errors: list[str]) -> None:
+    """
+        检查启动先校验路由，并显式装配独立异常、中间件和业务模块。
+
+    :param tree: 应用入口语法树，不执行其中的启动、查询或资源创建代码。
+    :param errors: 本次校验发现的具体边界问题列表。
+    :return: 无返回值；发现的问题追加到 errors。
+    """
+    lifespan = _function_node(tree.body, "lifespan")
+    body = list(lifespan.body) if lifespan is not None else []
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        body = body[1:]
+    if not (
+        body and isinstance(body[0], ast.Expr) and isinstance(
+            body[0].value, ast.Call)
+        and ast.unparse(body[0].value.func) == "validate_v1_api_routes"
+        and len(body[0].value.args) == 1 and ast.unparse(body[0].value.args[0]) == "app"
+    ):
+        fail(errors, "lifespan must validate_v1_api_routes(app) before creating any resources")
+
+    # 既检查实现来自正确模块，也检查入口确实执行装配，避免移动代码后漏接到应用。
+    expected_imports = {
+        "register_exception_handlers": ("app.core.exception_handlers", "register_exception_handlers"),
+        "RequestLoggingMiddleware": (
+            "app.core.middleware", "RequestLoggingMiddleware"
+        ),
+        "RequestBodyLimitMiddleware": (
+            "app.core.middleware", "RequestBodyLimitMiddleware"
+        ),
+        "SecurityHeadersMiddleware": (
+            "app.core.middleware", "SecurityHeadersMiddleware"
+        ),
+        "v1_router": ("app.api.v1.router", "router"),
+        "validate_v1_api_routes": ("app.api.v1.route_validation", "validate_v1_api_routes"),
+        "configure_logging": ("app.core.logging.output", "configure_logging"),
+    }
+    actual_imports = {
+        alias.asname or alias.name: (node.module, alias.name)
+        for node in tree.body if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    for name, source in expected_imports.items():
+        if actual_imports.get(name) != source:
+            fail(
+                errors, f"application entrypoint must import {name} from {source[0]}")
+
+    app_factory = next(
+        (
+            node.value
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "app"
+                for target in node.targets
+            )
+            and isinstance(node.value, ast.Call)
+            and ast.unparse(node.value.func) == "FastAPI"
+        ),
+        None,
+    )
+    disabled_routes = {"docs_url", "redoc_url", "openapi_url"}
+    disabled_route_values = (
+        {
+            keyword.arg: keyword.value
+            for keyword in app_factory.keywords
+            if keyword.arg in disabled_routes
+        }
+        if app_factory is not None
+        else {}
+    )
+    if any(
+        not isinstance(disabled_route_values.get(name), ast.Constant)
+        or disabled_route_values[name].value is not None
+        for name in disabled_routes
+    ):
+        fail(
+            errors,
+            "application FastAPI constructor must disable docs_url, redoc_url and "
+            "openapi_url by default",
+        )
+
+    assembly_calls = {
+        ast.unparse(node.value) for node in tree.body
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+    }
+    for call in (
+        "register_exception_handlers(app)",
+        "app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=settings.request_body_max_bytes)",
+        "app.add_middleware(SecurityHeadersMiddleware)",
+        "app.add_middleware(RequestLoggingMiddleware, "
+        "log_hmac_key=settings.log_hmac_key.get_secret_value().encode('utf-8'))",
+        "app.include_router(v1_router)",
+    ):
+        if call not in assembly_calls:
+            fail(errors, f"application entrypoint must assemble {call}")
+    _validate_no_runtime_schema_writes(tree, errors)
+
+
+def _validate_no_runtime_schema_writes(tree: ast.Module, errors: list[str]) -> None:
+    """
+        对拆分后的运行模块保持相同的禁止自动建表与迁移边界。
+
+    :param tree: 入口或请求处理模块的源码语法树。
+    :param errors: 接收未经允许的运行时建表或迁移代码问题。
+    :return: 无返回值；发现禁止的调用或导入时追加错误。
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and ast.unparse(node.func).rsplit(".", 1)[-1] in {
+            "create_all", "drop_all", "run_migrations", "upgrade", "downgrade",
+        }:
+            fail(
+                errors, "application runtime must not create tables or execute migrations")
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".", 1)[0] == "alembic":
+            fail(
+                errors, "application runtime must not import the user-owned migration tool")
+
+
+def _validate_exception_handler_registration(tree: ast.Module, errors: list[str]) -> None:
+    """
+        核对独立异常模块仍将所有已支持异常绑定到原有处理函数。
+
+    :param tree: 异常处理模块的源码语法树。
+    :param errors: 接收遗漏或错误绑定的异常注册问题。
+    :return: 无返回值；缺失任一种异常处理关系时追加错误。
+    """
+    registration = _function_node(tree.body, "register_exception_handlers")
+    registrations = {
+        (ast.unparse(node.func.args[0]), ast.unparse(node.args[0]))
+        for node in ast.walk(registration) if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Call) and ast.unparse(node.func.func) == "app.exception_handler"
+        and len(node.func.args) == 1 and len(node.args) == 1
+    } if registration is not None else set()
+    expected = {
+        "RequestValidationError": "handle_request_validation_error",
+        "AppError": "handle_access_error",
+        "RateLimitExceeded": "handle_rate_limit_exceeded",
+        "RateLimitUnavailable": "handle_rate_limit_unavailable",
+        "PasswordBusyError": "handle_password_busy",
+        "StarletteHTTPException": "handle_http_error",
+        "Exception": "handle_unexpected_error",
+        "SQLAlchemyError": "handle_database_unavailable",
+        "DatabaseUnavailableError": "handle_database_unavailable",
+    }
+    for exception, handler in expected.items():
+        if (exception, handler) not in registrations or _function_node(tree.body, handler) is None:
+            fail(
+                errors, f"exception registration must bind {exception} to {handler}")
+    _validate_no_runtime_schema_writes(tree, errors)
+
+
+def validate_project_delivery_boundaries(errors: list[str]) -> None:
+    """
+        核对精选交付和启动合同的源码及真实测试入口，不生成项目或操作数据库。
+
+    :param errors: 本次校验发现的缺失合同或测试覆盖问题列表。
+    :return: 无返回值；发现的问题追加到 errors。
+    """
+    main_tree = _parse_python(
+        errors, ASSET_ROOT / "app/main.py", label="runtime entrypoint")
+    if main_tree is not None:
+        _validate_runtime_entrypoint(main_tree, errors)
+    handlers_tree = _parse_python(
+        errors, ASSET_ROOT / "app/core/exception_handlers.py", label="exception handlers")
+    if handlers_tree is not None:
+        _validate_exception_handler_registration(handlers_tree, errors)
+    middleware_tree = _parse_python(
+        errors, ASSET_ROOT / "app/core/middleware/request_logging.py", label="request middleware"
+    )
+    if middleware_tree is not None:
+        _validate_no_runtime_schema_writes(middleware_tree, errors)
+    for relative, label in (
+        ("app/core/middleware/request_body_limit.py", "request-body middleware"),
+        ("app/core/middleware/security_headers.py", "security-header middleware"),
+    ):
+        middleware_tree = _parse_python(
+            errors, ASSET_ROOT / relative, label=label)
+        if middleware_tree is not None:
+            _validate_no_runtime_schema_writes(middleware_tree, errors)
+
+    route_validation_path = ASSET_ROOT / "app/core/route_validation.py"
+    route_validation_tests = ASSET_ROOT / "tests/test_route_validation.py"
+    generator_tests = REPO_ROOT / "scripts/test_create_project.py"
+    for path, names in (
+        (route_validation_path, (
+            "iter_route_contexts",
+            "_uses_dependency",
+            "route.name",
+            "duplicate route name",
+            "authenticated_dependencies",
+            "special_routes",
+        )),
+        (ASSET_ROOT / "app/api/v1/route_validation.py", (
+            "_PUBLIC_ROUTES",
+            "check_token",
+            "get_current_user",
+            "require_permission",
+            "get_captcha_user",
+            "validate_v1_api_routes",
+        )),
+        (ASSET_ROOT / "app/api/v1/router.py", (
+            "router = APIRouter(prefix=\"/api/v1\")",
+            "router.include_router(auth.router)",
+            "router.include_router(users.router)",
+            "router.include_router(roles.router)",
+            "router.include_router(permissions.router)",
+        )),
+        (route_validation_tests, (
+            "test_new_nested_business_route_needs_no_extra_registry",
+            "test_duplicate_route_names_are_rejected",
+            "test_authenticated_captcha_requires_scene_authorization_dependency",
+            "test_real_lifespan_rejects_missing_auth_before_external_resources",
+        )),
+        (generator_tests, (
+            "test_export_is_minimal_without_auxiliary_manifests",
+            "test_existing_file_and_nonempty_directory_are_not_overwritten",
+            "test_complete_models_and_catalog_import_without_database_configuration",
+            "test_openapi_import_and_project_identity_need_no_running_services",
+            "test_delivered_small_tests_run_without_database_or_redis",
+            "sys.addaudithook(reject_network)",
+            "sqlalchemy.MetaData.create_all = reject_ddl",
+        )),
+    ):
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8")
+        for name in names:
+            if name not in content:
+                fail(
+                    errors, f"{path.relative_to(REPO_ROOT)} must retain starter boundary coverage: {name}")
+
+
 def validate_distribution_tooling(errors: list[str]) -> None:
     paths = {
         "constraints": ASSET_ROOT / "constraints-ci-py312.txt",
@@ -3588,7 +5073,8 @@ def validate_distribution_tooling(errors: list[str]) -> None:
     }
     if any(not path.is_file() for path in paths.values()):
         return
-    text = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
+    text = {name: path.read_text(encoding="utf-8")
+            for name, path in paths.items()}
 
     constraint_lines = [
         line.strip()
@@ -3625,11 +5111,13 @@ def validate_distribution_tooling(errors: list[str]) -> None:
         "uvloop",
     ):
         if required not in normalized_names:
-            fail(errors, f"CI constraints are missing exact pin for {required}")
+            fail(
+                errors, f"CI constraints are missing exact pin for {required}")
 
     pyproject = tomllib.loads(text["pyproject"])
     for dependency in list(pyproject.get("project", {}).get("dependencies", [])) + list(
-        pyproject.get("project", {}).get("optional-dependencies", {}).get("test", [])
+        pyproject.get("project", {}).get(
+            "optional-dependencies", {}).get("test", [])
     ):
         if ">=" not in dependency or "<" not in dependency:
             fail(
@@ -3653,7 +5141,8 @@ def validate_distribution_tooling(errors: list[str]) -> None:
     )
     for marker in ci_markers:
         if marker not in text["CI"]:
-            fail(errors, f"CI is missing reproducible-release marker: {marker!r}")
+            fail(
+                errors, f"CI is missing reproducible-release marker: {marker!r}")
 
     updater_markers = (
         'target_parent.parent / "skill-backups"',
@@ -3687,7 +5176,8 @@ def validate_distribution_tooling(errors: list[str]) -> None:
         "/app/assets/locales/zh-CN.json",
     ):
         if marker not in text["wheel validator"]:
-            fail(errors, f"wheel validator is missing artifact check: {marker}")
+            fail(
+                errors, f"wheel validator is missing artifact check: {marker}")
 
     closure_validator_markers = (
         'sys.platform != "linux"',
@@ -3803,7 +5293,8 @@ def validate_tree_hygiene(errors: list[str]) -> None:
                 f"release package contains generated data: {path.relative_to(REPO_ROOT)}",
             )
         if path.name == ".env" or (
-            path.name.startswith(".env.") and not path.name.endswith(".example")
+            path.name.startswith(
+                ".env.") and not path.name.endswith(".example")
         ):
             fail(
                 errors,
@@ -3814,10 +5305,12 @@ def validate_tree_hygiene(errors: list[str]) -> None:
             try:
                 text = path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
-                fail(errors, f"expected UTF-8 text: {path.relative_to(REPO_ROOT)}")
+                fail(
+                    errors, f"expected UTF-8 text: {path.relative_to(REPO_ROOT)}")
                 continue
             if LOCAL_HOME_PATH_RE.search(text):
-                fail(errors, f"local home path leaked in {path.relative_to(REPO_ROOT)}")
+                fail(
+                    errors, f"local home path leaked in {path.relative_to(REPO_ROOT)}")
             if SECRET_MATERIAL_RE.search(text):
                 fail(
                     errors, f"secret material detected in {path.relative_to(REPO_ROOT)}"
@@ -3851,10 +5344,11 @@ def main(argv: list[str] | None = None) -> int:
     validate_rbac_database_naming(errors)
     validate_api_internationalization(errors)
     validate_api_response_contract(errors)
-    validate_observability_and_audit(errors)
+    validate_logging_and_audit(errors)
     validate_business_audit(errors)
     validate_country_catalog(errors)
     validate_ci_and_current_documentation(errors)
+    validate_project_delivery_boundaries(errors)
     validate_distribution_tooling(errors)
     validate_tree_hygiene(errors)
 

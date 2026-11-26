@@ -57,16 +57,16 @@ The transaction owner must:
 
 1. Acquire the singleton authorization guard first, then all other canonical
    locks that conflict with writers able to change the decision.
-2. Reload the actor, target, complete affected users, roles, grants,
+2. Reload the current user, target, complete affected users, roles, grants,
    protection, ownership, versions, and relevant resource state.
 3. Re-evaluate complete current and proposed authority.
 4. Check any client concurrency precondition.
 5. Apply the mutation, including all required parent/relation tombstones or new
-   relation episodes, and all affected version or epoch increments.
+   relation episodes, and all required token-revocation or role-version increments.
 6. Insert the allowed audit. Add a transactional outbox row only if the product
    actually has an approved external side effect requiring delivery.
 7. Build the immutable public response snapshot from the post-mutation rows while
-   the same locks are held, using the actor's read-visibility projection for any
+   the same locks are held, using the current user's read-visibility projection for any
    nested role or grant collection.
 8. Commit once and return only that snapshot after commit succeeds.
 
@@ -84,12 +84,12 @@ async def run_authorized_write(command: Command) -> Result:
                 require_expected_version(current, command)
 
                 result = await apply_mutation(session, current, command)
-                bump_authorization_versions(current, result)
+                bump_edited_role_versions(current, result)
                 session.add(allowed_audit(decision, current, result))
                 # Only a separately approved external-delivery feature needs an outbox.
                 response = await build_immutable_response_snapshot(
                     session,
-                    actor=current.actor,
+                    current_user=current.current_user,
                     result=result,
                 )
         return response
@@ -103,13 +103,28 @@ Do not catch policy denial inside `session.begin()`, add a denied audit, and let
 that transaction commit; earlier flushes could be committed. Use the savepoint
 design above when denial-audit durability is mandatory.
 
+The bundled `user_role_transaction` retains the outer `session_factory()` session
+context and inner `session.begin()` transaction context shown above. The outer
+context still cleans up the session if commit or rollback raises. Only after
+the business session exits may it call `audit_denied` in a separate transaction;
+an audit failure must preserve the original error. It yields the session without
+automatically writing a success audit: the business Service calls `audit_success`
+inside the block. `target_user_id` and `target_role_id` default to `None`, so
+callers pass only the target involved in the operation.
+
+Its shared checks return `None`, with no data conversion:
+`check_role_operation(operation)` accepts only `bind` or `unbind`;
+`check_locked_user(user: User | None, *, token_version: int)` checks only that
+the locked user exists, is enabled and has the expected login version. Complete
+permission checks remain with the transaction owner.
+
 ## Global RBAC Guard
 
 Create `rbac_state` with exactly one well-known row. Its fixed
 `scope='global'` string is a control key rather than a business or API identifier;
-the row carries the shared authorization epoch and serializes all RBAC writers.
+the row contains only `scope` and serializes all RBAC writers.
 Enforce the fixed value with a primary key and check constraint, create the row
-in the schema migration, and fail closed if it is missing. Runtime code must
+in the user-prepared schema/data setup, and fail closed if it is missing. Runtime code must
 never create it opportunistically.
 
 The global row intentionally serializes authorization changes in this
@@ -130,7 +145,7 @@ closed and is never repaired opportunistically.
 Every mutable row that may be removed at runtime uses a tombstone, including
 users, custom roles, business entities, and relationship unbinds; these paths
 never issue physical `DELETE` or rely on a hard cascade. Parent tombstone,
-complete live relation tombstones, versions, epoch, and allowed audit are one
+complete live relation tombstones, required versions, and allowed audit are one
 transaction. Restore creates only explicitly authorized new relation episodes
 and cannot revive tombstones. System roles and the fixed permission catalog have
 no runtime deletion path.
@@ -179,7 +194,7 @@ live assignee in the project's canonical ID order while the guard is held,
 including suspended users
 whose role remains live and could become effective after reactivation. For a
 parent delete, lock the parent and every live owned child or relation before
-tombstoning them. Reload the actor and each
+tombstoning them. Reload the current user and each
 target's complete current
 and proposed multi-role authority after locks are held. Never authorize from a
 scan performed before acquiring the guard.
@@ -209,8 +224,8 @@ For role information update, lifecycle, soft deletion, and permission or
 permission bind/unbind commands, require a nonnegative `expected_version` in the
 JSON body. Compare it with `roles.version` only after locks, fresh reload,
 visibility, and manageability checks. Missing or malformed input follows the
-ordinary `422001` validation contract. Return HTTP `409` with business code
-`409002` on version mismatch and use `409001` for another client-visible state
+ordinary `42201` validation contract. Return HTTP `409` with business code
+`40931` on version mismatch and use `40901` for another client-visible state
 conflict. Build the successful role body and new version from the same immutable
 in-transaction snapshot before locks are released; never requery part of a
 response after commit. Follow
@@ -222,7 +237,7 @@ live episode; a later bind inserts a new episode rather than clearing history. I
 still requires the global guard, post-lock authority reload, and complete
 hierarchy decision. Before inserting a genuinely new binding, calculate the
 target's complete final live set under the guard and reject the transaction with
-`409001` if it would exceed 10. The required `user` and any `super_admin` binding
+`40921` if it would exceed 10. The required `user` and any `super_admin` binding
 count, disabled roles still count, and tombstones do not count. A deferred
 PostgreSQL constraint trigger checks the same final state, including direct SQL;
 its statement-level guard lock prevents concurrent writers from both claiming
@@ -231,8 +246,8 @@ the last available slot.
 User-role bind/unbind, user disable/enable, and every other administrative write
 that returns user state use the same response boundary as role writes. Construct
 the response before releasing locks, freeze collection fields, and return it only
-after commit. Public nested collections such as `assigned_role_ids` use the
-actor-aware read predicate, even though policy and audit evaluate the complete
+after commit. Public nested collections such as `bound_role_ids` use the
+current user-aware read predicate, even though policy and audit evaluate the complete
 unfiltered assignment set. Do not reopen a route/request `Session` or another
 session after commit to assemble the response; that creates a race in which a
 concurrent authority change contaminates the result of the completed command.
@@ -262,19 +277,19 @@ When commit outcome is unknown and no idempotency record exists, require an
 authoritative reread or reconciliation before another non-idempotent attempt.
 
 The bundled adapter bounds pool, connection, statement, and lock waits through
-`app/core/config.py` and returns classified infrastructure timeouts as `503001`.
+`app/core/config.py` and returns classified infrastructure timeouts as `50301`.
 It does not implement automatic transaction retries or generic idempotency.
 The retry protocol above applies only when the concrete project adds and tests
 it; a `503` after connection loss is not permission to blindly replay a write.
 
 ## Versions, Caches, And External Effects
 
-- Increment user authorization versions and the global epoch in the mutation
-  transaction.
-- Resolve the current version tuple from authoritative state before selecting a
-  cached permission entry. Token or old-cache versions are not proof.
-- Publish cache invalidation after commit. Versioned keys provide correctness;
-  invalidation only improves freshness.
+- Update the edited role's version in the mutation transaction, as required
+  by the operation. User-role changes use the global write lock and live
+  authorization reloads without a separate authorization-version counter.
+- Reload current authority from PostgreSQL; the baseline has no permission
+  cache. If a project adds one, its invalidation and revocation guarantees need
+  their own design and verification. Token or old-cache versions are not proof.
 - Insert outbox rows in the database transaction for messages, webhooks, emails,
   indexing, and other tied effects. Deliver after commit with an idempotency key;
   consumers tolerate at-least-once delivery.
@@ -293,18 +308,18 @@ revocation from this design.
 
 The included asset implements the core boundary in:
 
-- [`app/services/access.py`](../assets/postgresql-rbac/app/services/access.py): allowed
+- [`app/services/user_role_transaction.py`](../assets/postgresql-rbac/app/services/user_role_transaction.py): allowed
   mutation, version, and audit commits plus rollback before the denied-audit
   transaction;
-- [`app/repositories/access.py`](../assets/postgresql-rbac/app/repositories/access.py): canonical
-  user, global guard, role, and policy locks with identity-map refresh;
+- [`app/repositories/postgres/`](../assets/postgresql-rbac/app/repositories/postgres/):
+  named user, global guard, role, and authority queries with identity-map refresh;
 - [`alembic/versions/0001_single_project_rbac.py`](../assets/postgresql-rbac/alembic/versions/0001_single_project_rbac.py):
   baseline database enforcement of the 10-live-role limit and serialized
   assignment writes;
 - [`tests/integration/test_rbac_api.py`](../assets/postgresql-rbac/tests/integration/test_rbac_api.py):
   audit behavior and rollback after forced post-flush denial;
 - [`tests/integration/test_postgresql_locking.py`](../assets/postgresql-rbac/tests/integration/test_postgresql_locking.py):
-  isolation, lock waits, committed actor revocation, and concurrent assignments.
+  isolation, lock waits, committed current user revocation, and concurrent assignments.
 
 The asset does not by itself prove crash-proof denied-audit delivery, generic
 request idempotency, deployment failover, a business outbox, or
@@ -323,10 +338,10 @@ For the changed surface, cover:
 - role and user mutation responses are immutable snapshots created before lock
   release, with no post-commit requery and no concurrent-state contamination;
 - ordinary administrators receive only visible roles in nested
-  `assigned_role_ids`, while `super_admin` receives every live assignment to a
+  `bound_role_ids`, while `super_admin` receives every live assignment to a
   non-deleted role;
 - revocation-first and protected-write-first commit orders;
-- actor disablement, target promotion, super-admin changes, and a shared-role
+- current user disablement, target promotion, super-admin changes, and a shared-role
   assignment racing the constrained write in both lock acquisition orders;
 - two bindings racing for a user's tenth live role slot, proving only one commits,
   plus direct SQL, bootstrap, and `super_admin` transfer attempts against a full

@@ -26,6 +26,8 @@ jobs:
         run: python -B skills/fastapi-templates-xtn/scripts/test_validate_country_csv.py
       - name: Test safe Skill updater
         run: python -B scripts/test_update_installed_skill.py
+      - name: Test release validator contracts
+        run: python -B scripts/test_validate_release.py
       - name: Validate release package
         run: python -B scripts/validate_release.py
       - name: Require recorded pre-tag evidence for release tags
@@ -39,6 +41,7 @@ jobs:
       run:
         working-directory: skills/fastapi-templates-xtn/assets/postgresql-rbac
     env:
+      PYTHONDONTWRITEBYTECODE: "1"
       PIP_CONSTRAINT: constraints-ci-py312.txt
       TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/rbac_example_test
       TEST_DISPOSABLE_DATABASE: rbac_example_test
@@ -96,6 +99,9 @@ jobs:
       - name: Test CI dependency validator
         working-directory: ${{ github.workspace }}
         run: python -B scripts/test_validate_ci_environment.py
+      - name: Verify curated project delivery without database access
+        working-directory: ${{ github.workspace }}
+        run: python -B scripts/test_create_project.py
       - name: Verify installed dependency closure
         run: |
           python -B -m pip check
@@ -103,11 +109,11 @@ jobs:
       - name: Validate wheel contents
         run: python -B ../../../../scripts/validate_asset_wheel.py . ../../VERSION
       - name: Format check
-        run: ruff format --check --no-cache .
+        run: python -B -m autopep8 --diff --exit-code --recursive .
       - name: Lint
         run: ruff check --no-cache .
       - name: Type check
-        run: mypy app tests
+        run: python -B -m mypy --cache-dir "$RUNNER_TEMP/fastapi-templates-xtn-mypy" app tests
       - name: Audit dependency vulnerabilities
         run: pip-audit --local --skip-editable --progress-spinner off
       - name: Verify the single migration head
@@ -116,11 +122,3 @@ jobs:
         run: python -B -m pytest -p no:cacheprovider -m "not postgresql"
       - name: PostgreSQL integration tests
         run: python -B -m pytest -p no:cacheprovider -m postgresql
-      - name: Install disposable Redis topology test binary
-        run: |
-          # Only use the binary; the Redis service container already owns 6379.
-          sudo systemctl mask redis-server.service
-          sudo apt-get update
-          sudo apt-get install -y redis-server
-      - name: Redis standalone, Sentinel, and Cluster client integration
-        run: TEST_REDIS_SERVER="$(command -v redis-server)" python -B -m pytest -p no:cacheprovider tests/test_redis_topology_live.py

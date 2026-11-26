@@ -1,9 +1,10 @@
 # Country Catalog PostgreSQL Implementation
 
 Read [Optional country catalog](country-catalog.md) first. Use this reference only
-when the requested deliverable includes a concrete PostgreSQL table, SQLAlchemy
-model, Alembic migration, CSV import, read API, or tests. Adapt package imports and
-migration ancestry to the existing application without weakening the contract.
+when the requested deliverable includes a SQLAlchemy model, database handoff,
+CSV import feature, read API, or tests. Adapt package imports and existing
+components without weakening the contract. The user generates, reviews and
+executes migrations, creates the schema, and initializes data themselves.
 
 This is an integration shape, not another default module inside the bundled RBAC
 asset. Do not wire it into an application that did not request a country catalog.
@@ -30,7 +31,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base
+from app.models.postgres.base import Base
 
 
 class Country(Base):
@@ -111,121 +112,47 @@ unique constraints to `calling_code`,
 `name_zh`, or `name_en`.
 
 If country changes must identify the operator, use the business audit event as
-the durable actor record. Add `deleted_by_user_id` only when the product has a
-separate query need for it and can use exactly the established `users.id` type;
+the durable operator record. Add `deleted_by_user_id` only when the product has a
+separate query need for it and can use exactly the established `users.user_id` type;
 do not introduce a loosely typed duplicate identity column.
 
-## Alembic Migration
+## User-Owned Database Setup
 
-Use the current migration head as `down_revision`. The upgrade body is:
+Deliver the `Country` model and its named constraints/indexes above. The user
+generates, reviews, and executes their own migration using the project's chosen
+tool. Do not generate or copy an Alembic revision, create the table, initialize
+country rows, or call `create_all()` from startup or ordinary fixtures.
+The model is the schema specification; duplicate DDL examples are unnecessary.
 
-```python
-def upgrade() -> None:
-    op.create_table(
-        "countries",
-        sa.Column("country_code", sa.String(length=2), nullable=False),
-        sa.Column("calling_code", sa.String(length=3), nullable=False),
-        sa.Column("name_zh", sa.String(length=128), nullable=False),
-        sa.Column("name_en", sa.String(length=128), nullable=False),
-        sa.Column("flag_url", sa.String(length=2048), nullable=True),
-        sa.Column(
-            "is_active",
-            sa.Boolean(),
-            server_default=sa.text("true"),
-            nullable=False,
-        ),
-        sa.Column(
-            "version",
-            sa.BigInteger(),
-            server_default=sa.text("0"),
-            nullable=False,
-        ),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("statement_timestamp()"),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("statement_timestamp()"),
-            nullable=False,
-        ),
-        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.CheckConstraint(
-            "country_code ~ '^[A-Z]{2}$'",
-            name=op.f("ck_countries_country_code"),
-        ),
-        sa.CheckConstraint(
-            "calling_code ~ '^[1-9][0-9]{0,2}$'",
-            name=op.f("ck_countries_calling_code"),
-        ),
-        sa.CheckConstraint(
-            "btrim(name_zh) <> '' AND btrim(name_en) <> ''",
-            name=op.f("ck_countries_names_nonempty"),
-        ),
-        sa.CheckConstraint(
-            "version >= 0",
-            name=op.f("ck_countries_version_nonnegative"),
-        ),
-        sa.CheckConstraint(
-            "flag_url IS NULL OR flag_url ~ '^https://'",
-            name=op.f("ck_countries_flag_https"),
-        ),
-        sa.CheckConstraint(
-            "deleted_at IS NULL OR is_active = false",
-            name=op.f("ck_countries_deleted_inactive"),
-        ),
-        sa.CheckConstraint(
-            "updated_at >= created_at",
-            name=op.f("ck_countries_timestamp_order"),
-        ),
-        sa.PrimaryKeyConstraint(
-            "country_code",
-            name=op.f("pk_countries"),
-        ),
-    )
-    op.create_index(
-        "ix_countries_active_code",
-        "countries",
-        ["country_code"],
-        unique=False,
-        postgresql_where=sa.text("deleted_at IS NULL AND is_active"),
-    )
-    op.create_index(
-        "ix_countries_live_calling_code",
-        "countries",
-        ["calling_code", "country_code"],
-        unique=False,
-        postgresql_where=sa.text("deleted_at IS NULL"),
-    )
-```
+The handoff asks the user to verify the natural `varchar(2)` primary key,
+typed timestamps, partial live indexes, and every check in the model. Their
+setup must preserve existing references and tombstones. Initial data is their
+responsibility; a CSV import feature is implemented only when separately
+requested as product functionality, and is never run automatically.
 
-A reviewed downgrade may drop the optional table only after checking dependent
-foreign keys and data. Runtime code never performs that physical deletion. Do not
-put seed rows in the schema migration unless the source is approved, versioned,
-licensed for the target distribution, and intentionally immutable with that
-migration. Prefer a separate operator-run import command.
-
-When another table stores a country code, use the same length and collation plus:
+When another model stores a country code, use the same type and collation with
+a restrictive foreign key:
 
 ```python
-sa.ForeignKey("countries.country_code", ondelete="RESTRICT", onupdate="RESTRICT")
+ForeignKey("countries.country_code", ondelete="RESTRICT", onupdate="RESTRICT")
 ```
 
-Do not use `CASCADE` or `SET NULL` to simulate the country soft-delete lifecycle.
+Do not use `CASCADE` or `SET NULL` to simulate soft deletion. Any later physical
+schema removal and its data impact remain the user's reviewed migration work.
 
 ## Read Schemas And Queries
 
 Use strict, immutable response models and the shared page envelope:
 
 ```python
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
+
+from app.core.response import ResponseBase
+from app.schemas.common import RequestBase
 
 
-class CountryRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True, extra="forbid", frozen=True)
+class CountryRead(ResponseBase):
+    model_config = ConfigDict(from_attributes=True)
 
     country_code: str = Field(pattern=r"^[A-Z]{2}$")
     calling_code: str = Field(pattern=r"^[1-9][0-9]{0,2}$")
@@ -234,9 +161,7 @@ class CountryRead(BaseModel):
     flag_url: str | None
 
 
-class CountryListQuery(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
+class CountryListQuery(RequestBase):
     q: str | None = Field(default=None, max_length=128)
     calling_code: str | None = Field(
         default=None,
@@ -279,48 +204,56 @@ items = list(
 )
 ```
 
-Use the same live-and-active predicate for detail. Normalize a path code to
+Use the same live-and-active predicate for detail. Normalize a typed query code to
 uppercase, but do not map aliases such as `UK` to `GB` unless the product owns a
-separate explicit alias table. Return `404001` for missing, inactive, or deleted
+separate explicit alias table. Return `40401` for missing, inactive, or deleted
 ordinary results.
 
-Adapt the router to the existing response helpers:
+Adapt the router to the existing response helpers and authentication
+dependencies. This endpoint excerpt assumes the application's existing
+`country_service`, schemas and session dependency; it does not create a public
+country directory or an extra forwarding service:
 
 ```python
-router = APIRouter(
-    prefix="/api/v1/countries",
-    tags=["countries"],
-    route_class=RequestIdRoute,
-)
+from app.core.i18n.messages import MessageKey
+from app.core.access.authorization import AuthorizationContext
+from app.dependencies.auth import get_current_user
+
+router = APIRouter(prefix="/countries")
 
 
-@router.get("", response_model=ApiResponse[PageData[CountryRead]])
+@router.get("/list", response_model=ApiResponse[PageResponse[CountryRead]])
 async def list_countries(
-    request: Request,
-    query: Annotated[CountryListQuery, Query()],
-    session: Annotated[AsyncSession, Depends(get_session)],
-) -> ApiResponse[PageData[CountryRead]]:
-    items, total = await country_service.list_active(session, query)
+    request: Request, query: Annotated[CountryListQuery, Query()],
+    db: Annotated[AsyncSession, Depends(get_postgres_session)],
+    context: AuthorizationContext = Depends(get_current_user),
+) -> ApiResponse[PageResponse[CountryRead]]:
+    """
+        为已登录用户查询当前可选的国家/地区，返回筛选后的分页结果。
+
+    :param request: 当前请求，用于生成统一响应与请求 ID。
+    :param query: 已校验的搜索条件与分页参数。
+    :param context: 已完成登录身份和当前业务限流检查的上下文。
+    :param db: FastAPI 为本次查询注入的 PostgreSQL 会话；请求结束自动关闭。
+    :return: 仅包含启用且未软删除国家/地区的分页响应。
+    """
+    # Service/Repository 对列表和总数使用同一组可见性与搜索条件。
+    items, total = await country_service.list_active(db, query)
     country_items = list(map(CountryRead.model_validate, items))
-    page = PageData(
-        items=country_items,
-        page=query.page,
-        page_size=query.page_size,
-        total=total,
-    )
-    return api_response(
-        request,
-        code=BusinessCode.OK,
-        message="Countries loaded",
-        data=page,
-    )
+    page = PageResponse(items=country_items, page=query.page, page_size=query.page_size, total=total)
+    return api_response(request, code=BusinessCode.OK, message_key=MessageKey.COMMON_QUERY_SUCCESS, data=page)
 ```
 
-Add the matching detail handler using the same dependency and envelope. Register
-the router only when the product needs HTTP reads. Do not mount a write or import
-router as part of this baseline.
+Add `/detail` with required Query `country_code`, using the same login, automatic
+GET quota and envelope contracts. Register the router in the v1 assembler only
+when the product needs HTTP reads. Do not mount a write or import router as part
+of this baseline.
 
-## Atomic Import Shape
+## Optional Import Feature
+
+Implement the following business operation only when the user requested an
+import feature. It is not a schema initializer or a reason to run imports while
+generating the project. The user first completes their own database setup.
 
 The command that writes rows must parse and validate the exact bytes it imports;
 a prior CLI validation alone is susceptible to a file-change race. Reuse the
@@ -435,7 +368,8 @@ country advisory lock, reload the target with `FOR UPDATE`, authorize before
 revealing version state, and compare a strict integer `expected_version` before
 changing it. The supported actions are create, update display fields, disable,
 enable, soft-delete, and explicit restore. Use only neutral `GET` and `POST`
-routes, for example `/api/v1/countries/{country_code}/disable`.
+routes, for example `POST /api/v1/countries/disable` with `country_code` and
+`expected_version` in a Pydantic JSON body whose extra fields are forbidden.
 
 Soft-delete sets `is_active=false`, `deleted_at=statement_timestamp()`, increments
 `version`, and commits the matching business audit in the same transaction.
@@ -445,8 +379,10 @@ the CSV upsert invoke restore or enable.
 
 ## PostgreSQL And API Tests
 
-Use the target repository's test fixtures and a real PostgreSQL database. At
-minimum, cover:
+Use isolated validator/model/API tests for Skill delivery. The user verifies
+the actual PostgreSQL boundaries after completing their own schema. Do not
+create tables, migrate or seed inside new-project fixtures. The applicable
+acceptance matrix is:
 
 ```text
 schema:       no serial/identity; varchar(2) PK; timestamptz fields; named checks
@@ -455,12 +391,12 @@ uniqueness:   duplicate country code rejected; shared calling code accepted
 source:       strict UTF-8; size/row limits; nonempty; exact header and approved code set
 import:       all-or-nothing; unchanged retry is a no-op; changed row increments version
 tombstone:    import collision fails; missing file row stays untouched; no silent enable
-reads:        active live only; deterministic pagination; lowercase path normalized
+reads:        active live only; deterministic pagination; lowercase query code normalized
 history:      inactive/deleted country remains referenced by existing business rows
 deletion:     runtime removal writes a tombstone; no hard-delete HTTP path
 flags:        invalid host/port/credentials/query/fragment rejected; reads never fetch
 optional API: permission, hierarchy, stale-version, rollback, and business-audit behavior
-absence:      an ordinary RBAC project creates no country table or route
+absence:      an ordinary RBAC project receives no country model or route
 ```
 
 Run the standalone CSV validator tests as part of the Skill release checks:

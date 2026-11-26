@@ -33,9 +33,7 @@ def confirmed_database_name() -> str:
     return confirmed
 
 
-def require_actual_database(
-    actual_name: str | None, *, empty: bool | None = None
-) -> None:
+def require_actual_database(actual_name: str | None, *, empty: bool | None = None) -> None:
     if actual_name != confirmed_database_name():
         _refuse("actual PostgreSQL database differs from the disposable test target")
     if empty is False:

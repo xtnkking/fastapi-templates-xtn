@@ -23,9 +23,7 @@ def configure_disposable_targets(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TEST_REDIS_ISOLATION_CONFIRMED", "yes")
 
 
-def test_migration_refuses_before_alembic_can_write(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_migration_refuses_before_alembic_can_write(monkeypatch: pytest.MonkeyPatch) -> None:
     steps: list[str] = []
 
     async def refuse_before_migration(database_url: str) -> None:
@@ -55,11 +53,9 @@ def test_migration_refuses_before_alembic_can_write(
     ("database_name", "has_user_objects"),
     [("another_test", False), ("fresh_test", True)],
 )
-def test_postgresql_preflight_refuses_wrong_or_nonempty_actual_database(
-    monkeypatch: pytest.MonkeyPatch,
-    database_name: str,
-    has_user_objects: bool,
-) -> None:
+def test_postgresql_preflight_refuses_wrong_or_nonempty_actual_database(monkeypatch: pytest.MonkeyPatch,
+                                                                        database_name: str,
+                                                                        has_user_objects: bool) -> None:
     configure_disposable_targets(monkeypatch)
     statements: list[str] = []
 
@@ -98,9 +94,7 @@ def test_postgresql_preflight_refuses_wrong_or_nonempty_actual_database(
     assert all(statement.lstrip().startswith("SELECT") for statement in statements)
 
 
-def test_postgresql_preflight_requires_confirmation_before_connecting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_postgresql_preflight_requires_confirmation_before_connecting(monkeypatch: pytest.MonkeyPatch) -> None:
     configure_disposable_targets(monkeypatch)
     monkeypatch.delenv("TEST_DISPOSABLE_DATABASE")
     monkeypatch.setattr(
@@ -116,9 +110,7 @@ def test_postgresql_preflight_requires_confirmation_before_connecting(
         )
 
 
-def test_redis_preflight_refuses_existing_keys_without_deleting_anything(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_redis_preflight_refuses_existing_keys_without_deleting_anything(monkeypatch: pytest.MonkeyPatch) -> None:
     configure_disposable_targets(monkeypatch)
     commands: list[str] = []
 
@@ -142,9 +134,7 @@ def test_redis_preflight_refuses_existing_keys_without_deleting_anything(
     assert commands == ["DBSIZE", "CLOSE"]
 
 
-def test_redis_preflight_requires_confirmation_before_connecting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_redis_preflight_requires_confirmation_before_connecting(monkeypatch: pytest.MonkeyPatch) -> None:
     configure_disposable_targets(monkeypatch)
     monkeypatch.delenv("TEST_REDIS_ISOLATION_CONFIRMED")
     monkeypatch.setattr(
@@ -166,18 +156,15 @@ def test_redis_preflight_requires_confirmation_before_connecting(
         "redis://127.0.0.1:16380/0",
     ],
 )
-def test_redis_only_target_must_not_reuse_integration_database(
-    monkeypatch: pytest.MonkeyPatch, redis_only_url: str
-) -> None:
+def test_redis_only_target_must_not_reuse_integration_database(monkeypatch: pytest.MonkeyPatch,
+                                                               redis_only_url: str) -> None:
     configure_disposable_targets(monkeypatch)
     monkeypatch.setenv("TEST_CAPTCHA_REDIS_URL", redis_only_url)
     with pytest.raises(RuntimeError, match="distinct from integration tests"):
         safety.confirmed_redis_only_target()
 
 
-def test_redis_only_target_requires_explicit_distinct_database(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_redis_only_target_requires_explicit_distinct_database(monkeypatch: pytest.MonkeyPatch) -> None:
     configure_disposable_targets(monkeypatch)
     monkeypatch.delenv("TEST_CAPTCHA_REDIS_URL", raising=False)
     with pytest.raises(RuntimeError, match="must be configured"):
@@ -186,9 +173,7 @@ def test_redis_only_target_requires_explicit_distinct_database(
     assert safety.confirmed_redis_only_target() == "redis://127.0.0.1:16379/14"
 
 
-def test_unsafe_urls_are_not_echoed_in_error_messages(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_unsafe_urls_are_not_echoed_in_error_messages(monkeypatch: pytest.MonkeyPatch) -> None:
     configure_disposable_targets(monkeypatch)
     monkeypatch.setenv(
         "TEST_DATABASE_URL", "postgresql+asyncpg://test:marker@host/real"
@@ -199,9 +184,7 @@ def test_unsafe_urls_are_not_echoed_in_error_messages(
     assert "://" not in str(error.value)
 
 
-def test_driver_runtime_error_does_not_echo_connection_details(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_driver_runtime_error_does_not_echo_connection_details(monkeypatch: pytest.MonkeyPatch) -> None:
     configure_disposable_targets(monkeypatch)
 
     class BrokenEngine:
@@ -232,9 +215,8 @@ def test_driver_runtime_error_does_not_echo_connection_details(
         ("APP_ENVIRONMENT", "production"),
     ],
 )
-async def test_subprocess_server_refuses_mismatched_targets_before_starting(
-    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
-) -> None:
+async def test_subprocess_server_refuses_mismatched_targets_before_starting(monkeypatch: pytest.MonkeyPatch,
+                                                                            variable: str, value: str) -> None:
     configure_disposable_targets(monkeypatch)
     for application, test in (
         ("DATABASE_URL", "TEST_DATABASE_URL"),

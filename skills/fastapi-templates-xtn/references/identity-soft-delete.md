@@ -19,7 +19,7 @@ different contract unless a change is requested. The identity decisions are:
 | Decision | Required answer |
 | --- | --- |
 | Stored identifiers | Required `user_name` only in the new-project baseline |
-| Creation requirement | Same trimmed and validated username in registration, admin creation, and trusted provisioning |
+| Creation requirement | Same trimmed and validated username in registration and administrator creation |
 | Login input | Username only |
 | Normalization | Trim and ASCII validation are mandatory; ask whether case is significant |
 | Uniqueness | Canonical username is globally unique in PostgreSQL |
@@ -38,9 +38,9 @@ data and authentication migration, not incidental RBAC work.
 
 Keep presentation identifiers separate from authorization identity:
 
-- `users.id` is non-sequential, immutable, and never recycled. It is the only
-  canonical user identity used by authorization, audit actor/target fields, and
-  Access Token `sub`.
+- `users.user_id` is non-sequential, immutable, and never recycled. It is the only
+  canonical user identity used by authorization, audit current user/target fields, and
+  Access Token `user_id`.
 - Normalize once through a named, tested function before both write and lookup.
   Preserve a separate presentation value only when the product needs it; never
   use presentation spelling as a unique-key comparison.
@@ -53,17 +53,17 @@ Keep presentation identifiers separate from authorization identity:
   this baseline and require a separately requested design.
 
 The bundled asset uses a required, globally unique `user_name`. Its trusted
-provisioner, public registration, admin creation, and login lookup use the same
+user-creation service, public registration, admin creation, and login lookup use the same
 named normalization. A deleted name stays reserved, and SQL uniqueness is the
 final authority against concurrent creates.
 
 ## JWT Subject And First-Super-Admin Bootstrap
 
-The login choice never changes the Token subject. JWT `sub` is always the exact
-canonical string of immutable `users.id`; it is never an email, `user_name`, or
+The login choice never changes the Token subject. JWT `user_id` is always the exact
+canonical string of immutable `users.user_id`; it is never an email, `user_name`, or
 other mutable/reusable lookup value. Login resolves the submitted identifier to
 one live user first, then issues the Token for that user's ID. Renaming a
-username does not change `sub` and does not create a new identity.
+username does not change `user_id` and does not create a new identity.
 
 The operator-run first-super-admin script accepts only the intended existing
 user's canonical ID, for example:
@@ -91,7 +91,7 @@ unspecified hard-delete default:
 
 | Table lifecycle | Required deletion behavior |
 | --- | --- |
-| Mutable runtime data, including entities and relationship episodes | Use a tombstone such as `deleted_at` plus trusted actor metadata; every ordinary remove/unbind path updates the tombstone |
+| Mutable runtime data, including entities and relationship episodes | Use a tombstone such as `deleted_at` plus trusted current user metadata; every ordinary remove/unbind path updates the tombstone |
 | Append-only evidence, including RBAC and business audit events | Expose no update, soft-delete, hard-delete, or truncate path |
 | Permanent control state or immutable system catalog | Expose no runtime deletion path; missing required state fails closed |
 
@@ -115,30 +115,49 @@ capabilities, hierarchy decisions, transaction code, audit events, and negative
 tests have been added.
 
 Entity tables normally carry `deleted_at` and `deleted_by_user_id` or an
-equivalent trusted actor field. Add a bounded reason code only when the product
+equivalent trusted current user field. Add a bounded reason code only when the product
 needs it. A deleted entity is absent from ordinary detail, list, count, search,
 export, authorization, ownership, and uniqueness queries except where the
 chosen identifier-reuse policy deliberately includes its tombstone.
+
+The explicit management user-list query is a read-only lifecycle exception:
+`GET /api/v1/users/list` requires the existing `users:read` capability and
+defaults to `is_deleted=false` (only non-deleted users). `is_deleted=true`
+selects only soft-deleted users within the same SQL visibility restrictions;
+both page rows and `total` use those restrictions. Optional exact `user_id`,
+normalized exact `user_name` and `is_active` filters combine with AND.
+Omitting `is_active` includes either enabled state. Deleted users are returned
+with empty role/permission collections and `role_level=0`, without reviving
+their former authority. Detail, login and authentication still reject deleted
+users. This query introduces no model field, deletion/restoration operation or
+additional capability.
 
 Model each RBAC relationship as a non-sequentially identified episode:
 
 ```text
 user_roles:
-  id, user_id, role_id, assigned_at, assigned_by_user_id,
+  id, user_id, role_id, bound_at, bound_by_user_id,
   deleted_at, deleted_by_user_id
 
 role_permissions:
-  id, role_id, permission_id, assigned_at,
-  assigned_by_user_id, deleted_at, deleted_by_user_id
+  id, role_id, permission_id, bound_at,
+  bound_by_user_id, deleted_at, deleted_by_user_id
 ```
+
+For both relationships, `bound_by_user_id` identifies the user who performed
+the binding; `None` means self-registration or offline initialization without
+an online operation user. `bound_at` is the timezone-aware time this binding
+was established, not the creation time of the user, role or permission.
+Unbinding preserves that time; rebinding creates a new relationship episode.
 
 Use a partial unique index for one live episode per logical pair, for example
 `UNIQUE (user_id, role_id) WHERE deleted_at IS NULL`. An unbind timestamps the
-one live episode and records the trusted actor. A later authorized bind creates
+one live episode and records the trusted current user. A later authorized bind creates
 a new episode with a new ID; it never clears or reuses the old tombstone. An
-unbind with no live episode is an idempotent `changed=false` result.
+unbind with no live episode is an idempotent success returning the final user
+or role state; the public response does not expose whether a write was needed.
 
-Permission unbind tombstones the live `role_permissions` episode. The actor
+Permission unbind tombstones the live `role_permissions` episode. The current user
 may grant only a permission it currently possesses and still must pass the
 strict hierarchy and affected-user checks. There is no independent delegation
 flag or runtime delegation-management route.
@@ -226,9 +245,9 @@ or impossible to misuse.
 
 A deletion, unbind, parent-relation tombstone set, or restore owns one
 transaction. For authorization-affecting work, lock `rbac_state` first, reload
-the actor and complete affected set, apply hierarchy and self-elevation policy,
-tombstone or create relation episodes, increment every affected user/role
-version and the global epoch, add the allowed audit, and commit once. A failure
+the current user and complete affected set, apply hierarchy and self-elevation policy,
+tombstone or create relation episodes, apply required token-revocation and role-version
+increments, add the allowed audit, and commit once. A failure
 rolls back the parent, all relations, versions, and allowed audit together.
 
 Redis invalidation and other external effects happen after commit. User deletion
@@ -243,7 +262,7 @@ For the selected surface, prove:
   existing project's identity contract remains unchanged by default;
 - create and login use the same normalization and database uniqueness rule;
 - a deleted username remains reserved, including under concurrent registration;
-- JWT `sub` and first-super-admin bootstrap use immutable `users.id` only;
+- JWT `user_id` and first-super-admin bootstrap use immutable `users.user_id` only;
 - every runtime delete/unbind leaves a tombstone and every rebind creates a new
   live episode with a new ID;
 - effective queries ignore every tombstoned entity and relation;

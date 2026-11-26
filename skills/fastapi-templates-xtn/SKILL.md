@@ -8,79 +8,146 @@ description: Build or harden a single-project FastAPI service that explicitly ad
 > Independently maintained by XTN as an extension of [`fastapi-templates`](https://github.com/wshobson/agents/tree/47a5dbc3f9c2661c6afb13638f80d4a4d4449040/plugins/api-scaffolding/skills/fastapi-templates).
 > See [NOTICE](NOTICE) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
-## Scope And Workflow
+## Scope And Starting Point
 
-This Skill defines code conventions and a coherent single-project authorization
-baseline. Keep the deliverable within the requested coding task. Production
-sizing, zero-downtime releases, cluster operations, and recovery drills are
-user-owned choices, not default features, completion gates, or a backlog of
-Skill defects. Before changing code, inspect the repository's Python and dependency
-versions, settings, identity contract, database and migrations, transaction
-ownership, Redis clients, routes, tests, and deployment model. Preserve an
-existing intentional choice unless the owner requests a migration.
+This Skill owns application code conventions and the documented single-project
+baseline. Infrastructure operations, capacity certification, zero-downtime
+deployment and recovery drills are outside an ordinary coding task.
 
-For a greenfield local-password service, or when redesigning that surface, read
-[Local password authentication](references/local-password-authentication.md)
-before asking questions. That document owns the one-time product-decision batch
-and defaults. [Rate limiting](references/rate-limiting.md) owns quota values;
-[JWT security](references/jwt-session-security.md) owns the Token contract. Ask
-all unresolved product choices in one batch, explain the documented tradeoffs,
-and never infer a required value or consent from a generic instruction to
-continue. Do not ask again after the owner has answered in the same project.
+For an existing project, inspect the requested code's owners, direct dependencies
+and relevant tests; preserve its architecture, topology and intentional contracts.
+An empty subdirectory is not a new service. Skill adoption or a feature request
+does not authorize replacing a mature framework or reorganizing unrelated code.
 
-Then read only the narrowest reference matching the actual work. Add another
-reference only when the deliverable crosses that boundary. Implement a feature
-through settings, models, migrations, services, routes, and tests as applicable;
-never copy a route without its authorization, transaction, audit, and negative
-test boundaries.
+For a genuinely new service, read [Local password authentication](references/local-password-authentication.md)
+before asking about unresolved product choices. Ask once in one batch, explain
+the documented defaults and tradeoffs, and reuse answers already given in the
+project. A generic instruction to continue does not supply a required choice.
+Then read [Project structure](references/project-structure.md) and
+[New project delivery](references/new-project-delivery.md). The default layout
+is optional for a new service; an explicitly chosen alternative takes precedence.
 
-Before adding a function, search for an existing owner of the same behavior.
-Share logic that must change together using a small, meaningful parameter set;
-keep simple one-use code inline unless a clear boundary justifies extraction.
-For new abstractions or repeated flows, read
-[Reuse and abstraction](references/reuse-and-abstraction.md).
+The Skill owns ORM models; the user owns migration generation, review, execution
+and initial database preparation. Do not generate, copy or run migrations,
+table-creation SQL, seed/bootstrap scripts or startup schema repair. Explain
+initial rows and database-only protections in the existing project README.
+ORM metadata does not install triggers. Preserve user-owned migration tooling.
 
-For a genuinely new service with no established framework, use the optional
-default layout: `api`, `core`, `db`, `dependencies`, `models`, `repositories`,
-`schemas`, and `services`, with business modules inside them. Honor an explicitly
-chosen alternative. In an existing project, follow its architecture, naming,
-layers, and infrastructure; place the requested feature in its existing homes.
-An empty subdirectory in that project is not a greenfield service. Using this
-Skill or asking for a feature, fix, or optimization does not authorize broad
-framework replacement or directory reorganization. Read
-[Project structure](references/project-structure.md) when placing or reorganizing
-code. Directory structure must not introduce empty modules or forwarding layers.
+## Essential Baseline
 
-For a new project, default to one standalone PostgreSQL instance and one
-standalone Redis instance, configured by `DATABASE_URL` and `REDIS_URL`.
-Login state, CAPTCHA, and quotas share that Redis by default. Do not ask a
-mandatory cluster-selection question or add a second Redis service. Sentinel,
-Cluster, read/write splitting, and separate backends are opt-in requirements;
-load their configuration guidance only for an explicit request or an existing
-topology that must be preserved. Keep bounded connections, cleanup, and safe
-transactions in all modes. When a cluster is requested, connect to the supplied
-service; operations owns its deployment and management.
+The references below own full rules, values, examples and implementation details.
+These entrypoint boundaries apply whenever their business is in scope:
 
-Treat [the PostgreSQL asset](assets/postgresql-rbac/) as output source, not as
-instructions to load wholesale. Copy it as one directory for a matching
-greenfield service. Never overwrite an existing application's tree with the
-asset. When adapting it, inspect only the target symbol, direct dependencies,
-and matching tests with `rg`, and integrate the needed behavior into the host
-project's components. Reorganize architecture only within an explicitly
-requested scope; do not ask again when that scope is already authorized.
+- Verified stack: Python 3.12, FastAPI, Pydantic 2, SQLAlchemy 2 async, asyncpg,
+  PostgreSQL 17 and Redis 7. Alembic is optional user-owned tooling. Verify other
+  versions separately; prefer ordinary type aliases, `TypeVar` and `Generic`
+  rather than PEP 695 syntax.
+- New projects use standalone PostgreSQL and Redis through `DATABASE_URL` and
+  `REDIS_URL`. Cluster clients, node discovery, failover and read/write splitting
+  are project-specific extensions. Preserve an existing project's topology.
+- Local accounts use usernames and Argon2id hashes stored on `users`.
+  Mutable records/relationships use soft deletion; audit rows are append-only.
+  A deleted username stays reserved. Public registration has no runtime switch;
+  both registration and administrator creation atomically assign only `user`.
+- Purpose-bound graphical CAPTCHA is mandatory for its documented operations;
+  each submission consumes it once, including a wrong answer. Mandatory Redis
+  limits use trusted IP for anonymous operations and business + authenticated
+  user ID for logged-in operations, without site-wide or username quotas.
+  Count each request once before protected work; logged-in requests validate
+  JWT and Redis active JTI first, then count before PostgreSQL account checks.
+  Current-Token logout only validates and deletes that login, without a quota.
+- Default JWT claims are exactly `user_id`, `jti`, `iat`, `exp` and `token_type`,
+  with a 24-hour lifetime. Add `iss`/`aud` together only with explicit owner
+  agreement. An ordinary business request requires signature/profile validation,
+  exact Redis active JTI, a live PostgreSQL account/current authority and the
+  Redis-bound user-version match. Never recreate missing sessions from a JWT.
+  Current-Token logout has its documented reduced-authority exception.
+  Use `user_id` consistently in user models, request/response fields, JWT and
+  Redis records; `current_user` names a loaded current-user object, while
+  `target_user_id` distinguishes a managed user from the current caller.
+  Expose the login dependency directly on ordinary routes with
+  `context: AuthorizationContext = Depends(get_current_user)`, returning
+  `context.login_info` for the verified login and `context.user_info` for the
+  current database account, roles and permissions. The RBAC reference owns the
+  short, explicit login/management/CAPTCHA dependency flow.
+  `check_token` verifies JWT and the Redis login; permission dependencies reuse
+  that check and the account loader directly, with ordinary user quotas by
+  default. Business management routes explicitly select `management=True`;
+  requiring a permission never determines the caller's role or quota category.
+  Parsed Token data uses `AccessTokenInfo` / `token_info`; `LoginInfo` additionally
+  means Redis has confirmed the login. Keep GET/POST threshold selection in the
+  limiter, without quota-name strings in authentication functions.
+- Role fields use `level`; a user's highest effective role level uses `role_level`.
+  System roles are `super_admin`/`admin`/`user` at levels 1000/500/0, with one
+  super administrator prepared and transferred offline; a user has at most
+  10 live role assignments. Exact positive permissions govern operations.
+  Except for the sole super administrator, manage strictly lower complete
+  multi-role authority and grant only currently held permissions.
+- Check the exact capability before target visibility. Hide self, peer, higher,
+  protected and incomparable administrative targets; concealed and missing
+  targets share the same result. Role replacement requires strict integer
+  `expected_version`; authorized stale writes use `40931`.
+- Authorization writes lock `rbac_state` first, reload authority under ordered
+  locks and commit mutation, versions and allowed audit together. Keep Redis
+  I/O outside those locks. Roll back before denied auditing; audit failure must
+  preserve the original denial. Read live permissions on each request; do not
+  add a per-user permission-version counter. Retain the login-revocation
+  `token_version` and role edit `version`. The global RBAC row only coordinates
+  write locks; do not add an authorization-change counter or return one in APIs.
+- New business APIs use only GET/POST, static paths, GET query inputs and
+  validated POST JSON bodies. List/detail paths end in `/list`/`/detail`;
+  current-user information uses `GET /api/v1/me/user_info`.
+  Preserve an existing intentional HTTP contract outside a requested change.
+  New projects disable public docs/OpenAPI routes and include no health probes.
+- Ordinary JSON responses contain exactly `code`, `message`, `data` and a
+  server-generated UUIDv4 `request_id`, also returned in `X-Request-ID`.
+  Use real HTTP statuses, five-digit integer business codes and Chinese/English
+  runtime messages, defaulting to `zh-CN`. Translate human text, not machine
+  keys, fields, permissions, audit actions or reason codes.
+- Keep safe operational logs separate from durable audit evidence. The default
+  `operation_audit_events` table and `AuditService` combine account-security and
+  permission operations, with bounded redacted request/response summaries and
+  allowlisted state. Required success audit and mutation share one transaction;
+  response data is a business snapshot, not proof of HTTP delivery. Audit
+  `user_id` identifies the operation user and `target_user_id` the affected user.
+  New-password comparison fingerprints use the existing independent log key,
+  never plaintext or database hashes. General business audit is opt-in and is
+  excluded from default model registration/export. Ordinary queries use file
+  logs. Never expose passwords, CAPTCHA answers, bearer Tokens/JTI, credentials
+  or connection URLs. Logging failure must not change business results.
+- Write for backend learners: named Service/Repository classes for substantial
+  operations, clear business owners, explained constants/fields/stages, Chinese
+  function contracts and separate access/permission lines on endpoints.
+  Interface input/output models use `Request`/`Response` suffixes, respectively.
+  They inherit `RequestBase`/`ResponseBase` directly or through shared schemas;
+  [API response](references/api-response-standard.md) owns their common rules.
+  New files have only the generation day's author/`V1.000`/`新建` history;
+  preserve real history when editing an existing project.
+
+Do not silently add a credential table, Refresh Tokens/session tables, temporary
+passwords, anonymous password recovery, email/SMS/MFA, online super-admin transfer,
+ordinary-user logout-all, device fingerprinting, permission caches, multi-tenancy
+or background systems. Country/proxy modules are opt-in.
 
 ## Read By Task
+
+Read the narrowest matching reference completely; add another only when the
+requested change crosses its boundary. Do not preload every reference or follow
+an optional cross-link merely because it exists. Detailed business instructions
+have one reference owner; keep this entrypoint as routing and core boundaries.
 
 | Task | Read |
 | --- | --- |
 | Chinese maintainer/download-user overview | [Chinese architecture overview](references/architecture-overview.zh-CN.md) |
 | FastAPI, Pydantic, SQLAlchemy, settings, lifecycle | [Modern stack](references/modern-fastapi-stack.md) |
 | Connection pools, timeouts, shared process state, or measured performance issues | [Capacity and availability](references/application-capacity-and-availability.md) |
-| Explicitly requested or existing Redis Sentinel/Cluster, separate backend, custom TLS, or client/script changes | [Redis connections](references/redis-connections.md); ordinary standalone setup needs only `.env.example` |
+| Standalone Redis URL, separate standalone rate-limit backend, TLS, or client changes | [Redis connections](references/redis-connections.md) |
 | New project layout, module placement, or requested directory reorganization | [Project structure](references/project-structure.md) |
+| Deliver code into an empty new project | [New project delivery](references/new-project-delivery.md) |
+| Python functions, signatures, fields/constants, file histories or comment review | [Python comments](references/python-comments.md) |
 | Similar functions, shared helpers, service/repository layers, refactoring | [Reuse and abstraction](references/reuse-and-abstraction.md) |
 | JSON envelopes, business codes, request IDs, pagination | [API response](references/api-response-standard.md) |
-| Runtime API messages, `Accept-Language`, validation text, new locale | [API internationalization](references/api-internationalization.md) |
+| Runtime API messages, permission descriptions, `Accept-Language`, validation text, new locale | [API internationalization](references/api-internationalization.md) |
 | Runtime/access logs and safe exception telemetry | [Operational logging](references/operational-logging.md) |
 | RBAC concepts or policy | [RBAC design](references/rbac.md) |
 | PostgreSQL RBAC code, models, routes, or bundled asset | [PostgreSQL implementation](references/postgresql-rbac-implementation.md) |
@@ -88,112 +155,42 @@ requested scope; do not ask again when that scope is already authorized.
 | Authorization transactions, locks, races, revocation | [Atomic consistency](references/atomic-consistency.md) |
 | Registration, login, password change/reset, local account lifecycle | [Local password authentication](references/local-password-authentication.md) |
 | JWT claims, Redis active JTI, sessions, logout | [JWT security](references/jwt-session-security.md); add [JWT implementation](references/jwt-session-implementation.md) only for concrete adapter code |
-| Fixed-window quotas and trusted client IP | [Rate limiting](references/rate-limiting.md) |
-| Bundled graphical CAPTCHA behavior | [Verification](references/verification-and-abuse-defense.md), plus [Rate limiting](references/rate-limiting.md) for quotas |
-| Email/SMS verification or MFA request | The asset has no complete implementation. First gather product, provider, recovery, and threat-model requirements; then use [Verification](references/verification-and-abuse-defense.md) only as an extension-boundary checklist |
+| Fixed-window quotas, named limit dependencies, trusted client IP | [Rate limiting](references/rate-limiting.md) |
+| Graphical CAPTCHA enum, login requirements, issuance and single-use consumption | [Verification](references/verification-and-abuse-defense.md); add [Rate limiting](references/rate-limiting.md) for quotas |
+| Explicit email/SMS verification or MFA extension | First gather product/provider/recovery requirements; [Verification](references/verification-and-abuse-defense.md) describes extension boundaries, not a complete implementation |
 | User lifecycle, username identity, soft deletion | [Identity lifecycle](references/identity-soft-delete.md) |
-| Public/non-sequential IDs | [Identifier policy](references/identifier-policy.md); add [Migrations](references/migrations.md) only for schema or backfill work |
-| Alembic revisions, seeds, constraints, upgrades | [Migrations](references/migrations.md) |
-| RBAC audit events | [RBAC audit](references/audit-module.md) |
+| Business/audit IDs, formats and shared validation | [Identifier policy](references/identifier-policy.md); add [Model and database handoff](references/migrations.md) for schema changes |
+| Models, constraints, initial-data requirements, user-owned migrations | [Model and database handoff](references/migrations.md) |
+| Unified account/permission audit, redacted inputs/results, action catalog | [Operation audit](references/audit-module.md) |
 | Business event catalog and boundaries | [Business audit](references/business-audit-module.md); add [PostgreSQL code](references/business-audit-postgresql.md) or [operations](references/business-audit-operations.md) only when needed |
-| Explicitly requested country/region catalog | [Country catalog](references/country-catalog.md), then [PostgreSQL code](references/country-catalog-postgresql.md) only for implementation |
-| Explicitly requested proxy availability checks | [Proxy detection](references/proxy-availability-detection.md), then only the needed [backend](references/proxy-availability-backend.md), [frontend](references/proxy-availability-frontend.md), or [tests](references/proxy-availability-testing.md) |
-| Completion audit or release evidence | [Testing](references/testing.md) |
+| Explicitly requested country/region catalog | [Country catalog](references/country-catalog.md); add [PostgreSQL code](references/country-catalog-postgresql.md) only for implementation |
+| Explicitly requested proxy availability checks | [Proxy detection](references/proxy-availability-detection.md); add only the needed [backend](references/proxy-availability-backend.md), [frontend](references/proxy-availability-frontend.md) or [tests](references/proxy-availability-testing.md) |
+| Verification or release evidence | [Testing](references/testing.md) |
 
-Specialized rows override general ones. Do not follow cross-links unless the
-current task meets their loading condition. Country and proxy features are
-optional and never enter the default asset merely because related fields exist.
+## Implement, Verify And Report
 
-## Non-Negotiable Baseline
+Before extracting a helper, search for an existing owner. Share rules that must
+change together; keep obvious one-use code local. Shared finite business concepts
+use one owned enum and derived classifications, not duplicated option catalogs.
+Read the structure/reuse references before introducing layers or abstractions;
+read the comment reference before writing Python. Names and layout must reflect
+the operation a beginner is looking for, without hiding checks behind wrappers.
 
-### Identity And Authentication
+Treat [the PostgreSQL asset](assets/postgresql-rbac/) as maintained source, not a
+directory to copy wholesale. For matching new projects, resolve required choices
+and use `scripts/create_project.py` as described in the delivery reference.
+Export relevant runtime/models, a concise README and a small offline test set;
+do not overwrite an existing project or export maintenance SQL, tooling, caches
+or auxiliary source/handoff/legal documents. Required copied-code attribution
+stays in the README appendix, not a license imposed on the whole application.
 
-- The verified stack is Python 3.12, FastAPI, Pydantic 2, SQLAlchemy 2 async,
-  asyncpg, Alembic, PostgreSQL 17, and Redis 7. Verify other versions separately.
-- Greenfield services use the documented username/password contract. Store the
-  Argon2id hash on `users`, never plaintext or a separate credential table.
-  Use non-sequential public/business IDs and soft-delete ordinary mutable rows
-  and live relationships. Audit rows remain append-only.
-- Public registration defaults on, and only `super_admin` may change it. Public
-  registration and administrator creation atomically assign only the mandatory
-  `user` role; no client chooses an initial role.
-- Require the five purpose-bound graphical CAPTCHA scenes documented in
-  [Verification](references/verification-and-abuse-defense.md). A submitted
-  challenge is single-use whether correct or wrong. Email/SMS delivery, MFA,
-  and anonymous password recovery are not bundled features.
-- Use only per-business Redis limits. Anonymous operations use the documented
-  trusted-IP subject; authenticated operations use the server-authenticated
-  user ID. Never add a whole-site, username, or cross-business shared quota.
+Run the smallest relevant checks from the testing reference. Documentation-only
+work gets content/link and whitespace checks; code changes get directly related
+tests and scoped lint/type checks. Keep caches outside delivered source. New
+project verification is offline unless the user provides a prepared environment;
+never create or migrate a database to make tests pass. Reuse unchanged evidence
+and stop when the requested result is verified.
 
-### Tokens And Sessions
-
-- By default an Access Token contains exactly `sub`, `jti`, `iat`, `exp`, and
-  `token_type`. Add `iss` and `aud` only together after the owner explicitly
-  agrees. For a new project, no answer or unrelated approval means both remain
-  absent; preserve an existing configured pair unless removal is requested. Do
-  not place profile, role, permission, tier, or server-side version data in the
-  Token.
-- Access Tokens default to 86,400 seconds (24 hours). Tell the owner where to
-  shorten that setting for product risk and login experience; high-risk
-  administration surfaces usually need a shorter lifetime. Reject weak signing
-  secrets at startup and bound presented and encoded Tokens to 4096 bytes.
-- A valid signature is insufficient: require the exact active JTI in Redis,
-  then load the current live PostgreSQL user and authority and compare the
-  Redis-bound `users.token_version`. Never reconstruct missing Redis state from
-  a JWT. Do not add Refresh Tokens or a PostgreSQL Token/session table.
-
-### Authorization And Consistency
-
-- Seed immutable system roles `super_admin`, `admin`, and `user` at tiers 1000,
-  500, and 0. Exactly one `super_admin` exists and bootstrap or handover is an
-  operator-run offline SQL action, never a public API. A user has at most 10
-  live role assignments.
-- Grants are exact positive `resource:action` permissions. Do not add deny rules,
-  wildcards, inheritance, or a separate delegation subsystem. Except for the
-  sole super administrator, an actor may manage only strictly lower complete
-  multi-role authority and may grant only permissions it currently holds.
-- Hide self, peer, higher, protected, and incomparable targets from all
-  administrative reads and writes. Public management routes use only `GET` and
-  `POST`, and their paths or public schemas never expose the term `rbac`.
-- Check the exact capability before target visibility. A missing capability is
-  `403001`; after it passes, hidden and unknown targets share `404001`. Role
-  replacement commands require strict integer `expected_version`; an authorized
-  stale write is `409002`.
-- Every authorization write locks the global `rbac_state` first, reloads
-  authority under lock, and atomically commits mutation, version changes, and
-  the allowed audit. Never perform Redis I/O while those locks are held. Roll
-  back before denied auditing; failure to write a denied audit must preserve the
-  original client result rather than turn it into `500`.
-
-### API, Language, Logs, And Audit
-
-- Every ordinary JSON response has exactly `code`, `message`, `data`, and a
-  server-generated UUIDv4 `request_id`, also returned as `X-Request-ID`. Use real
-  HTTP statuses and six-digit integer business codes.
-- Localize all client-facing runtime messages in `zh-CN` and `en`, defaulting to
-  `zh-CN`. Return canonical `Content-Language` and `Vary: Accept-Language`.
-  Routes and services choose stable message keys; never localize codes, fields,
-  machine values, permission keys, log events, audit actions, outcomes, or
-  private reason codes.
-- Emit safe one-line structured operational logs with one canonical completion
-  event. Keep operational logs, server-owned append-only RBAC audits,
-  account-security audits, and business audits separate. Business audits require
-  an explicit action catalog and per-action state allowlist; a successful
-  protected mutation and its audit share one PostgreSQL transaction. Never log
-  or return passwords, CAPTCHA answers, bearer Tokens, JTI, proxy credentials,
-  or database/Redis URLs. Logging failure must not change a business or
-  transaction result.
-
-Do not silently add multi-tenancy, a permission cache, online super-admin
-transfer, ordinary-user logout-all, device fingerprinting, default country or
-proxy data, business-audit delivery workers, or unrelated background systems.
-
-## Verify And Report
-
-Run the smallest relevant matrix from [Testing](references/testing.md), including
-format, lint, strict typing, contract, policy/IDOR, secret scans, migrations, and
-real PostgreSQL/Redis concurrency where the changed boundary requires them.
-Integration tests may use only newly created, empty, disposable targets whose
-isolation guards pass. Report actual code verification and unavailable checks.
-Ordinary coding tasks do not require production capacity certification or
-deployment exercises; passing code tests does not certify production readiness.
+Report the completed change, actual checks and unavailable service checks.
+Passing code tests does not certify production capacity or infrastructure
+failover. Publishing and deployment require the user's corresponding scope.

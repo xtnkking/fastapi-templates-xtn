@@ -60,6 +60,82 @@ class UpdateInstalledSkillTests(unittest.TestCase):
             self.assertEqual(MODULE._manifest(backup), old_manifest)
             self.assertEqual(MODULE._manifest(target), MODULE._manifest(source))
 
+    def test_locked_directory_requires_explicit_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            source = make_skill(base / "source", "0.6.1", "new")
+            target = make_skill(base / "installed", "0.6.0", "old")
+            old_manifest = MODULE._manifest(target)
+            real_rename = Path.rename
+
+            def reject_target_rename(path: Path, destination: Path) -> Path:
+                if path == target:
+                    raise PermissionError("directory in use")
+                return real_rename(path, destination)
+
+            with mock.patch.object(Path, "rename", new=reject_target_rename):
+                with self.assertRaises(PermissionError):
+                    MODULE.update_skill(source=source, target=target)
+
+            self.assertEqual(MODULE._manifest(target), old_manifest)
+
+    def test_locked_directory_fallback_keeps_backup_and_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            source = make_skill(base / "source", "0.6.1", "new")
+            target = make_skill(base / "installed", "0.6.0", "old")
+            old_manifest = MODULE._manifest(target)
+            real_rename = Path.rename
+
+            def reject_target_rename(path: Path, destination: Path) -> Path:
+                if path == target:
+                    raise PermissionError("directory in use")
+                return real_rename(path, destination)
+
+            with mock.patch.object(Path, "rename", new=reject_target_rename):
+                backup = MODULE.update_skill(
+                    source=source, target=target, in_place_on_lock=True
+                )
+
+            self.assertIsNotNone(backup)
+            assert backup is not None
+            self.assertEqual(MODULE._manifest(backup), old_manifest)
+            self.assertEqual(MODULE._manifest(target), MODULE._manifest(source))
+
+    def test_locked_directory_fallback_restores_after_file_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            source = make_skill(base / "source", "0.6.1", "new")
+            target = make_skill(base / "installed", "0.6.0", "old")
+            old_manifest = MODULE._manifest(target)
+            real_rename = Path.rename
+            real_replace = MODULE.os.replace
+            rejected = False
+
+            def reject_target_rename(path: Path, destination: Path) -> Path:
+                if path == target:
+                    raise PermissionError("directory in use")
+                return real_rename(path, destination)
+
+            def reject_one_file(source_path: Path, destination: Path) -> None:
+                nonlocal rejected
+                if destination == target / "marker.txt" and not rejected:
+                    rejected = True
+                    raise PermissionError("file in use")
+                real_replace(source_path, destination)
+
+            with mock.patch.object(Path, "rename", new=reject_target_rename):
+                with mock.patch.object(MODULE.os, "replace", new=reject_one_file):
+                    with self.assertRaisesRegex(
+                        MODULE.UpdateError, "previous Skill was restored"
+                    ):
+                        MODULE.update_skill(
+                            source=source, target=target, in_place_on_lock=True
+                        )
+
+            self.assertTrue(rejected)
+            self.assertEqual(MODULE._manifest(target), old_manifest)
+
     def test_identical_installation_is_a_no_op_without_backup(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             base = Path(raw)

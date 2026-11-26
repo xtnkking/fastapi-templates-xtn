@@ -1,14 +1,35 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# 说明:
+#    验证应用、数据库、Redis 和业务安全设置的默认值及边界。
+# History:
+# Date          Author    Version       Modification
+# --------------------------------------------------------------------------------------------------
+# 2026/09/29    XTN       V1.000        删除默认健康探针移除后不再提供的就绪超时配置断言
+# 2026/09/30    XTN       V1.001        删除已移除日志队列配置的断言
+# 2026/09/30    XTN       V1.002        删除管理员密码模式及临时完成额度断言
+# 2026/10/02    XTN       V1.003        覆盖请求体大小布尔输入并对齐数值校验称呼
+# 2026/10/08    XTN       V1.004        验证注册限流配置字段使用 register
+# 2026/10/13    XTN       V1.005        移除已删除的限流命名空间环境变量测试准备
+# 2026/10/14    XTN       V1.006        验证日志文件 100 MB 默认值、环境配置和正整数约束
+# 2026/10/14    XTN       V1.007        运行配置不再要求环境标识，保留测试配置隔离
+# 2026/10/14    XTN       V1.008        验证日志指纹密钥必填、强度、环境读取和三项密钥独立
+# 2026/10/20    XTN       V1.009        验证密码计算和排队默认值、环境覆盖及无效配置拒绝
+# 2026/10/22    XTN       V1.010        对齐简短限流配置名称，验证环境文件覆盖生效
+# --------------------------------------------------------------------------------------------------
+
 from pathlib import Path
 
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from app.core.config import RedisEndpoint, Settings
-from app.core.security.policies import SecurityPolicies
+from app.core.config import Settings
 
 EXAMPLE_ENV = Path(__file__).parents[1] / ".env.example"
 VALID_TEST_SECRET = "D7vL3qN9xR2mK8pT5sW1cF6hJ4yB0uGz"
 VALID_RATE_LIMIT_SECRET = "R8qM4vK2zT7pN5xC9sW1dF6hJ3yB0uGa"
+VALID_LOG_SECRET = "N6wR2tY9qH4kF7vD1sL8cB3mJ5xP0uGa"
 SETTINGS_ENV_NAMES = (
     "DATABASE_URL",
     "DATABASE_POOL_SIZE",
@@ -23,24 +44,24 @@ SETTINGS_ENV_NAMES = (
     "APP_ENVIRONMENT",
     "SERVICE_NAME",
     "SERVICE_VERSION",
+    "REQUEST_BODY_MAX_BYTES",
     "LOG_LEVEL",
     "LOG_INCLUDE_EXCEPTION_DETAILS",
-    "LOG_QUEUE_CAPACITY",
-    "LOG_SHUTDOWN_TIMEOUT_SECONDS",
+    "LOG_FILE_MAX_MB",
+    "LOG_HMAC_KEY",
     "JWT_SECRET",
     "RATE_LIMIT_HMAC_KEY",
     "MAX_ACTIVE_SESSIONS_PER_USER",
-    "ADMIN_PASSWORD_RESET_MODE",
     "JWT_ISSUER",
     "JWT_AUDIENCE",
     "JWT_ACCESS_TOKEN_TTL_SECONDS",
-    "RATE_LIMIT_ENABLED",
-    "RATE_LIMIT_NAMESPACE",
     "REDIS_CONNECT_TIMEOUT_SECONDS",
     "REDIS_SOCKET_TIMEOUT_SECONDS",
     "REDIS_MAX_CONNECTIONS",
-    "READINESS_TIMEOUT_SECONDS",
     "SQL_ECHO",
+    "PASSWORD_MAX_RUNNING",
+    "PASSWORD_MAX_WAITING",
+    "PASSWORD_WAIT_TIMEOUT_SECONDS",
 )
 
 
@@ -49,10 +70,9 @@ def settings_for_test(**overrides: object) -> Settings:
         "database_url": "postgresql+asyncpg://postgres:postgres@localhost/example",
         "redis_url": "redis://localhost:6379/0",
         "rate_limit_redis_url": "redis://127.0.0.1:6380/0",
-        "app_environment": "test",
-        "rate_limit_enabled": False,
         "jwt_secret": SecretStr(VALID_TEST_SECRET),
         "rate_limit_hmac_key": SecretStr(VALID_RATE_LIMIT_SECRET),
+        "log_hmac_key": SecretStr(VALID_LOG_SECRET),
         "max_active_sessions_per_user": 2,
     }
     values.update(overrides)
@@ -63,89 +83,41 @@ def settings_with_secret(secret: str) -> Settings:
     return settings_for_test(jwt_secret=SecretStr(secret))
 
 
-def test_log_buffer_defaults_and_explicit_bounds() -> None:
-    settings = settings_for_test()
-    assert settings.log_queue_capacity == 1000
-    assert settings.log_shutdown_timeout_seconds == 2
-    settings = settings_for_test(
-        log_queue_capacity=10000, log_shutdown_timeout_seconds=0
-    )
-    assert settings.log_queue_capacity == 10000
-    assert settings.log_shutdown_timeout_seconds == 0
+def test_database_url_is_hidden_from_settings_representation() -> None:
+    database_url = "postgresql+asyncpg://private-user:private-password@db/example"
+
+    settings = settings_for_test(database_url=database_url)
+
+    assert database_url not in repr(settings)
+    assert "private-password" not in repr(settings)
+
+
+def test_request_body_limit_defaults_to_one_mebibyte_and_is_configurable() -> None:
+    default_settings = settings_for_test()
+    custom_settings = settings_for_test(request_body_max_bytes=2 * 1024 * 1024)
+
+    assert default_settings.request_body_max_bytes == 1024 * 1024
+    assert custom_settings.request_body_max_bytes == 2 * 1024 * 1024
 
 
 @pytest.mark.parametrize(
-    ("name", "value"),
-    [
-        ("log_queue_capacity", 0),
-        ("log_queue_capacity", 10001),
-        ("log_shutdown_timeout_seconds", -1),
-        ("log_shutdown_timeout_seconds", 31),
-        ("log_shutdown_timeout_seconds", float("inf")),
-        ("log_shutdown_timeout_seconds", float("nan")),
-    ],
+    "invalid_value",
+    [0, True, 100 * 1024 * 1024 + 1],
 )
-def test_log_buffer_rejects_unbounded_configuration(name: str, value: float) -> None:
-    with pytest.raises(ValidationError):
-        settings_for_test(**{name: value})
+def test_request_body_limit_rejects_invalid_values(invalid_value: object) -> None:
+    with pytest.raises(ValidationError, match="request_body_max_bytes"):
+        settings_for_test(request_body_max_bytes=invalid_value)
 
 
-@pytest.mark.parametrize("rate_limit_enabled", [True, False])
-def test_app_environment_is_required_for_every_rate_limit_mode(
-    monkeypatch: pytest.MonkeyPatch,
-    rate_limit_enabled: bool,
-) -> None:
+def test_app_environment_is_not_a_runtime_setting(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("APP_ENVIRONMENT", raising=False)
-
-    with pytest.raises(ValidationError) as caught:
-        Settings.model_validate(
-            {
-                "database_url": (
-                    "postgresql+asyncpg://postgres:postgres@localhost/example"
-                ),
-                "redis_url": "redis://localhost:6379/0",
-                "rate_limit_enabled": rate_limit_enabled,
-                "jwt_secret": SecretStr(VALID_TEST_SECRET),
-                "rate_limit_hmac_key": SecretStr(VALID_RATE_LIMIT_SECRET),
-            }
-        )
-
-    assert Settings.model_fields["app_environment"].is_required()
-    assert any(
-        error["loc"] == ("app_environment",) and error["type"] == "missing"
-        for error in caught.value.errors()
-    )
+    settings = settings_for_test()
+    assert "app_environment" not in Settings.model_fields
+    assert not hasattr(settings, "app_environment")
+    assert "APP_ENVIRONMENT" not in EXAMPLE_ENV.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("environment", ["prod", "production", "staging", "qa"])
-def test_deployable_environments_cannot_disable_rate_limiting(
-    environment: str,
-) -> None:
-    with pytest.raises(
-        ValidationError,
-        match="only in an explicit local or test environment",
-    ):
-        settings_for_test(app_environment=environment, rate_limit_enabled=False)
-
-
-@pytest.mark.parametrize(
-    "environment",
-    ["dev", "development", "local", "test", "testing"],
-)
-def test_local_and_test_environments_may_explicitly_disable_rate_limiting(
-    environment: str,
-) -> None:
-    settings = settings_for_test(
-        app_environment=environment,
-        rate_limit_enabled=False,
-    )
-
-    assert settings.rate_limit_enabled is False
-
-
-def test_example_env_cannot_start_with_public_jwt_placeholder(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_example_env_cannot_start_with_public_jwt_placeholder(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in SETTINGS_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
 
@@ -215,10 +187,7 @@ def test_jwt_secret_rejects_obviously_weak_shapes(secret: str) -> None:
         ("N4#vP8@xL2!sD6$q", 2),
     ],
 )
-def test_jwt_secret_rejects_repeated_patterns_wider_than_eight_characters(
-    pattern: str,
-    repetitions: int,
-) -> None:
+def test_jwt_secret_rejects_repeated_patterns_wider_than_eight_characters(pattern: str, repetitions: int) -> None:
     secret = pattern * repetitions
 
     with pytest.raises(ValidationError, match="jwt_secret") as caught:
@@ -237,9 +206,7 @@ def test_jwt_secret_accepts_nonperiodic_random_value_with_repeated_substrings() 
 
 
 @pytest.mark.parametrize("control_character", ["\x7f", "\x80"])
-def test_jwt_secret_rejects_unicode_control_characters(
-    control_character: str,
-) -> None:
+def test_jwt_secret_rejects_unicode_control_characters(control_character: str) -> None:
     secret = VALID_TEST_SECRET + control_character
 
     with pytest.raises(ValidationError, match="jwt_secret") as caught:
@@ -264,18 +231,6 @@ def test_access_token_lifetime_defaults_to_twenty_four_hours_and_is_configurable
     assert custom_settings.jwt_access_token_ttl_seconds == 900
 
 
-def test_admin_password_reset_defaults_to_direct_and_accepts_temporary() -> None:
-    assert settings_for_test().admin_password_reset_mode == "direct"
-    assert (
-        settings_for_test(
-            admin_password_reset_mode="temporary"
-        ).admin_password_reset_mode
-        == "temporary"
-    )
-    with pytest.raises(ValidationError, match="admin_password_reset_mode"):
-        settings_for_test(admin_password_reset_mode="per_request")
-
-
 def test_redis_url_requires_redis_protocol() -> None:
     with pytest.raises(ValidationError, match="redis_url must use redis or rediss"):
         settings_for_test(
@@ -285,30 +240,54 @@ def test_redis_url_requires_redis_protocol() -> None:
         )
 
 
-def test_rate_limit_defaults_are_explicit_and_configurable() -> None:
+def test_rate_limit_defaults_are_explicit_and_configurable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fields = ("rate_limit_user_read", "rate_limit_user_write", "rate_limit_admin_read", "rate_limit_admin_write")
+    for field in fields:
+        monkeypatch.delenv(field.upper(), raising=False)
     settings = settings_with_secret(VALID_TEST_SECRET)
 
-    assert settings.rate_limit_enabled is False  # Isolated unit tests opt out.
     assert settings.rate_limit_captcha_create_per_five_minutes == 10
-    assert settings.rate_limit_authenticated_read_per_minute == 600
-    assert settings.rate_limit_ordinary_write_per_minute == 120
-    assert settings.rate_limit_management_read_per_minute == 300
-    assert settings.rate_limit_authorization_write_per_minute == 60
+    assert settings.rate_limit_user_read == 600
+    assert settings.rate_limit_user_write == 120
+    assert settings.rate_limit_admin_read == 300
+    assert settings.rate_limit_admin_write == 60
     assert settings.rate_limit_login_ip_per_five_minutes == 20
-    assert settings.rate_limit_registration_ip_per_hour == 5
-    assert settings.rate_limit_temporary_complete_ip_per_five_minutes == 20
+    assert settings.rate_limit_register_ip_per_hour == 5
     assert settings.max_active_sessions_per_user == 2
-    assert settings.readiness_timeout_seconds == 1.0
+
+    env_file = tmp_path / "rate-limit.env"
+    env_file.write_text(
+        "RATE_LIMIT_USER_READ=45\nRATE_LIMIT_USER_WRITE=23\n"
+        "RATE_LIMIT_ADMIN_READ=17\nRATE_LIMIT_ADMIN_WRITE=9\n",
+        encoding="utf-8",
+    )
+    values = settings.model_dump()
+    for field in fields:
+        values.pop(field)
+    configured = Settings(_env_file=env_file, **values)  # type: ignore[call-arg]
+    assert tuple(getattr(configured, field) for field in fields) == (45, 23, 17, 9)
 
 
-def test_readiness_timeout_is_short_bounded_and_configurable() -> None:
-    settings = settings_for_test(readiness_timeout_seconds=2.5)
+def test_password_capacity_defaults_and_env_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    names = ("PASSWORD_MAX_RUNNING", "PASSWORD_MAX_WAITING", "PASSWORD_WAIT_TIMEOUT_SECONDS")
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    default = settings_for_test()
+    assert (default.password_max_running, default.password_max_waiting, default.password_wait_timeout_seconds) == (
+        2, 4, 0.5,
+    )
 
-    assert settings.readiness_timeout_seconds == 2.5
-    with pytest.raises(ValidationError, match="readiness_timeout_seconds"):
-        settings_for_test(readiness_timeout_seconds=0)
-    with pytest.raises(ValidationError, match="readiness_timeout_seconds"):
-        settings_for_test(readiness_timeout_seconds=10.1)
+    env_file = tmp_path / "password-capacity.env"
+    env_file.write_text(
+        "PASSWORD_MAX_RUNNING=1\nPASSWORD_MAX_WAITING=0\nPASSWORD_WAIT_TIMEOUT_SECONDS=0.25\n",
+        encoding="utf-8",
+    )
+    values = default.model_dump()
+    for name in names:
+        values.pop(name.lower())
+    configured = Settings(_env_file=env_file, **values)  # type: ignore[call-arg]
+    assert (configured.password_max_running, configured.password_max_waiting,
+            configured.password_wait_timeout_seconds) == (1, 0, 0.25)
 
 
 @pytest.mark.parametrize(
@@ -332,12 +311,22 @@ def test_readiness_timeout_is_short_bounded_and_configurable() -> None:
         ("database_lock_timeout_ms", 1.5),
         ("redis_max_connections", 0),
         ("redis_max_connections", True),
+        ("request_body_max_bytes", True),
+        ("password_max_running", 0),
+        ("password_max_running", 33),
+        ("password_max_running", True),
+        ("password_max_running", 1.5),
+        ("password_max_waiting", -1),
+        ("password_max_waiting", True),
+        ("password_max_waiting", 1.5),
+        ("password_wait_timeout_seconds", 0),
+        ("password_wait_timeout_seconds", -1),
+        ("password_wait_timeout_seconds", True),
+        ("password_wait_timeout_seconds", float("nan")),
+        ("password_wait_timeout_seconds", float("inf")),
     ],
 )
-def test_connection_limits_reject_unbounded_or_invalid_values(
-    name: str,
-    invalid_value: object,
-) -> None:
+def test_numeric_limits_reject_unbounded_or_invalid_values(name: str, invalid_value: object) -> None:
     with pytest.raises(ValidationError, match=name):
         settings_for_test(**{name: invalid_value})
 
@@ -367,18 +356,16 @@ def test_connection_limits_are_configurable_without_unlimited_pool_modes() -> No
         settings_for_test(database_statement_timeout_ms=1_000)
 
 
-def test_session_limit_must_be_positive_and_explicit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_session_limit_must_be_positive_and_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MAX_ACTIVE_SESSIONS_PER_USER", raising=False)
     with pytest.raises(ValidationError, match="max_active_sessions_per_user"):
         Settings.model_validate(
             {
                 "database_url": "postgresql+asyncpg://postgres:postgres@localhost/example",
                 "redis_url": "redis://localhost:6379/0",
-                "app_environment": "test",
                 "jwt_secret": SecretStr(VALID_TEST_SECRET),
                 "rate_limit_hmac_key": SecretStr(VALID_RATE_LIMIT_SECRET),
+                "log_hmac_key": SecretStr(VALID_LOG_SECRET),
             }
         )
     with pytest.raises(ValidationError, match="max_active_sessions_per_user"):
@@ -386,12 +373,8 @@ def test_session_limit_must_be_positive_and_explicit(
 
 
 def test_rate_limit_policy_bounds_can_be_validated_at_startup() -> None:
-    settings = settings_with_secret(VALID_TEST_SECRET).model_copy(
-        update={"rate_limit_login_ip_per_five_minutes": 1_000_001}
-    )
-
-    with pytest.raises(ValueError, match="limit"):
-        SecurityPolicies.from_settings(settings)
+    with pytest.raises(ValidationError, match="rate_limit_login_ip_per_five_minutes"):
+        settings_for_test(rate_limit_login_ip_per_five_minutes=1_000_001)
 
 
 def test_rate_limit_redis_can_be_isolated_or_explicitly_shared() -> None:
@@ -419,6 +402,32 @@ def test_security_secrets_must_not_be_reused() -> None:
         )
 
 
+def test_log_hmac_key_is_required_and_reads_its_env_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    values = settings_for_test().model_dump()
+    values.pop("log_hmac_key")
+    monkeypatch.delenv("LOG_HMAC_KEY", raising=False)
+    with pytest.raises(ValidationError, match="log_hmac_key"):
+        Settings(_env_file=None, **values)  # type: ignore[call-arg]
+
+    monkeypatch.setenv("LOG_HMAC_KEY", VALID_LOG_SECRET)
+    settings = Settings(_env_file=None, **values)  # type: ignore[call-arg]
+    assert settings.log_hmac_key.get_secret_value() == VALID_LOG_SECRET
+    assert VALID_LOG_SECRET not in repr(settings)
+
+
+@pytest.mark.parametrize("secret", ["short", "a" * 32, "replace-this-with-a-log-hmac-secret"])
+def test_log_hmac_key_rejects_weak_or_example_values_without_leaking(secret: str) -> None:
+    with pytest.raises(ValidationError, match="log_hmac_key") as caught:
+        settings_for_test(log_hmac_key=SecretStr(secret))
+    assert secret not in str(caught.value)
+
+
+@pytest.mark.parametrize("secret", [VALID_TEST_SECRET, VALID_RATE_LIMIT_SECRET])
+def test_log_hmac_key_must_not_reuse_jwt_or_rate_limit_secret(secret: str) -> None:
+    with pytest.raises(ValidationError, match="must use different values"):
+        settings_for_test(log_hmac_key=SecretStr(secret))
+
+
 def test_log_level_is_normalized_and_rejects_unknown_levels() -> None:
     settings = settings_for_test(
         database_url="postgresql+asyncpg://postgres:postgres@localhost/example",
@@ -437,6 +446,27 @@ def test_log_level_is_normalized_and_rejects_unknown_levels() -> None:
             jwt_secret=SecretStr(VALID_TEST_SECRET),
             log_level="verbose",
         )
+
+
+def test_log_file_size_defaults_to_100_mb_and_reads_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("LOG_FILE_MAX_MB", raising=False)
+    default_settings = settings_for_test()
+    assert default_settings.log_file_max_mb == 100
+
+    env_file = tmp_path / "logging.env"
+    env_file.write_text("LOG_FILE_MAX_MB=2\n", encoding="utf-8")
+    values = default_settings.model_dump()
+    values.pop("log_file_max_mb")
+    configured = Settings(_env_file=env_file, **values)  # type: ignore[call-arg]
+    assert configured.log_file_max_mb == 2
+
+
+@pytest.mark.parametrize("invalid_value", [0, -1, 1.5, True])
+def test_log_file_size_requires_a_positive_integer(invalid_value: object) -> None:
+    with pytest.raises(ValidationError, match="log_file_max_mb"):
+        settings_for_test(log_file_max_mb=invalid_value)
 
 
 def test_issuer_and_audience_are_disabled_by_default() -> None:
@@ -483,10 +513,7 @@ def test_issuer_and_audience_reject_non_ascii_or_whitespace(value: str) -> None:
         ("https://identity.example.test", "   "),
     ],
 )
-def test_issuer_and_audience_must_be_a_complete_nonblank_pair(
-    issuer: str | None,
-    audience: str | None,
-) -> None:
+def test_issuer_and_audience_must_be_a_complete_nonblank_pair(issuer: str | None, audience: str | None) -> None:
     with pytest.raises(ValidationError):
         settings_for_test(
             database_url="postgresql+asyncpg://postgres:postgres@localhost/example",
@@ -512,97 +539,6 @@ def test_optional_token_scope_has_a_bounded_length(field: str) -> None:
         )
 
 
-@pytest.mark.parametrize("mode", ["sentinel", "cluster"])
-def test_rate_limit_inherits_complete_redis_topology(mode: str) -> None:
-    endpoint: dict[str, object] = {
-        "mode": mode,
-        "nodes": [{"host": "redis-node.example.test", "port": 26379}],
-        "username": "data-user",
-        "password": "private-data-password",
-        "tls": True,
-    }
-    if mode == "sentinel":
-        endpoint.update(
-            sentinel_master="auth-primary",
-            sentinel_username="discovery-user",
-            sentinel_password="private-discovery-password",
-            sentinel_tls=True,
-        )
-    settings = settings_for_test(
-        redis_url=None, redis_connection=endpoint, rate_limit_redis_url=None
-    )
-    assert settings.effective_rate_limit_redis_connection == settings.redis_connection
-    assert settings.effective_redis_connection.mode == mode
-    assert settings.effective_redis_connection.username == "data-user"
-    with pytest.raises(ValueError, match="does not use a single URL"):
-        _ = settings.effective_rate_limit_redis_url
-
-
-def test_rate_limit_may_use_independent_cluster_while_auth_uses_standalone() -> None:
-    settings = settings_for_test(
-        rate_limit_redis_url=None,
-        rate_limit_redis_connection={
-            "mode": "cluster",
-            "nodes": [{"host": "redis-cluster.example.test", "port": 6379}],
-        },
-    )
-    assert settings.effective_redis_connection.mode == "standalone"
-    assert settings.effective_rate_limit_redis_connection.mode == "cluster"
-
-
-def test_nested_redis_connection_can_be_filled_from_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("REDIS_URL", raising=False)
-    monkeypatch.delenv("RATE_LIMIT_REDIS_URL", raising=False)
-    monkeypatch.setenv("REDIS_CONNECTION__MODE", "sentinel")
-    monkeypatch.setenv(
-        "REDIS_CONNECTION__NODES", '[{"host":"redis.example.test","port":26379}]'
-    )
-    monkeypatch.setenv("REDIS_CONNECTION__SENTINEL_MASTER", "primary")
-    monkeypatch.setenv("REDIS_CONNECTION__PASSWORD", "private-data-password")
-    monkeypatch.setenv("REDIS_CONNECTION__SENTINEL_PASSWORD", "private-node-password")
-    monkeypatch.setenv("REDIS_CONNECTION__DB", "2")
-    settings = Settings(_env_file=None)  # type: ignore[call-arg]
-    endpoint = settings.effective_redis_connection
-    assert endpoint.mode == "sentinel"
-    assert endpoint.db == 2
-    assert endpoint.sentinel_master == "primary"
-    assert endpoint.password is not None
-    assert endpoint.password.get_secret_value() == "private-data-password"
-    assert endpoint.sentinel_password is not None
-    assert endpoint.sentinel_password.get_secret_value() == "private-node-password"
-    assert settings.effective_rate_limit_redis_connection == endpoint
-    assert "private-data-password" not in repr(settings)
-    assert "private-node-password" not in repr(settings)
-
-
-@pytest.mark.parametrize(
-    "endpoint",
-    [
-        {"mode": "cluster"},
-        {"mode": "sentinel", "nodes": [{"host": "node", "port": 26379}]},
-        {"mode": "cluster", "nodes": [{"host": "node", "port": 6379}], "db": 1},
-        {"mode": "standalone", "url": "redis://node/0", "db": 1},
-        {"mode": "standalone", "url": "redis://node/0", "tls": True},
-        {"mode": "cluster", "nodes": [{"host": "redis://node", "port": 6379}]},
-        {"mode": "cluster", "nodes": [{"host": "user:secret@node", "port": 6379}]},
-        {"mode": "cluster", "nodes": [{"host": "node", "port": 65536}]},
-        {"mode": "cluster", "nodes": [{"host": "node", "port": True}]},
-        {"mode": "cluster", "nodes": [{"host": "node", "port": 6379}], "db": True},
-        {"mode": "standalone", "url": "redis://node/0", "sentinel_master": "master"},
-        {"mode": "standalone", "url": "redis://node/0", "unknown_option": True},
-        {
-            "mode": "cluster",
-            "nodes": [{"host": "node", "port": 6379}, {"host": "node", "port": 6379}],
-        },
-    ],
-)
-def test_invalid_redis_topologies_fail_at_startup(endpoint: dict[str, object]) -> None:
-    with pytest.raises(ValidationError):
-        RedisEndpoint.model_validate(endpoint)
-
-
 @pytest.mark.parametrize(
     "url",
     [
@@ -613,36 +549,10 @@ def test_invalid_redis_topologies_fail_at_startup(endpoint: dict[str, object]) -
         "redis://user:private-password@node:99999/0",
     ],
 )
-def test_redis_url_cannot_override_client_safety_options_or_leak_secrets(
-    url: str,
-) -> None:
+def test_redis_url_cannot_override_client_safety_options_or_leak_secrets(url: str) -> None:
     with pytest.raises(ValidationError) as caught:
         settings_for_test(redis_url=url)
     assert "private-password" not in str(caught.value)
-
-
-def test_connection_url_and_topology_cannot_be_accidentally_mixed() -> None:
-    connection = {"mode": "standalone", "url": "redis://node/0"}
-    with pytest.raises(ValidationError, match="exactly one"):
-        settings_for_test(redis_connection=connection)
-    with pytest.raises(ValidationError, match="not both"):
-        settings_for_test(rate_limit_redis_connection=connection)
-
-
-def test_redis_tls_files_require_tls_and_complete_client_certificate(
-    tmp_path: Path,
-) -> None:
-    certificate = tmp_path / "test.crt"
-    certificate.touch()
-    with pytest.raises(ValidationError, match="TLS to be enabled"):
-        RedisEndpoint(url="redis://node/0", ca_file=certificate)
-    with pytest.raises(ValidationError, match="configured together"):
-        RedisEndpoint(url="rediss://node/0", cert_file=certificate)
-    with pytest.raises(ValidationError, match="does not exist"):
-        RedisEndpoint(url="rediss://node/0", ca_file=tmp_path / "missing.crt")
-    assert (
-        RedisEndpoint(url="rediss://node/0", ca_file=certificate).ca_file == certificate
-    )
 
 
 @pytest.mark.parametrize("value", [float("inf"), float("nan"), True, 0])

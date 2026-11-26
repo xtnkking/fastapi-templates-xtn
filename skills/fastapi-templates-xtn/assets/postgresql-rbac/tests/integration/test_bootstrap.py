@@ -1,3 +1,19 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# 说明:
+#    验证离线系统角色初始化、转移及用户默认角色的事务边界。
+# History:
+# Date          Author    Version       Modification
+# --------------------------------------------------------------------------------------------------
+# 2026/10/15    XTN       V1.000        移除用户权限版本并补充实际维护说明
+# 2026/10/15    XTN       V1.001        默认用户创建统一调用 UserService.create_user
+# 2026/10/15    XTN       V1.002        系统角色测试为用户创建提供初始密码哈希
+# 2026/10/16    XTN       V1.003        默认角色创建测试使用服务生成的用户 ID
+# 2026/10/16    XTN       V1.004        用户创建审计从测试入口请求上下文取得关联 ID
+# 2026/10/16    XTN       V1.005        移除运行时权限版本预期，保留协调锁与历史迁移契约
+# --------------------------------------------------------------------------------------------------
+
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -7,29 +23,24 @@ import pytest
 from sqlalchemy import delete, func, select
 from sqlalchemy.engine import make_url
 
-from app.core.config import get_settings
-from app.core.errors import RbacError
-from app.core.security.domain import (
+from app.core.access.permissions import PERMISSION_CATALOG, get_permission_description
+from app.core.access.roles import (
     MAX_ROLES_PER_USER,
-    PERMISSION_CATALOG,
     SUPER_ADMIN_PERMISSION_KEYS,
     SYSTEM_ROLE_KEYS,
     SYSTEM_ROLE_SPECS,
     SystemRoleKey,
 )
-from app.db.postgres import SessionFactory
-from app.models.access import (
-    Permission,
-    RbacAuditEvent,
-    RbacState,
-    Role,
-    RolePermission,
-    User,
-    UserRole,
-)
-from app.services.provisioning import create_user_with_default_role
+from app.core.config import get_settings
+from app.core.exceptions import AppError
+from app.db.postgres_db import SessionFactory
+from app.models.postgres.operation_audit import OperationAuditEvent
+from app.models.postgres.permission import Permission
+from app.models.postgres.role import Role, RolePermission
+from app.models.postgres.user import User, UserRole
+from app.services.user_service import user_service
 
-pytestmark = pytest.mark.postgresql
+pytestmark = [pytest.mark.postgresql, pytest.mark.usefixtures("audit_request_context")]
 
 ASSET_ROOT = Path(__file__).resolve().parents[2]
 BOOTSTRAP_SQL = ASSET_ROOT / "sql" / "bootstrap_super_admin.sql"
@@ -88,48 +99,43 @@ async def _run_handover(old_id: uuid.UUID | str, new_id: uuid.UUID | str) -> Non
         await connection.close()
 
 
-async def _provision_user(
-    user_name: str,
-) -> User:
+async def _create_user(user_name: str) -> User:
     async with SessionFactory() as session:
         async with session.begin():
-            return await create_user_with_default_role(
+            return await user_service.create_user(
                 session,
                 user_name=user_name,
-                request_id=f"provision:{uuid.uuid4()}",
+                password_hash="$argon2id$bootstrap-test-hash",
             )
 
 
-async def _add_live_custom_roles(*, user_id: uuid.UUID, count: int) -> None:
+async def _add_live_custom_roles(*, user_id: str, count: int) -> None:
     async with SessionFactory() as session:
         async with session.begin():
             roles = [
                 Role(
                     key=f"bootstrap-limit-{index}-{uuid.uuid4().hex[:8]}",
                     name=f"Bootstrap limit {index}",
-                    management_tier=10,
+                    level=10,
                 )
                 for index in range(count)
             ]
             session.add_all(roles)
             await session.flush()
             session.add_all(
-                UserRole(user_id=user_id, role_id=role.id, assigned_by_user_id=None)
+                UserRole(user_id=user_id, role_id=role.id, bound_by_user_id=None)
                 for role in roles
             )
 
 
 async def test_operator_sql_assigns_existing_super_admin_atomically() -> None:
-    candidate = await _provision_user(user_name="bootstrap_super_admin")
+    candidate = await _create_user(user_name="bootstrap_super_admin")
     async with SessionFactory() as session:
-        state_before = await session.get(RbacState, "global")
-        user_before = await session.get(User, candidate.id)
-        assert state_before is not None and user_before is not None
-        epoch_before = state_before.epoch
-        authz_version_before = user_before.authz_version
+        user_before = await session.get(User, candidate.user_id)
+        assert user_before is not None
         token_version_before = user_before.token_version
 
-    await _run_bootstrap(candidate.id)
+    await _run_bootstrap(candidate.user_id)
 
     async with SessionFactory() as session:
         roles = {
@@ -145,7 +151,7 @@ async def test_operator_sql_assigns_existing_super_admin_atomically() -> None:
                 select(UserRole, Role.key)
                 .join(Role, Role.id == UserRole.role_id)
                 .where(
-                    UserRole.user_id == candidate.id,
+                    UserRole.user_id == candidate.user_id,
                     UserRole.deleted_at.is_(None),
                 )
             )
@@ -161,17 +167,16 @@ async def test_operator_sql_assigns_existing_super_admin_atomically() -> None:
             )
         ).all()
         audit = await session.scalar(
-            select(RbacAuditEvent).where(
-                RbacAuditEvent.action == "super_admin.bootstrap"
+            select(OperationAuditEvent).where(
+                OperationAuditEvent.action == "super_admin.bootstrap"
             )
         )
-        state_after = await session.get(RbacState, "global")
-        user_after = await session.get(User, candidate.id)
+        user_after = await session.get(User, candidate.user_id)
 
     assert set(roles) == SYSTEM_ROLE_KEYS
     for key, spec in SYSTEM_ROLE_SPECS.items():
         role = roles[key.value]
-        assert role.management_tier == spec.management_tier
+        assert role.level == spec.level
         assert role.is_system
         assert role.is_protected == spec.is_protected
         assert role.is_super_admin == spec.is_super_admin
@@ -182,33 +187,30 @@ async def test_operator_sql_assigns_existing_super_admin_atomically() -> None:
         SystemRoleKey.USER.value,
     }
     assert {row.key for row in grants} == SUPER_ADMIN_PERMISSION_KEYS
-    assert state_after is not None and state_after.epoch == epoch_before + 1
     assert user_after is not None
-    assert user_after.authz_version == authz_version_before + 1
     assert user_after.token_version == token_version_before
     assert not user_after.is_protected
     assert audit is not None
-    assert audit.decision == "allowed"
+    assert audit.outcome == "succeeded"
     assert audit.source == "operator"
-    assert audit.schema_version == 1
     assert audit.reason_code == "explicit_super_admin_bootstrap"
     assert audit.after_state is not None and audit.after_state["changed"] is True
 
 
 async def test_operator_sql_uses_the_tenth_role_slot_and_replays_idempotently() -> None:
-    candidate = await _provision_user(user_name="bootstrap_limit_nine")
+    candidate = await _create_user(user_name="bootstrap_limit_nine")
     await _add_live_custom_roles(
-        user_id=candidate.id,
+        user_id=candidate.user_id,
         count=MAX_ROLES_PER_USER - 2,
     )
 
-    await _run_bootstrap(candidate.id)
-    await _run_bootstrap(candidate.id)
+    await _run_bootstrap(candidate.user_id)
+    await _run_bootstrap(candidate.user_id)
 
     async with SessionFactory() as session:
         live_count = await session.scalar(
             select(func.count(UserRole.id)).where(
-                UserRole.user_id == candidate.id,
+                UserRole.user_id == candidate.user_id,
                 UserRole.deleted_at.is_(None),
             )
         )
@@ -216,28 +218,26 @@ async def test_operator_sql_uses_the_tenth_role_slot_and_replays_idempotently() 
 
 
 async def test_operator_sql_rejects_a_full_target_without_partial_changes() -> None:
-    candidate = await _provision_user(user_name="bootstrap_limit_full")
+    candidate = await _create_user(user_name="bootstrap_limit_full")
     await _add_live_custom_roles(
-        user_id=candidate.id,
+        user_id=candidate.user_id,
         count=MAX_ROLES_PER_USER - 1,
     )
     async with SessionFactory() as session:
-        state_before = await session.get(RbacState, "global")
-        user_before = await session.get(User, candidate.id)
+        user_before = await session.get(User, candidate.user_id)
         audit_count_before = await session.scalar(
             select(func.count())
-            .select_from(RbacAuditEvent)
-            .where(RbacAuditEvent.action == "super_admin.bootstrap")
+            .select_from(OperationAuditEvent)
+            .where(OperationAuditEvent.action == "super_admin.bootstrap")
         )
-        assert state_before is not None and user_before is not None
-        epoch_before = state_before.epoch
-        authz_version_before = user_before.authz_version
+        assert user_before is not None
+        token_version_before = user_before.token_version
 
     with pytest.raises(
         asyncpg.PostgresError,
         match="already has 10 live role assignments",
     ):
-        await _run_bootstrap(candidate.id)
+        await _run_bootstrap(candidate.user_id)
 
     async with SessionFactory() as session:
         super_admin_role = await session.scalar(
@@ -246,22 +246,20 @@ async def test_operator_sql_rejects_a_full_target_without_partial_changes() -> N
         assert super_admin_role is not None
         assignment = await session.scalar(
             select(UserRole).where(
-                UserRole.user_id == candidate.id,
+                UserRole.user_id == candidate.user_id,
                 UserRole.role_id == super_admin_role.id,
                 UserRole.deleted_at.is_(None),
             )
         )
-        state_after = await session.get(RbacState, "global")
-        user_after = await session.get(User, candidate.id)
+        user_after = await session.get(User, candidate.user_id)
         audit_count_after = await session.scalar(
             select(func.count())
-            .select_from(RbacAuditEvent)
-            .where(RbacAuditEvent.action == "super_admin.bootstrap")
+            .select_from(OperationAuditEvent)
+            .where(OperationAuditEvent.action == "super_admin.bootstrap")
         )
     assert assignment is None
-    assert state_after is not None and state_after.epoch == epoch_before
     assert user_after is not None
-    assert user_after.authz_version == authz_version_before
+    assert user_after.token_version == token_version_before
     assert audit_count_after == audit_count_before
 
 
@@ -276,7 +274,8 @@ async def test_permission_catalog_matches_runtime_contract() -> None:
         ).all()
 
     assert {row.key: row.description for row in rows} == {
-        key.value: description for key, description in PERMISSION_CATALOG.items()
+        key.value: get_permission_description(key.value, locale="en")
+        for key in PERMISSION_CATALOG
     }
 
 
@@ -291,8 +290,8 @@ async def test_operator_sql_does_not_grant_unknown_global_permission() -> None:
         await session.commit()
 
     try:
-        candidate = await _provision_user("isolated_super_admin")
-        await _run_bootstrap(candidate.id)
+        candidate = await _create_user("isolated_super_admin")
+        await _run_bootstrap(candidate.user_id)
         async with SessionFactory() as session:
             role = await session.scalar(
                 select(Role).where(Role.key == SystemRoleKey.SUPER_ADMIN.value)
@@ -324,102 +323,92 @@ async def test_operator_sql_requires_an_existing_identity_and_rolls_back() -> No
     async with SessionFactory() as session:
         missing = await session.get(User, missing_user_id)
         audit_count = await session.scalar(
-            select(func.count()).select_from(RbacAuditEvent)
+            select(func.count()).select_from(OperationAuditEvent)
         )
     assert missing is None
     assert audit_count == 0
 
 
 async def test_operator_sql_rejects_disabled_identity_and_rolls_back() -> None:
-    candidate = await _provision_user("disabled_super_admin")
+    candidate = await _create_user("disabled_super_admin")
     async with SessionFactory() as session:
         async with session.begin():
-            stored = await session.get(User, candidate.id)
-            state = await session.get(RbacState, "global")
-            assert stored is not None and state is not None
+            stored = await session.get(User, candidate.user_id)
+            assert stored is not None
             stored.is_active = False
-            epoch_before = state.epoch
-            version_before = stored.authz_version
+            version_before = stored.token_version
 
     with pytest.raises(
         asyncpg.PostgresError,
         match="target user must be active, not system-protected, and not deleted",
     ):
-        await _run_bootstrap(candidate.id)
+        await _run_bootstrap(candidate.user_id)
 
     async with SessionFactory() as session:
         super_admin_role = await session.scalar(
             select(Role).where(Role.key == SystemRoleKey.SUPER_ADMIN.value)
         )
-        state_after = await session.get(RbacState, "global")
-        user_after = await session.get(User, candidate.id)
+        user_after = await session.get(User, candidate.user_id)
         assert super_admin_role is not None
         assignment = await session.scalar(
             select(UserRole).where(
-                UserRole.user_id == candidate.id,
+                UserRole.user_id == candidate.user_id,
                 UserRole.role_id == super_admin_role.id,
                 UserRole.deleted_at.is_(None),
             )
         )
     assert assignment is None
-    assert state_after is not None and state_after.epoch == epoch_before
-    assert user_after is not None and user_after.authz_version == version_before
+    assert user_after is not None and user_after.token_version == version_before
 
 
 async def test_operator_sql_rejects_deleted_identity_and_rolls_back() -> None:
-    candidate = await _provision_user("deleted_super_admin")
+    candidate = await _create_user("deleted_super_admin")
     async with SessionFactory() as session:
         async with session.begin():
-            stored = await session.get(User, candidate.id)
-            state = await session.get(RbacState, "global")
-            assert stored is not None and state is not None
+            stored = await session.get(User, candidate.user_id)
+            assert stored is not None
             stored.is_active = False
             stored.deleted_at = datetime.now(UTC)
-            epoch_before = state.epoch
-            version_before = stored.authz_version
+            version_before = stored.token_version
 
     with pytest.raises(
         asyncpg.PostgresError,
         match="target user must be active, not system-protected, and not deleted",
     ):
-        await _run_bootstrap(candidate.id)
+        await _run_bootstrap(candidate.user_id)
 
     async with SessionFactory() as session:
         super_admin_role = await session.scalar(
             select(Role).where(Role.key == SystemRoleKey.SUPER_ADMIN.value)
         )
-        state_after = await session.get(RbacState, "global")
-        user_after = await session.get(User, candidate.id)
+        user_after = await session.get(User, candidate.user_id)
         assert super_admin_role is not None
         assignment = await session.scalar(
             select(UserRole).where(
-                UserRole.user_id == candidate.id,
+                UserRole.user_id == candidate.user_id,
                 UserRole.role_id == super_admin_role.id,
                 UserRole.deleted_at.is_(None),
             )
         )
     assert assignment is None
-    assert state_after is not None and state_after.epoch == epoch_before
-    assert user_after is not None and user_after.authz_version == version_before
+    assert user_after is not None and user_after.token_version == version_before
 
 
 async def test_operator_sql_refuses_a_second_super_admin() -> None:
-    first = await _provision_user("first_super_admin")
-    second = await _provision_user("second_super_admin")
-    await _run_bootstrap(first.id)
+    first = await _create_user("first_super_admin")
+    second = await _create_user("second_super_admin")
+    await _run_bootstrap(first.user_id)
 
     async with SessionFactory() as session:
-        state_before = await session.get(RbacState, "global")
-        second_before = await session.get(User, second.id)
-        assert state_before is not None and second_before is not None
-        epoch_before = state_before.epoch
-        version_before = second_before.authz_version
+        second_before = await session.get(User, second.user_id)
+        assert second_before is not None
+        version_before = second_before.token_version
 
     with pytest.raises(
         asyncpg.PostgresError,
         match="a different super_admin already exists",
     ):
-        await _run_bootstrap(second.id)
+        await _run_bootstrap(second.user_id)
 
     async with SessionFactory() as session:
         super_admin_role = await session.scalar(
@@ -434,46 +423,40 @@ async def test_operator_sql_refuses_a_second_super_admin() -> None:
                 )
             )
         ).all()
-        state_after = await session.get(RbacState, "global")
-        second_after = await session.get(User, second.id)
-    assert [assignment.user_id for assignment in holders] == [first.id]
-    assert state_after is not None and state_after.epoch == epoch_before
-    assert second_after is not None and second_after.authz_version == version_before
+        second_after = await session.get(User, second.user_id)
+    assert [assignment.user_id for assignment in holders] == [first.user_id]
+    assert second_after is not None and second_after.token_version == version_before
 
 
 async def test_operator_sql_same_identity_is_idempotent() -> None:
-    candidate = await _provision_user("idempotent_super_admin")
-    await _run_bootstrap(candidate.id)
+    candidate = await _create_user("idempotent_super_admin")
+    await _run_bootstrap(candidate.user_id)
     async with SessionFactory() as session:
-        state_before = await session.get(RbacState, "global")
-        user_before = await session.get(User, candidate.id)
+        user_before = await session.get(User, candidate.user_id)
         audit_count_before = await session.scalar(
             select(func.count())
-            .select_from(RbacAuditEvent)
-            .where(RbacAuditEvent.action == "super_admin.bootstrap")
+            .select_from(OperationAuditEvent)
+            .where(OperationAuditEvent.action == "super_admin.bootstrap")
         )
-        assert state_before is not None and user_before is not None
+        assert user_before is not None
         assert audit_count_before is not None
-        epoch_before = state_before.epoch
-        version_before = user_before.authz_version
+        version_before = user_before.token_version
 
-    await _run_bootstrap(candidate.id)
+    await _run_bootstrap(candidate.user_id)
 
     async with SessionFactory() as session:
-        state_after = await session.get(RbacState, "global")
-        user_after = await session.get(User, candidate.id)
+        user_after = await session.get(User, candidate.user_id)
         audit_count_after = await session.scalar(
             select(func.count())
-            .select_from(RbacAuditEvent)
-            .where(RbacAuditEvent.action == "super_admin.bootstrap")
+            .select_from(OperationAuditEvent)
+            .where(OperationAuditEvent.action == "super_admin.bootstrap")
         )
         replay_audit = await session.scalar(
-            select(RbacAuditEvent).where(
-                RbacAuditEvent.reason_code == "super_admin_already_bootstrapped"
+            select(OperationAuditEvent).where(
+                OperationAuditEvent.reason_code == "super_admin_already_bootstrapped"
             )
         )
-    assert state_after is not None and state_after.epoch == epoch_before
-    assert user_after is not None and user_after.authz_version == version_before
+    assert user_after is not None and user_after.token_version == version_before
     assert audit_count_after == audit_count_before + 1
     assert replay_audit is not None
     assert replay_audit.after_state is not None
@@ -491,20 +474,18 @@ async def test_operator_sql_rejects_non_v4_user_id() -> None:
 
 
 async def test_operator_handover_replaces_holder_and_revokes_both_sessions() -> None:
-    old = await _provision_user("outgoing_admin")
-    new = await _provision_user("incoming_admin")
-    await _run_bootstrap(old.id)
+    old = await _create_user("outgoing_admin")
+    new = await _create_user("incoming_admin")
+    await _run_bootstrap(old.user_id)
     async with SessionFactory() as session:
-        state_before = await session.get(RbacState, "global")
-        old_before = await session.get(User, old.id)
-        new_before = await session.get(User, new.id)
-        assert state_before is not None and old_before is not None
+        old_before = await session.get(User, old.user_id)
+        new_before = await session.get(User, new.user_id)
+        assert old_before is not None
         assert new_before is not None
-        epoch = state_before.epoch
-        old_authz, old_token = old_before.authz_version, old_before.token_version
-        new_authz, new_token = new_before.authz_version, new_before.token_version
+        old_token = old_before.token_version
+        new_token = new_before.token_version
 
-    await _run_handover(old.id, new.id)
+    await _run_handover(old.user_id, new.user_id)
 
     async with SessionFactory() as session:
         super_role_id = await session.scalar(
@@ -516,51 +497,41 @@ async def test_operator_handover_replaces_holder_and_revokes_both_sessions() -> 
                 select(UserRole).where(UserRole.role_id == super_role_id)
             )
         ).all()
-        current_old = await session.get(User, old.id)
-        current_new = await session.get(User, new.id)
-        state = await session.get(RbacState, "global")
+        current_old = await session.get(User, old.user_id)
+        current_new = await session.get(User, new.user_id)
         audit = await session.scalar(
-            select(RbacAuditEvent).where(
-                RbacAuditEvent.action == "super_admin.transfer"
+            select(OperationAuditEvent).where(
+                OperationAuditEvent.action == "super_admin.transfer"
             )
         )
-    assert {a.user_id for a in assignments if a.deleted_at is None} == {new.id}
-    assert {a.user_id for a in assignments if a.deleted_at is not None} == {old.id}
-    assert current_old is not None and current_new is not None and state is not None
-    assert current_old.authz_version == old_authz + 1
-    assert current_new.authz_version == new_authz + 1
+    assert {a.user_id for a in assignments if a.deleted_at is None} == {new.user_id}
+    assert {a.user_id for a in assignments if a.deleted_at is not None} == {old.user_id}
+    assert current_old is not None and current_new is not None
     assert current_old.token_version == old_token + 1
     assert current_new.token_version == new_token + 1
-    assert state.epoch == epoch + 1
-    assert audit is not None and audit.decision == "allowed"
+    assert audit is not None and audit.outcome == "succeeded"
     assert audit.source == "operator"
-    assert audit.actor_user_id == old.id and audit.target_user_id == new.id
+    assert audit.user_id == old.user_id and audit.target_user_id == new.user_id
 
 
 async def test_operator_handover_rejects_wrong_old_holder_without_changes() -> None:
-    holder = await _provision_user("actual_admin")
-    impostor = await _provision_user("claimed_admin")
-    target = await _provision_user("target_admin")
-    await _run_bootstrap(holder.id)
-    async with SessionFactory() as session:
-        state = await session.get(RbacState, "global")
-        assert state is not None
-        epoch = state.epoch
-
+    holder = await _create_user("actual_admin")
+    impostor = await _create_user("claimed_admin")
+    target = await _create_user("target_admin")
+    await _run_bootstrap(holder.user_id)
     with pytest.raises(asyncpg.PostgresError, match="not the sole super_admin"):
-        await _run_handover(impostor.id, target.id)
+        await _run_handover(impostor.user_id, target.user_id)
 
     async with SessionFactory() as session:
-        current_state = await session.get(RbacState, "global")
         super_role_id = await session.scalar(
             select(Role.id).where(Role.key == SystemRoleKey.SUPER_ADMIN.value)
         )
         audit_count = await session.scalar(
             select(func.count())
-            .select_from(RbacAuditEvent)
-            .where(RbacAuditEvent.action == "super_admin.transfer")
+            .select_from(OperationAuditEvent)
+            .where(OperationAuditEvent.action == "super_admin.transfer")
         )
-        assert current_state is not None and super_role_id is not None
+        assert super_role_id is not None
         holders = (
             await session.scalars(
                 select(UserRole.user_id).where(
@@ -569,26 +540,20 @@ async def test_operator_handover_rejects_wrong_old_holder_without_changes() -> N
                 )
             )
         ).all()
-    assert holders == [holder.id]
-    assert current_state.epoch == epoch
+    assert holders == [holder.user_id]
     assert audit_count == 0
 
 
-async def test_provisioning_creates_user_and_default_role_atomically() -> None:
-    user_id = uuid.uuid4()
+async def test_user_creation_creates_user_and_default_role_atomically(audit_request_context: str) -> None:
     async with SessionFactory() as session:
         async with session.begin():
-            state_before = await session.get(RbacState, "global")
-            assert state_before is not None
-            epoch_before = state_before.epoch
-            created = await create_user_with_default_role(
+            created = await user_service.create_user(
                 session,
-                user_name="  Provisioned_User  ",
-                user_id=user_id,
-                request_id="provision-default-user",
+                user_name="  Created_User  ",
+                password_hash="$argon2id$bootstrap-test-hash",
             )
-            assert created.authz_version == 1
-            assert created.user_name == "Provisioned_User"
+            assert created.token_version == 0
+            assert created.user_name == "Created_User"
 
     async with SessionFactory() as session:
         user_role = await session.scalar(
@@ -597,27 +562,24 @@ async def test_provisioning_creates_user_and_default_role_atomically() -> None:
         assert user_role is not None
         assignment = await session.scalar(
             select(UserRole).where(
-                UserRole.user_id == user_id,
+                UserRole.user_id == created.user_id,
                 UserRole.role_id == user_role.id,
                 UserRole.deleted_at.is_(None),
             )
         )
-        state_after = await session.get(RbacState, "global")
         audit = await session.scalar(
-            select(RbacAuditEvent).where(
-                RbacAuditEvent.request_id == "provision-default-user"
+            select(OperationAuditEvent).where(
+                OperationAuditEvent.request_id == audit_request_context
             )
         )
 
     assert assignment is not None
-    assert state_after is not None and state_after.epoch == epoch_before + 1
     assert audit is not None and audit.reason_code == "default_user_role_assigned"
     assert audit.source == "service"
-    assert audit.schema_version == 1
 
 
-async def test_provisioning_strips_user_name_whitespace() -> None:
-    created = await _provision_user(user_name="  USER_NAme_ONLY  ")
+async def test_user_creation_strips_user_name_whitespace() -> None:
+    created = await _create_user(user_name="  USER_NAme_ONLY  ")
 
     assert created.user_name == "USER_NAme_ONLY"
 
@@ -630,16 +592,14 @@ async def test_provisioning_strips_user_name_whitespace() -> None:
         ("admin", "reserved_user_name"),
     ],
 )
-async def test_provisioning_rejects_invalid_user_names(
-    user_name: str,
-    message: str,
-) -> None:
+async def test_user_creation_rejects_invalid_user_names(user_name: str, message: str) -> None:
     async with SessionFactory() as session:
         async with session.begin():
             with pytest.raises(ValueError, match=message):
-                await create_user_with_default_role(
+                await user_service.create_user(
                     session,
                     user_name=user_name,
+                    password_hash="$argon2id$bootstrap-test-hash",
                 )
 
 
@@ -647,32 +607,16 @@ async def test_provisioning_rejects_invalid_user_names(
     "user_name",
     ["existing_name", "  existing_name  "],
 )
-async def test_provisioning_rejects_an_existing_user_name(
-    user_name: str,
-) -> None:
-    await _provision_user(user_name="existing_name")
+async def test_user_creation_rejects_an_existing_user_name(user_name: str) -> None:
+    await _create_user(user_name="existing_name")
 
     async with SessionFactory() as session:
         async with session.begin():
-            with pytest.raises(RbacError) as exc_info:
-                await create_user_with_default_role(
+            with pytest.raises(AppError) as exc_info:
+                await user_service.create_user(
                     session,
                     user_name=user_name,
+                    password_hash="$argon2id$bootstrap-test-hash",
                 )
 
-    assert exc_info.value.reason_code == "user_identity_exists"
-
-
-async def test_provisioning_rejects_an_existing_user_id() -> None:
-    existing = await _provision_user(user_name="existing_id")
-
-    async with SessionFactory() as session:
-        async with session.begin():
-            with pytest.raises(RbacError) as exc_info:
-                await create_user_with_default_role(
-                    session,
-                    user_name="new_identity",
-                    user_id=existing.id,
-                )
-
-    assert exc_info.value.reason_code == "user_identity_exists"
+    assert exc_info.value.reason_code == "user_already_exists"

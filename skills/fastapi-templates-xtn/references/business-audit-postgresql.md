@@ -1,139 +1,56 @@
 # Business Audit PostgreSQL
 
 Read [Business audit module](business-audit-module.md) first. Read this reference
-only when implementing or changing the PostgreSQL table, SQLAlchemy model,
-catalog-backed writer, migration, caller-owned transaction, or database tests.
+only when implementing or changing the SQLAlchemy model, catalog-backed writer,
+database handoff, caller-owned transaction, or matching tests.
 For read APIs, export, retention, partitioning, legal hold, alerts, backups, or
 recovery, load
 [Business audit operations](business-audit-operations.md) separately.
 
-This reference owns database implementation. The core reference owns which
-events exist and what they mean. Do not invent a catalog while writing a
-migration.
+This reference owns model and transaction implementation plus database handoff.
+The user owns migration generation, review, execution and initial data. The
+core reference owns which events exist and what they mean; do not invent a
+catalog while preparing the handoff.
 
-## PostgreSQL Baseline
+## PostgreSQL Model Baseline
 
-The single-table baseline uses application-generated random UUIDv4 event IDs.
-A project with a registered prefixed-ID policy may substitute its validated
-non-sequential audit ID type consistently in the model, migration, writer, and
-tests. Actor and resource IDs are bounded strings so they can hold canonical
-UUIDs or prefixed business IDs without storing presentation identity.
+This is an opt-in resource, not default generated code. Copy the contract,
+model and writer only after approving a product event catalog; explicitly import
+`app.models.postgres.business_audit.BusinessAuditEvent` in that project's model
+registry. The default registry intentionally contains only the unified operation
+audit. User-owned migrations install any optional table and protections.
 
-Use explicit named constraints and indexes. The `reason_code` expression below
-requires 2 to 80 characters and intentionally matches the shared
-`validate_audit_reason()` contract.
+The Skill delivers models and application code. The user generates, reviews,
+and executes their migrations, DDL, database-only protection and initial data.
+Do not create a table or automatically initialize one through startup or tests.
+Use the [database handoff](migrations.md), not a runnable SQL file.
 
-```sql
-CREATE TABLE business_audit_events (
-    id uuid PRIMARY KEY,
-    domain varchar(64) NOT NULL,
-    action varchar(120) NOT NULL,
-    outcome varchar(16) NOT NULL,
-    reason_code varchar(80) NOT NULL,
-    actor_type varchar(16) NOT NULL,
-    actor_id varchar(128),
-    resource_type varchar(64) NOT NULL,
-    resource_id varchar(128) NOT NULL,
-    source varchar(16) NOT NULL,
-    schema_version smallint NOT NULL,
-    before_state jsonb,
-    after_state jsonb,
-    context jsonb NOT NULL DEFAULT '{}'::jsonb,
-    request_id varchar(128) NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT statement_timestamp(),
+The complete field, named-constraint and index definition is
+[`BusinessAuditEvent`](../assets/postgresql-rbac/app/models/postgres/business_audit.py).
+Reuse that model instead of maintaining a duplicate `CREATE TABLE` block here.
+It includes the event, operation user/source and target identifiers, stable action
+and reason, outcome/entrypoint/schema version, bounded before/after/context JSON, request ID and
+PostgreSQL timestamp. Keep these model contracts when adapting it:
 
-    CONSTRAINT ck_business_audit_id_uuid4 CHECK (
-        id::text ~
-        '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-    ),
-    CONSTRAINT ck_business_audit_domain_format CHECK (
-        domain ~ '^[a-z][a-z0-9_]{0,63}$'
-    ),
-    CONSTRAINT ck_business_audit_action_format CHECK (
-        action ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){2,}$'
-        AND length(action) <= 120
-    ),
-    CONSTRAINT ck_business_audit_action_domain CHECK (
-        split_part(action, '.', 1) = domain
-    ),
-    CONSTRAINT ck_business_audit_outcome CHECK (
-        outcome IN ('succeeded', 'failed', 'denied')
-    ),
-    CONSTRAINT ck_business_audit_reason_format CHECK (
-        reason_code ~ '^[a-z][a-z0-9_]{1,79}$'
-    ),
-    CONSTRAINT ck_business_audit_actor_type CHECK (
-        actor_type IN ('user', 'service', 'system', 'job', 'operator')
-    ),
-    CONSTRAINT ck_business_audit_actor_presence CHECK (
-        (actor_type = 'system' AND actor_id IS NULL)
-        OR (actor_type <> 'system' AND actor_id IS NOT NULL)
-    ),
-    CONSTRAINT ck_business_audit_actor_id_format CHECK (
-        actor_id IS NULL OR actor_id ~ '^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$'
-    ),
-    CONSTRAINT ck_business_audit_resource_type_format CHECK (
-        resource_type ~ '^[a-z][a-z0-9_]{0,63}$'
-    ),
-    CONSTRAINT ck_business_audit_resource_id_format CHECK (
-        resource_id ~ '^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$'
-    ),
-    CONSTRAINT ck_business_audit_source CHECK (
-        source IN ('http', 'service', 'job', 'operator', 'migration')
-    ),
-    CONSTRAINT ck_business_audit_schema_version CHECK (schema_version > 0),
-    CONSTRAINT ck_business_audit_before_object CHECK (
-        before_state IS NULL OR jsonb_typeof(before_state) = 'object'
-    ),
-    CONSTRAINT ck_business_audit_after_object CHECK (
-        after_state IS NULL OR jsonb_typeof(after_state) = 'object'
-    ),
-    CONSTRAINT ck_business_audit_context_object CHECK (
-        jsonb_typeof(context) = 'object'
-    ),
-    CONSTRAINT ck_business_audit_before_size CHECK (
-        before_state IS NULL OR octet_length(before_state::text) <= 16384
-    ),
-    CONSTRAINT ck_business_audit_after_size CHECK (
-        after_state IS NULL OR octet_length(after_state::text) <= 16384
-    ),
-    CONSTRAINT ck_business_audit_context_size CHECK (
-        octet_length(context::text) <= 4096
-    ),
-    CONSTRAINT ck_business_audit_non_success_after CHECK (
-        outcome = 'succeeded' OR after_state IS NULL
-    ),
-    CONSTRAINT ck_business_audit_request_id_format CHECK (
-        request_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
-    )
-);
+- The bundled event ID is `BA` + `YYMMDDHHMMSSmm` + six random characters;
+  generate it once per logical operation and reuse it on retry. `user_id` and
+  `target_user_id` follow the 15-character `U` format; other target IDs follow
+  their owning business's validated non-sequential policy.
+- Exact domain/action format and relationship, documented outcome/source-type/
+  entrypoint enums, user/source presence rules, user-target equality when
+  `target_type="user"`, positive schema version, and bounded request IDs.
+- A 2..80-character reason matching `validate_audit_reason()`; before/after
+  object values limited to 16 KiB each, context object to 4 KiB, and no
+  non-success `after_state`.
+- Deterministic indexes for the actual time, domain, operation user/source,
+  target user/object, request and action/outcome review paths; no speculative
+  JSONB GIN indexes.
 
-CREATE INDEX ix_business_audit_created
-    ON business_audit_events (created_at DESC, id DESC);
-CREATE INDEX ix_business_audit_domain_created
-    ON business_audit_events (domain, created_at DESC, id DESC);
-CREATE INDEX ix_business_audit_actor_created
-    ON business_audit_events (actor_id, created_at DESC, id DESC)
-    WHERE actor_id IS NOT NULL;
-CREATE INDEX ix_business_audit_resource_created
-    ON business_audit_events (
-        resource_type, resource_id, created_at DESC, id DESC
-    );
-CREATE INDEX ix_business_audit_request
-    ON business_audit_events (request_id);
-CREATE INDEX ix_business_audit_action_outcome_created
-    ON business_audit_events (action, outcome, created_at DESC, id DESC);
-```
-
-These are defense-in-depth constraints, not the event catalog. PostgreSQL cannot
-prove that an action is registered, that its reason belongs to that action, or
-that a JSON field is allowed for that action. The typed application writer must
-enforce those catalog relationships before insertion.
-
-Do not add an `ON DELETE CASCADE` foreign key from users or domain resources.
-Audit meaning survives their lifecycle changes. The default deliberately has no
-such foreign key. Add only indexes used by real review queries; arbitrary JSONB
-GIN indexes add substantial write and storage cost.
+Database constraints are defense in depth, not the action catalog. The typed
+writer must verify each action, its allowed reasons and fields before insertion.
+Do not add `ON DELETE CASCADE` from users or domain resources: audit meaning
+survives their lifecycle. Append-only trigger/grant protection is a separate
+user-owned database responsibility and is not installed by ORM metadata.
 
 ## Asset Adaptation
 
@@ -141,20 +58,24 @@ The bundled PostgreSQL asset separates shared audit safety from RBAC and busines
 tables:
 
 - `app/core/audit.py` owns `AuditSource`, JSON sanitization, bounded depth and size,
-  sensitive key/value rejection, and action/reason/request-ID validators;
-- `app/core/business_audit.py` owns actor/outcome types, `BusinessAuditActionSpec`,
+  sensitive key/value rejection, action/reason/request-ID validators, and the
+  no-argument `get_audit_request_id()` reader for the bound execution context;
+- `app/core/business_audit.py` owns source/outcome types, `BusinessAuditActionSpec`,
   trusted event facts, and pure catalog/payload validation;
-- `app/models/business_audit.py` owns the `BusinessAuditEvent` table and constraints;
-- `app/services/business_audit.py` owns the transaction-aware `BusinessAuditWriter`;
-- `alembic/env.py` imports the model so Alembic sees it on shared metadata;
-- the Alembic revisions create constraints, indexes, and append-only controls;
+- `app/models/postgres/business_audit.py` owns the `BusinessAuditEvent` table and constraints;
+- `app/services/business_audit_service.py` owns the transaction-aware `BusinessAuditService`;
+- historical `alembic/env.py` imports shared model metadata for maintainer tests;
+- historical revisions demonstrate constraints, indexes, and append-only
+  controls; they are not copied or executed for a generated project;
 - unit tests exercise catalog and sanitizer behavior; and
 - PostgreSQL integration tests prove transaction and trigger behavior.
 
-Copy the complete asset according to the Skill entrypoint, then adapt only the
-catalog and business call sites. Do not copy the writer without its migration,
-shared sanitizer, model import, and tests. Do not turn the reusable writer into
-an HTTP audit-write route.
+Use the selected output in [New-project delivery](new-project-delivery.md), or
+integrate the required components into the existing application. Keep the
+writer, shared sanitizer, model imports and relevant tests together, and hand
+database-only protections to the user. Do not copy the entire maintenance
+asset or its historical migration/SQL files. Do not turn the reusable writer
+into an HTTP audit-write route.
 
 The shared `validate_audit_action()` accepts the common audit syntax. The
 business action specification must additionally require exactly the catalog's
@@ -172,7 +93,7 @@ BUSINESS_AUDIT_CATALOG = {
     "payment.refund.approve": BusinessAuditActionSpec(
         domain="payment",
         action="payment.refund.approve",
-        resource_type="refund",
+        target_type="refund",
         schema_version=1,
         allowed_outcomes=frozenset(
             {
@@ -181,7 +102,7 @@ BUSINESS_AUDIT_CATALOG = {
                 BusinessAuditOutcome.DENIED,
             }
         ),
-        actor_types=frozenset({BusinessAuditActorType.USER}),
+        source_types=frozenset({BusinessAuditSourceType.USER}),
         reason_codes=frozenset(
             {
                 "approval_recorded",
@@ -199,7 +120,7 @@ BUSINESS_AUDIT_CATALOG = {
     )
 }
 
-business_audit = BusinessAuditWriter(
+business_audit = BusinessAuditService(
     session_factory=SessionFactory,
     action_specs=BUSINESS_AUDIT_CATALOG,
 )
@@ -213,21 +134,27 @@ codes, unsafe allowlist names, empty outcome sets, or unsupported schema version
 ## Trusted Facts At The Call Site
 
 Construct facts inside the service boundary from authenticated and authoritative
-state. Do not pass a request body's user ID, resource type, action, outcome,
-reason, source, or snapshots directly into the writer.
+state. Do not pass a request body's operation user/source, target type, action,
+outcome, reason, entrypoint, or snapshots directly into the writer.
+`BusinessAuditFacts` has no `request_id` input. HTTP middleware binds the
+server-generated request ID once; the writer reads and validates that ID through
+`get_audit_request_id()` when constructing the ORM event. Non-HTTP entrypoints
+generate and bind one safe operation ID before work, then deactivate and reset
+the context in `finally`, even if resource cleanup fails. Missing or inactive
+context raises `RuntimeError`; neither facts nor the writer create a replacement.
 
 ```python
+from app.core.ids import new_audit_id
+
 facts = BusinessAuditFacts(
-    event_id=uuid.uuid4(),
+    event_id=new_audit_id("BA"),
     action="payment.refund.approve",
-    actor=BusinessAuditActor(
-        actor_type=BusinessAuditActorType.USER,
-        id=str(authenticated_user.id),
-    ),
-    resource_id=str(refund.id),
+    source_type=BusinessAuditSourceType.USER,
+    user_id=authenticated_user.user_id,  # 操作人：当前登录的审批人。
+    target_user_id=refund.user_id,  # 被操作人：退款影响的用户，由数据库记录取得。
+    target_id=str(refund.id),  # 被操作对象：本次退款，不是审批人或用户 ID。
     reason_code="approval_recorded",
-    source=AuditSource.HTTP,
-    request_id=request_context.request_id,
+    entrypoint=AuditSource.HTTP,
     before_state=refund_audit_projection(before_refund),
     after_state=refund_audit_projection(after_refund),
     context={
@@ -237,10 +164,19 @@ facts = BusinessAuditFacts(
 )
 ```
 
-The action specification supplies `domain`, `resource_type`, allowed outcomes,
+The action specification supplies `domain`, `target_type`, allowed outcomes,
 reason codes, state/context field sets, and schema version. This prevents a call
 site from relabeling the same facts. The writer validates and sanitizes before
 constructing the ORM row.
+
+No nested identity object is needed. For example, a trusted scheduled task uses
+`source_type=BusinessAuditSourceType.JOB`, `source_id="refund_reconciliation"`,
+`user_id=None` and `entrypoint=AuditSource.JOB`. Here `source_id` identifies the
+task, while `entrypoint` identifies its execution entry. A system event has
+neither `user_id` nor `source_id`; service/maintenance events require their own
+stable non-personal `source_id`. A user-target action must set `target_user_id`
+and `target_id` to the same validated user ID. For other target types, set an
+independent `target_user_id` only when a user is actually affected.
 
 Do not call `model_dump()`, inspect ORM `__dict__`, or accept a generic dictionary
 as a projection. Use a typed per-action projection function. Keep the 16 KiB
@@ -262,7 +198,7 @@ async def approve_refund(command: ApproveRefund) -> RefundView:
             )
             await authorization.require_refund_approval(
                 session,
-                command.actor,
+                command.current_user,
                 current,
             )
             require_expected_version(current, command.expected_version)
@@ -277,11 +213,12 @@ async def approve_refund(command: ApproveRefund) -> RefundView:
                 BusinessAuditFacts(
                     event_id=command.audit_event_id,
                     action="payment.refund.approve",
-                    actor=actor_from_authenticated_context(command.actor),
-                    resource_id=str(current.id),
+                    source_type=BusinessAuditSourceType.USER,
+                    user_id=command.current_user.user_id,
+                    target_user_id=current.user_id,
+                    target_id=str(current.id),
                     reason_code="approval_recorded",
-                    source=command.audit_source,
-                    request_id=command.request_id,
+                    entrypoint=command.entrypoint,
                     before_state=before,
                     after_state=after,
                     context={
@@ -392,32 +329,15 @@ idempotency record or authoritative state before any replay or outcome event.
 
 ## Append-Only Controls
 
-Application audit writers receive `INSERT`, not `UPDATE`, `DELETE`, or `TRUNCATE`.
-Reviewers use a separate read-only role or narrowly authorized service. Add a
-trigger as defense in depth:
+Hand off the append-only database requirements explicitly: application audit
+writers receive `INSERT`, not `UPDATE`, `DELETE`, or `TRUNCATE`; reviewers use
+a separate read-only role or narrowly authorized service. The user prepares,
+reviews and installs database grants and defensive triggers rejecting both
+row mutation and table truncation. ORM metadata does not generate those
+triggers. The historical `0003_business_audit` is a maintenance reference for
+understanding them, not an initialization script to deliver or execute.
 
-```sql
-CREATE FUNCTION reject_business_audit_mutation()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-    RAISE EXCEPTION 'business audit events are append-only';
-END;
-$$;
-
-CREATE TRIGGER trg_business_audit_no_update_delete
-BEFORE UPDATE OR DELETE ON business_audit_events
-FOR EACH ROW EXECUTE FUNCTION reject_business_audit_mutation();
-
-CREATE TRIGGER trg_business_audit_no_truncate
-BEFORE TRUNCATE ON business_audit_events
-FOR EACH STATEMENT EXECUTE FUNCTION reject_business_audit_mutation();
-
-REVOKE UPDATE, DELETE, TRUNCATE ON business_audit_events FROM app_writer;
-```
-
-Use the deployment's actual role names and verify grants after migration. The
+The user selects actual deployment role names and verifies installed grants. The
 runtime writer must not own the table and receives only the required schema usage,
 sequence-free `INSERT`, and no `UPDATE`, `DELETE`, or `TRUNCATE`; a separately
 authorized reviewer receives bounded `SELECT` only. The bundled development URL
@@ -438,17 +358,20 @@ superuser, table owner, disabled trigger, storage administrator, or compromised
 backup operator remains able to alter evidence. Stronger controls belong to the
 operations design.
 
-## Migration Sequence
+## Database Handoff Sequence
 
-Use Alembic, never runtime `create_all()`:
+Deliver the model and this checklist. The user owns every schema-generation,
+DDL, grant and migration operation below; ordinary Skill generation and tests
+execute none of them and never use runtime `create_all()`:
 
-1. Register the business audit model on the same metadata Alembic imports.
-2. Create the table with all named constraints and no sequential default.
-3. Create only the baseline review indexes needed by the intended query surface.
-4. Create the append-only function and update/delete plus truncate triggers.
-5. Apply actual writer and reader role grants after those roles exist.
+1. Inspect the shared metadata containing the delivered business audit model.
+2. Generate, review and execute the user's migration with all named model
+   constraints and no sequential default.
+3. Confirm it preserves only the review indexes needed by the query surface.
+4. Prepare, review and install append-only functions and mutation/truncate guards.
+5. Apply and verify actual writer and reader grants after those roles exist.
 6. Seed no product events; the catalog is code, not mutable database content.
-7. Run upgrade from an empty database and each supported prior revision.
+7. Validate the user's own migration plan for their actual starting schema.
 8. Inspect PostgreSQL defaults to prove no sequence or identity was introduced.
 9. Exercise downgrade only in a disposable database; dropping an audit table in
    production is destructive and must not be an ordinary rollback procedure.
@@ -458,29 +381,35 @@ rows before applying stricter constraints. Never rewrite old evidence to resembl
 a new schema version. Use a new table or an explicit versioned import event when
 legacy rows cannot satisfy the new contract.
 
-Do not switch the baseline table to partitioning by adding `PARTITION BY` to this
-DDL. PostgreSQL partitioned unique and primary-key constraints must include the
+Do not switch the baseline model to partitioning by merely adding a partition
+clause to generated DDL. PostgreSQL partitioned unique and primary-key constraints must include the
 partition key, which changes event-ID uniqueness and lookup/index design. Read
 [Business audit operations](business-audit-operations.md) and choose the
 partitioned shape before production data exists.
 
 ## PostgreSQL Verification
 
-Run these checks against PostgreSQL; SQLite cannot establish them:
+The user's completed schema needs these PostgreSQL checks; SQLite cannot
+establish them. Deliver isolated writer/model tests now, report real database
+verification as pending, and do not run historical schema-mutating fixtures
+to bypass the user's ownership of migration and initialization:
 
 - migration upgrade works from empty and every supported prior revision;
 - model metadata, Alembic DDL, constraint names, types, defaults, nullability,
   indexes, triggers, and grants agree;
-- IDs are UUIDv4 or the selected validated non-sequential policy and never use a
+- IDs follow the selected validated non-sequential policy and never use a
   sequence, identity, `max(id)+1`, or hidden public sequence;
 - a 2-character reason passes while a 1-character reason and values over 80 fail
   in both `validate_audit_reason()` and PostgreSQL;
-- invalid domain/action relationships, outcomes, actor presence, actor types,
-  sources, IDs, schema versions, request IDs, non-object JSON, oversized JSON,
+- invalid domain/action relationships, outcomes, source/user presence, source types,
+  user IDs, target-user/object consistency, entrypoints, schema versions, request IDs, non-object JSON, oversized JSON,
   and non-success `after_state` fail at the database boundary;
-- action-specific allowed actor types are enforced by the catalog-backed writer;
+- action-specific allowed source types are enforced by the catalog-backed writer;
 - catalog startup rejects unregistered or internally inconsistent actions;
-- actor, resource, source, and request ID are derived from trusted server state;
+- operation user/source, target user/object, entrypoint and request ID are
+  derived from trusted server state;
+- audit construction reads the bound context automatically, rejects missing or
+  inactive context, and shares the entrypoint's ID across events and retries;
 - action-specific typed field allowlists and recursive sensitive-key plus
   recognizable secret, email, and network-value guards run before ORM insertion;
 - a successful business mutation, versions, idempotency completion, and mandatory

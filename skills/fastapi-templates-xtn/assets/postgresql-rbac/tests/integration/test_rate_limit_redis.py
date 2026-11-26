@@ -1,3 +1,14 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# 说明:
+#    使用隔离 Redis 验证限流的原子计数、独立业务窗口和过期边界。
+# History:
+# Date          Author    Version       Modification
+# --------------------------------------------------------------------------------------------------
+# 2026/10/13    XTN       V1.000        对齐简化限流键并用唯一业务名隔离每轮 Redis 计数
+# --------------------------------------------------------------------------------------------------
+
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
@@ -7,7 +18,7 @@ import pytest_asyncio
 from redis.asyncio import Redis
 
 from app.core.config import get_settings
-from app.core.security.rate_limit import (
+from app.core.rate_limit.limiter import (
     RateLimitPolicy,
     RateLimitUnavailable,
     build_rate_limit_key,
@@ -32,11 +43,9 @@ async def test_fixed_window_enforces_concurrent_limit_without_plaintext_keys() -
     redis = Redis.from_url(
         get_settings().effective_rate_limit_redis_url, decode_responses=True
     )
-    namespace = f"test_{uuid.uuid4().hex}"
-    policy = RateLimitPolicy("captcha_create_login", 7, 60)
+    policy = RateLimitPolicy(name=f"captcha_login_{uuid.uuid4().hex}", limit=7, window_seconds=60)
     subject = "198.51.100.10"
     key = build_rate_limit_key(
-        namespace=namespace,
         policy=policy,
         subject_type="ip",
         subject=subject,
@@ -47,7 +56,6 @@ async def test_fixed_window_enforces_concurrent_limit_without_plaintext_keys() -
             *(
                 check_rate_limit(
                     redis,
-                    namespace=namespace,
                     policy=policy,
                     subject_type="ip",
                     subject=subject,
@@ -73,13 +81,12 @@ async def test_business_keys_are_independent_even_for_same_ip() -> None:
     redis = Redis.from_url(
         get_settings().effective_rate_limit_redis_url, decode_responses=True
     )
-    namespace = f"test_{uuid.uuid4().hex}"
-    login = RateLimitPolicy("login", 1, 60)
-    register = RateLimitPolicy("register", 1, 60)
+    business_suffix = uuid.uuid4().hex
+    login = RateLimitPolicy(name=f"login_{business_suffix}", limit=1, window_seconds=60)
+    register = RateLimitPolicy(name=f"register_{business_suffix}", limit=1, window_seconds=60)
     subject = "198.51.100.11"
     keys = [
         build_rate_limit_key(
-            namespace=namespace,
             policy=policy,
             subject_type="ip",
             subject=subject,
@@ -92,7 +99,6 @@ async def test_business_keys_are_independent_even_for_same_ip() -> None:
             assert (
                 await check_rate_limit(
                     redis,
-                    namespace=namespace,
                     policy=policy,
                     subject_type="ip",
                     subject=subject,
@@ -102,7 +108,6 @@ async def test_business_keys_are_independent_even_for_same_ip() -> None:
         assert not (
             await check_rate_limit(
                 redis,
-                namespace=namespace,
                 policy=login,
                 subject_type="ip",
                 subject=subject,
@@ -120,10 +125,8 @@ async def test_fixed_window_does_not_extend_ttl_on_denial_then_resets() -> None:
     redis = Redis.from_url(
         get_settings().effective_rate_limit_redis_url, decode_responses=True
     )
-    namespace = f"test_{uuid.uuid4().hex}"
-    policy = RateLimitPolicy("login", 1, 1)
+    policy = RateLimitPolicy(name=f"login_{uuid.uuid4().hex}", limit=1, window_seconds=1)
     key = build_rate_limit_key(
-        namespace=namespace,
         policy=policy,
         subject_type="ip",
         subject="198.51.100.12",
@@ -131,10 +134,14 @@ async def test_fixed_window_does_not_extend_ttl_on_denial_then_resets() -> None:
     )
 
     async def attempt() -> bool:
+        """
+            对本轮唯一业务窗口执行一次真实 Redis 计数。
+
+        :return: 当前请求是否仍在该固定窗口的额度内。
+        """
         return (
             await check_rate_limit(
                 redis,
-                namespace=namespace,
                 policy=policy,
                 subject_type="ip",
                 subject="198.51.100.12",
@@ -159,10 +166,8 @@ async def test_missing_expiry_is_unavailable_not_permanent_counter() -> None:
     redis = Redis.from_url(
         get_settings().effective_rate_limit_redis_url, decode_responses=True
     )
-    namespace = f"test_{uuid.uuid4().hex}"
-    policy = RateLimitPolicy("register", 1, 60)
+    policy = RateLimitPolicy(name=f"register_{uuid.uuid4().hex}", limit=1, window_seconds=60)
     key = build_rate_limit_key(
-        namespace=namespace,
         policy=policy,
         subject_type="ip",
         subject="198.51.100.13",
@@ -173,7 +178,6 @@ async def test_missing_expiry_is_unavailable_not_permanent_counter() -> None:
         with pytest.raises(RateLimitUnavailable):
             await check_rate_limit(
                 redis,
-                namespace=namespace,
                 policy=policy,
                 subject_type="ip",
                 subject="198.51.100.13",

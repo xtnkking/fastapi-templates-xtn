@@ -1,3 +1,15 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# 说明:
+#    维护用历史迁移回归；核对角色、绑定与全局权限变更序号。
+# History:
+# Date          Author    Version       Modification
+# --------------------------------------------------------------------------------------------------
+# 2026/10/15    XTN       V1.000        移除用户权限版本并补充实际维护说明
+# 2026/10/16    XTN       V1.001        移除运行时权限版本预期，保留协调锁与历史迁移契约
+# --------------------------------------------------------------------------------------------------
+
 import asyncio
 import io
 import logging
@@ -9,30 +21,19 @@ from alembic.config import Config
 from sqlalchemy import select
 
 from alembic import command
-from app.core.security.domain import (
-    PERMISSION_CATALOG,
-    SUPER_ADMIN_PERMISSION_KEYS,
-    SYSTEM_ROLE_SPECS,
-    SystemRoleKey,
-)
-from app.db.postgres import SessionFactory, engine
-from app.models.access import (
-    Permission,
-    RbacState,
-    Role,
-    RolePermission,
-    User,
-    UserRole,
-)
+from app.core.access.permissions import PERMISSION_CATALOG
+from app.core.access.roles import SUPER_ADMIN_PERMISSION_KEYS, SYSTEM_ROLE_SPECS, SystemRoleKey
+from app.db.postgres_db import SessionFactory, engine
+from app.models.postgres.permission import Permission
+from app.models.postgres.role import Role, RolePermission
+from app.models.postgres.user import User, UserRole
 from tests.integration.conftest import World
 from tests.migration_helpers import alembic_config
 
 pytestmark = pytest.mark.postgresql
 
 
-async def test_embedded_migration_preserves_application_logging(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_embedded_migration_preserves_application_logging(monkeypatch: pytest.MonkeyPatch) -> None:
     output = io.StringIO()
     logger = logging.getLogger("app.migration_regression")
     dependency_logger = logging.getLogger("httpx")
@@ -67,7 +68,7 @@ async def test_clean_migration_seeds_catalog_state_and_system_roles() -> None:
     try:
         await asyncio.to_thread(command.upgrade, config, "head")
         async with SessionFactory() as session:
-            state = await session.get(RbacState, "global")
+            state = (await session.execute(sa.text("SELECT scope, epoch FROM rbac_state WHERE scope = 'global'"))).one()
             permission_keys = set((await session.scalars(select(Permission.key))).all())
             roles = {
                 role.key: role
@@ -91,14 +92,14 @@ async def test_clean_migration_seeds_catalog_state_and_system_roles() -> None:
 
         assert state is not None
         assert state.epoch == 2
-        assert state.public_registration_enabled is True
         assert revision == "0004_password_auth"
         assert role_limit_trigger_count == 1
-        assert permission_keys == {item.value for item in PERMISSION_CATALOG}
+        # 已发布的历史迁移仍包含旧注册配置权限；当前模板不再使用它。
+        assert permission_keys == {item.value for item in PERMISSION_CATALOG} | {"registration:configure"}
         assert set(roles) == {item.value for item in SystemRoleKey}
         for key, spec in SYSTEM_ROLE_SPECS.items():
             role = roles[key.value]
-            assert role.management_tier == spec.management_tier
+            assert role.level == spec.level
             assert role.is_system
             assert role.is_protected == spec.is_protected
             assert role.is_super_admin == spec.is_super_admin
@@ -108,7 +109,7 @@ async def test_clean_migration_seeds_catalog_state_and_system_roles() -> None:
 
 
 async def test_nonempty_database_downgrades_to_base(world: World) -> None:
-    assert world.users["super_admin"].id
+    assert world.users["super_admin"].user_id
     config = alembic_config()
     await engine.dispose()
     try:
@@ -193,16 +194,16 @@ async def test_upgrade_preserves_custom_owner_key_and_backfills_base_role() -> N
                 )
             ).all()
             users = {
-                user.id: user
+                user.user_id: user
                 for user in (
                     await session.scalars(
                         select(User).where(
-                            User.id.in_({custom_owner_holder_id, ordinary_user_id})
+                            User.user_id.in_({custom_owner_holder_id, ordinary_user_id})
                         )
                     )
                 ).all()
             }
-            state = await session.get(RbacState, "global")
+            state = (await session.execute(sa.text("SELECT scope, epoch FROM rbac_state WHERE scope = 'global'"))).one()
 
         assert super_admin_role.id == uuid.uuid5(
             uuid.NAMESPACE_URL,
@@ -216,10 +217,8 @@ async def test_upgrade_preserves_custom_owner_key_and_backfills_base_role() -> N
             (custom_owner_holder_id, SystemRoleKey.USER.value),
             (ordinary_user_id, SystemRoleKey.USER.value),
         }
-        assert users[custom_owner_holder_id].authz_version == 1
-        assert users[ordinary_user_id].authz_version == 1
+        assert set(users) == {custom_owner_holder_id, ordinary_user_id}
         assert state is not None and state.epoch == 2
-        assert state.public_registration_enabled is True
     finally:
         await engine.dispose()
         await asyncio.to_thread(command.upgrade, config, "head")
@@ -240,7 +239,8 @@ async def test_migration_seeds_exact_super_admin_grants() -> None:
             )
         ).all()
 
-    assert {row.key for row in grants} == SUPER_ADMIN_PERMISSION_KEYS
+    # 此测试复核旧迁移的原始授权，不把旧权限带回当前目录。
+    assert {row.key for row in grants} == SUPER_ADMIN_PERMISSION_KEYS | {"registration:configure"}
 
 
 @pytest.mark.parametrize("system_key", tuple(item.value for item in SystemRoleKey))

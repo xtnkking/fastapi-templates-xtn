@@ -1,3 +1,15 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# 说明:
+#    保留第一版 PostgreSQL 用户、角色、权限和授权审计迁移及数据库保护规则。
+#    这是历史迁移说明维护，执行与回退仍由项目使用者管理。
+# History:
+# Date          Author    Version       Modification
+# --------------------------------------------------------------------------------------------------
+# 2026/10/13    XTN       V1.000        完善历史 RBAC 迁移函数的通俗说明与步骤注释
+# --------------------------------------------------------------------------------------------------
+
 """Create the PostgreSQL single-project RBAC schema.
 
 Revision ID: 0001_single_project_rbac
@@ -31,10 +43,24 @@ MAX_ROLES_PER_USER = 10
 
 
 def _permission_id(key: str) -> uuid.UUID:
+    """
+        根据固定权限键生成可重复的权限 ID，让相同权限在初始化时使用同一个标识。
+
+    :param key: 权限目录中的完整权限键，例如 roles:read。
+    :return: 由固定命名空间和权限键计算出的 UUID，不访问数据库。
+    """
+    # 固定前缀区分权限 ID 和其他业务 ID；相同输入每次得到相同值。
     return uuid.uuid5(uuid.NAMESPACE_URL, f"fastapi-rbac-permission:{key}")
 
 
 def upgrade() -> None:
+    """
+        应用第一版 RBAC 历史迁移，创建基础表、初始权限和数据库侧保护。
+        迁移包含表结构与触发器，只有使用者执行 Alembic 升级时才会作用于数据库。
+
+    :return: 无返回值；成功时本版本的表、索引、初始行和触发器已经按迁移顺序创建。
+    """
+    # 先创建用户表，后续软删除操作人和授权关联都引用这里的用户 ID。
     op.create_table(
         "users",
         sa.Column(
@@ -97,6 +123,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_users_deleted_at", "users", ["deleted_at"])
 
+    # 权限键在整个表中唯一，软删除不会释放该键；记录删除时间和操作人。
     op.create_table(
         "permissions",
         sa.Column(
@@ -124,6 +151,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_permissions_deleted_at", "permissions", ["deleted_at"])
 
+    # 全局状态行用于授权写入先拿同一把行锁，epoch 保存权限状态变化次数。
     op.create_table(
         "rbac_state",
         sa.Column("scope", sa.String(length=16), nullable=False),
@@ -135,6 +163,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("scope", name="pk_rbac_state"),
     )
 
+    # 第一版角色表保存管理等级和保护标记，并限制只能有一个超级管理员角色定义。
     op.create_table(
         "roles",
         sa.Column(
@@ -201,6 +230,7 @@ def upgrade() -> None:
         postgresql_where=sa.text("is_super_admin"),
     )
 
+    # 角色与权限关系保留软删除历史，部分唯一索引只禁止重复的有效绑定。
     op.create_table(
         "role_permissions",
         sa.Column(
@@ -266,6 +296,7 @@ def upgrade() -> None:
         "ix_role_permissions_deleted_at", "role_permissions", ["deleted_at"]
     )
 
+    # 用户与角色关系同样保留历史；后面的触发器会约束每个用户的有效角色数量。
     op.create_table(
         "user_roles",
         sa.Column(
@@ -325,6 +356,7 @@ def upgrade() -> None:
     op.create_index("ix_user_roles_role_user", "user_roles", ["role_id", "user_id"])
     op.create_index("ix_user_roles_deleted_at", "user_roles", ["deleted_at"])
 
+    # 授权审计保存操作、目标和前后状态，并按操作人、目标、请求及时间建立查询索引。
     op.create_table(
         "rbac_audit_events",
         sa.Column(
@@ -420,6 +452,7 @@ def upgrade() -> None:
         "rbac_audit_events",
         ["target_role_id", "created_at"],
     )
+    # 审计只允许追加：分别拒绝逐行改删和整表清空；SQL 原文保留历史迁移语义。
     op.execute(
         """
         CREATE FUNCTION reject_rbac_audit_event_mutation()
@@ -449,6 +482,7 @@ def upgrade() -> None:
         EXECUTE FUNCTION reject_rbac_audit_event_mutation()
         """
     )
+    # 禁止删除或清空全局状态，避免授权写入失去必须存在的锁定对象。
     op.execute(
         """
         CREATE FUNCTION reject_rbac_state_removal()
@@ -479,6 +513,7 @@ def upgrade() -> None:
         """
     )
 
+    # 按固定 ID 写入初始权限，已存在的同键权限只更新说明；随后创建全局状态初始行。
     permission_table = sa.table(
         "permissions",
         sa.column("id", postgresql.UUID(as_uuid=True)),
@@ -505,6 +540,7 @@ def upgrade() -> None:
         ),
         [{"scope": "global", "epoch": 0}],
     )
+    # 用户角色关系每次写入先锁全局状态，后续数量检查在相同授权写入顺序下进行。
     op.execute(
         """
         CREATE FUNCTION lock_rbac_state_before_user_roles_write()
@@ -531,6 +567,7 @@ def upgrade() -> None:
         EXECUTE FUNCTION lock_rbac_state_before_user_roles_write()
         """
     )
+    # 有效角色上限在事务末检查，允许一笔事务先撤旧角色再加新角色后满足最多十个。
     op.execute(
         f"""
         CREATE FUNCTION assert_user_role_limit(candidate_user_id uuid)
@@ -592,11 +629,17 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # A later revision may have deleted assignments in this same migration
-    # transaction; settle their deferred checks before dropping user_roles.
+    """
+        回退第一版 RBAC 历史迁移，移除本版本创建的表和数据库保护函数。
+        会删除这些表里的数据；只有使用者明确执行 Alembic 回退时才发生。
+
+    :return: 无返回值；成功时本版本创建的数据库结构已按依赖顺序移除。
+    """
+    # 同一迁移事务可能刚撤销用户角色，先完成延迟数量检查，避免拆表时仍有未决检查。
     op.get_bind().execute(
         sa.text("SET CONSTRAINTS ct_user_roles_max_ten_live IMMEDIATE")
     )
+    # 先移除审计和用户角色保护，再按关联表到基础表的顺序拆除，避免外键依赖阻挡。
     op.drop_table("rbac_audit_events")
     op.execute("DROP FUNCTION reject_rbac_audit_event_mutation()")
     op.execute("DROP TRIGGER IF EXISTS ct_user_roles_max_ten_live ON user_roles")

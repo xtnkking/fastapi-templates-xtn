@@ -29,7 +29,7 @@ async def serve(port: int) -> None:
     ):
         raise RuntimeError("This server requires the guarded disposable test profile")
 
-    from app.db.postgres import SessionFactory
+    from app.db.postgres_db import SessionFactory
     from app.main import app
 
     entered = asyncio.Event()
@@ -60,7 +60,7 @@ async def serve(port: int) -> None:
 
     controller = asyncio.create_task(control())
     try:
-        with patch("app.core.security.captcha.secrets.choice", return_value="A"):
+        with patch("app.services.captcha_service.secrets.choice", return_value="A"):
             await server.serve()
     finally:
         controller.cancel()

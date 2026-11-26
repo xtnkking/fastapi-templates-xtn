@@ -69,9 +69,7 @@ class DatabaseFaultProxy:
         )
         return self
 
-    async def __aexit__(
-        self, _type: object, _value: object, _traceback: object
-    ) -> None:
+    async def __aexit__(self, _type: object, _value: object, _traceback: object) -> None:
         await self.close()
 
     def drop_server_to_client(self) -> None:
@@ -91,9 +89,7 @@ class DatabaseFaultProxy:
             raise RuntimeError("database proxy is not listening")
         self._mode = mode
 
-    async def wait_for_client_data(
-        self, *, after: int, timeout_seconds: float = 3.0
-    ) -> int:
+    async def wait_for_client_data(self, *, after: int, timeout_seconds: float = 3.0) -> int:
         """Wait for a client data chunk beyond a previously sampled counter."""
         if (
             type(after) is not int
@@ -113,9 +109,7 @@ class DatabaseFaultProxy:
                 raise RuntimeError("database proxy closed before client data arrived")
             return self.client_data_count
 
-    async def _accept(
-        self, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter
-    ) -> None:
+    async def _accept(self, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
         assert task is not None
         self._connection_tasks.add(task)
@@ -171,13 +165,8 @@ class DatabaseFaultProxy:
             finally:
                 self._connection_tasks.discard(task)
 
-    async def _relay(
-        self,
-        source: asyncio.StreamReader,
-        destination: asyncio.StreamWriter,
-        *,
-        from_client: bool,
-    ) -> None:
+    async def _relay(self, source: asyncio.StreamReader, destination: asyncio.StreamWriter, *,
+                     from_client: bool) -> None:
         try:
             while data := await source.read(16_384):
                 if from_client:
