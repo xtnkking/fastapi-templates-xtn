@@ -76,6 +76,7 @@ app/
       security_headers.py
     security/
       user_name.py
+      password_rules.py
       passwords.py
       jwt_tokens.py
   db/
@@ -139,7 +140,7 @@ app/
 | `core/access/` | Permission and system-role definitions, authority snapshots and pure administrative policies; not password/JWT processing |
 | `core/rate_limit/` | Redis 固定窗口原子计数；业务窗口及请求主体直接写在 `dependencies/rate_limit.py` |
 | `core/logging/` | Safe events, request context and output setup; request-completion middleware stays in `core/middleware/` |
-| `core/access/permissions.py` | Business-grouped permission keys, description message-key catalog and description lookup |
+| `core/access/permissions.py` | Permission keys, explicit groups, name/description metadata, group-name message keys and description lookup |
 | `core/access/roles.py` | System-role keys, specifications, fixed tiers, role limits and explicit grant allowlists |
 | `core/codes.py` | Five-digit success/error business codes and fallback mapping for unlisted HTTP errors |
 | `core/exceptions.py` | Named business-error constructors and shared application exception types, including the fixed login-credential error |
@@ -210,10 +211,16 @@ the Redis records and Lua scripts, without issuing Tokens.
 `core/access/roles.py` keeps system-role configuration separate from that catalog.
 System-role display names and descriptions are database role data, not fields in
 the security specification; choose their stored text when preparing the initial roles.
-Catalog values are `MessageKey` values, not descriptions to copy into the
-database. Initial descriptions use `get_permission_description(key)`, defaulting
-to Chinese. New permissions need description text in both locale catalogs;
-custom database descriptions remain as stored. Renames update real callers, generation,
+Catalog values are `PermissionSpec` entries with `name`, `group_key` and
+`description`; their human-facing text uses message keys, with group-name keys
+owned by `PERMISSION_GROUP_NAMES`. Initial database descriptions still use
+`get_permission_description(key)`, defaulting to Chinese. New permissions need
+name and description text in both locale catalogs; custom database descriptions
+remain as stored. `require_permission` marks its callback with the existing
+permission key. Startup route validation collects matching method/path entries
+once; the v1 wrapper saves them in `app.state.permission_api_routes`. Permission
+endpoints pass that mapping to their Service, without request-time route scanning.
+Renames update real callers, generation,
 tests and current guidance together without unused old-path forwarding modules.
 
 The default `repositories/redis/` owns login-session persistence. Add other
@@ -241,13 +248,17 @@ Login `password` and self-change `current_password` import `Password`:
 `MAX_PASSWORD_INPUT_CHARACTERS` ceiling (default 1024). Fields that set a password
 import `NewPassword`: `SecretStr` with direct `Field` constraints from
 `MIN_PASSWORD_CHARACTERS` and `MAX_PASSWORD_CHARACTERS` (default 8..32).
+These constants and the shared field descriptions come from
+`core/security/password_rules.py`, which owns new-password and login-input
+validation. `core/security/passwords.py` owns Argon2 work and its bounded queue.
 An out-of-range HTTP input returns request-validation code `42201`. Setting a
-password additionally applies the business password policy. Login and
+password additionally applies the shared four-character-class and weak-password
+policy. Login and
 current-password verification check input type, nonempty value, valid UTF-8 and
 the input ceiling, then verify the stored hash without applying new-password
 length or strength rules. Keep the input ceiling stable when tightening policy
 so existing valid passwords still work. Do not add `AfterValidator`, a third
-`ExistingPassword` alias, a length-validator wrapper or a password-only module.
+`ExistingPassword` alias, a length-validator wrapper or a password-only schema module.
 Consumers import directly; moving a definition must
 preserve its field order, extra-field rejection, frozen state and validation.
 Do not add re-export modules, copied validators or a file for every field.

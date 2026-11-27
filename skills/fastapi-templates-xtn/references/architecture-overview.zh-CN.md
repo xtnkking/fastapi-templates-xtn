@@ -55,7 +55,8 @@ Service 决定查询时机和事务边界，已锁定模型的简单字段赋值
 `dependencies/rate_limit.py` 直接写明业务限流次数、时间窗口和 IP/用户 ID 维度；
 `core/rate_limit/limiter.py` 负责 Redis 计数，429 响应头由异常处理模块组装。
 [`core/access/permissions.py`](../assets/postgresql-rbac/app/core/access/permissions.py) 按业务分组定义
-`PermissionKey` 和 `PERMISSION_CATALOG`；目录的值是描述文案的 `MessageKey`。
+`PermissionKey` 和 `PERMISSION_CATALOG`；目录的值是 `PermissionSpec`，集中记录
+名称文案键、明确的 `PermissionGroup` 分组和描述文案键，分组名称由 `PERMISSION_GROUP_NAMES` 维护。
 [`core/access/roles.py`](../assets/postgresql-rbac/app/core/access/roles.py) 独立定义系统角色、等级、
 角色数量上限和明确授权白名单；`core/access/authorization.py` 只定义身份与授权数据类型。
 `api/v1/router.py` 统一添加 `/api/v1`，业务 Router 只声明 `/users` 等业务前缀。
@@ -140,9 +141,12 @@ JWT 和 Redis 活跃 JTI 通过后立即原子删除当前 JTI，不限流、不
 使用软删除，原用户名永久保留，不分配给另一个人。用户名是否区分大小写是
 生成具体项目时集中询问的一项产品决定。
 
-密码哈希直接保存在 `users`，不额外创建凭据表。使用 Argon2id，默认建议
-8 到 60 个字符；是否分别强制大写、小写、数字和特殊字符由项目决定。基础
-规则只额外拒绝整串顺序、整串同一字符和与用户名完全相同的密码。
+密码哈希直接保存在 `users`，不额外创建凭据表，使用 Argon2id。新密码默认
+8 到 32 位可见 ASCII 字符，必须同时有大写字母、小写字母、数字和英文特殊符号；
+另外拒绝整串顺序、整串同一字符和与用户名完全相同的密码。规则统一在
+`app/core/security/password_rules.py` 维护，注册、新增用户、本人改密和管理员重置
+共用；`passwords.py` 负责哈希、比对和计算排队。登录和验证旧密码不检查新密码强度，
+只限制输入非空、有效 UTF-8 且不超过独立的 1024 位上限。
 
 公开注册不提供运行时开关。公开注册和管理员新增用户都只能绑定最低级 `user`
 角色，客户端不能指定初始角色。
@@ -217,11 +221,12 @@ Token 或会话表。
 | 角色 | 等级 | 主要边界 |
 | --- | ---: | --- |
 | `super_admin` | 1000 | 唯一持有人；系统角色与权限结构不可在线修改 |
-| `admin` | 500 | 只能管理严格低于自己的用户和自定义角色 |
 | `user` | 0 | 每个正常用户必须持有；包含查看本人信息、修改本人密码两项基础权限，无管理权限 |
 
+不预置 `admin`。需要管理员时，创建 1～999 级普通自定义角色并按需绑定权限；
+500 级不保留，`admin` 也只是可选的自定义角色标识，名称本身不授予能力。
 一个用户最多有 10 个未解绑角色。多个角色的权限取并集、管理等级取最高值。
-基础权限分别是 `account:read`、`account:change_password`；管理员角色的显式白名单也包含它们。
+基础权限分别是 `account:read`、`account:change_password`；超级管理员的显式白名单也包含它们。
 本人接口检查这些权限时仍使用普通用户额度，登录后验证码申请只要求登录和账号可用。
 系统只使用明确的正向 `resource:action` 权限，不默认加入 deny、通配符、角色
 继承或独立委派系统。
@@ -302,11 +307,17 @@ PostgreSQL 当前账号与权限，并确认账号启用且 token_version 一致
 事件名、审计动作和内部原因码不翻译。增加第三种语言只需登记固定语言代码、补一份
 完整资源文件和测试，不增加数据库字段，也不能把请求头直接拼成文件路径。
 数据库中由业务人员维护的内容和源码里的静态 Schema 说明也不由运行时消息模块翻译。
-内置权限目录的 `description` 也使用请求语言：权限列表和详情接口将
-`locale_for_request(request)` 传入 `PermissionService`，再调用
-`get_permission_description()` 读取两份语言资源，权限码始终保持原值。
+权限目录的 `name`、`group_name` 和内置 `description` 使用请求语言：权限列表和详情
+将 `locale_for_request(request)` 传入 `PermissionService`，从同一元数据目录和两份语言资源
+组装结果；`key` 和 `group_key` 始终保持原值。
 初始化描述调用 `get_permission_description(key)`，默认得到中文，不把目录里的文案键
-直接存成描述。新增业务权限必须同时补齐中英文文案；非内置权限的数据库自定义描述原样返回。
+直接存成描述。新增业务权限必须同时补齐中英文名称、说明和相应分组名称；非内置权限
+以原权限键作为名称，归入 `other`（其他）组，数据库自定义描述原样返回。
+
+权限目录条目还返回 `api_routes`，每项只有 `method` 和完整 `path`。启动时沿实际路由
+和权限依赖收集一次，去重排序后保存到 `app.state.permission_api_routes`；查询只读内存。
+关联表示接口入口明确要求该权限，后续仍须检查目标等级、保护和状态。没有对应 HTTP
+入口时返回空数组，不代表权限无效；这些展示信息不增加数据库字段。
 
 这不是只有文档的约定，随附资产已经包含完整调用链：
 

@@ -12,6 +12,7 @@
 # 2026/10/13    XTN       V1.003        每轮多实例测试共享随机限流密钥以隔离其他测试计数
 # 2026/10/14    XTN       V1.004        多实例共享独立日志密码指纹密钥
 # 2026/10/22    XTN       V1.005        测试环境使用简短本人查询限流配置名称
+# 2026/11/26    XTN       V1.006        注册密码夹具符合统一四类字符规则
 # --------------------------------------------------------------------------------------------------
 
 """Two real application processes sharing the guarded PostgreSQL/Redis targets."""
@@ -35,7 +36,7 @@ from scripts.load_test import run_load
 
 pytestmark = pytest.mark.postgresql
 ASSET_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "isolated-river-lantern-password-72"
+PASSWORD = "Isolated-river-lantern-pass-72"
 
 
 @asynccontextmanager

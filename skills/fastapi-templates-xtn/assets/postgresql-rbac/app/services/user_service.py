@@ -68,6 +68,7 @@
 # 2026/10/26    XTN       V1.059        用户角色权限信息类型统一命名为 UserInfo
 # 2026/10/26    XTN       V1.060        用户权限结果字段明确区分生效信息与含停用角色的信息
 # 2026/11/26    XTN       V1.061        创建用户调用直观命名的用户名校验入口
+# 2026/11/26    XTN       V1.062        创建和重置密码统一引用密码规则文件
 # --------------------------------------------------------------------------------------------------
 
 from collections.abc import Iterable
@@ -102,11 +103,10 @@ from app.core.exceptions import (
 from app.core.i18n.messages import MessageKey
 from app.core.ids import new_entity_id
 from app.core.response import PageResponse
+from app.core.security.password_rules import PasswordPolicyError, validate_new_password
 from app.core.security.passwords import (
     PasswordManager,
-    PasswordPolicyError,
     password_manager,
-    validate_new_password,
 )
 from app.core.security.user_name import validate_user_name
 from app.db.postgres_db import SessionFactory, get_constraint_name

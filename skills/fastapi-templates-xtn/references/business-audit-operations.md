@@ -19,7 +19,7 @@ table exists. When a product requires a review surface:
 - expose only `GET` list, detail, and bounded export-status or download routes;
 - require dedicated exact capabilities such as
   `business_audit_events:read` and `business_audit_events:export`;
-- grant neither capability to ordinary users or ordinary `admin` by default;
+- grant neither capability to ordinary users or custom administrator roles by default; grant it explicitly only when needed;
 - apply domain and resource visibility in addition to the exact capability;
 - use the standard four-field response envelope and mandatory request ID;
 - support bounded indexed filters for time, domain, action, outcome, `user_id`

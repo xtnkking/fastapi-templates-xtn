@@ -99,6 +99,10 @@
 # 2026/10/26    XTN       V1.090        角色可见性文档检查对齐列表删除状态与详情范围
 # 2026/11/26    XTN       V1.091        用户名字段合同改为核对统一规则引用
 # 2026/11/26    XTN       V1.092        区分历史版本说明与当前模型，按完整禁令判断跨行范围文案
+# 2026/11/26    XTN       V1.093        核对集中密码规则、必需字符类型及新旧密码入口边界
+# 2026/11/27    XTN       V1.094        登录失败测试检查对齐账号状态与密码错误的统一结果
+# 2026/11/27    XTN       V1.095        固定系统角色仅保留超级管理员和普通用户，拒绝恢复默认管理员
+# 2026/11/28    XTN       V1.096        核对权限展示目录、响应字段与启动时实际接口映射
 # --------------------------------------------------------------------------------------------------
 
 """Validate the distributable Skill without external Python dependencies."""
@@ -258,6 +262,7 @@ REQUIRED_ASSET_FILES = (
     "app/commands/operator_password_service.py",
     "app/commands/operator_password_repository.py",
     "app/core/security/passwords.py",
+    "app/core/security/password_rules.py",
     "app/core/security/user_name.py",
     "app/core/rate_limit/limiter.py",
     "app/dependencies/rate_limit.py",
@@ -1291,6 +1296,18 @@ def _validate_runtime_message_literals(tree: ast.Module, errors: list[str], *, l
             and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
         )
 
+    # 密码规则也集中维护字符标签和字段说明；只豁免这些配置值，不放行任意中文异常。
+    if label.replace("\\", "/").endswith("/app/core/security/password_rules.py"):
+        documented.update(
+            id(part) for node in tree.body
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            and any(isinstance(target, ast.Name) and target.id in {
+                "PASSWORD_REQUIRED_CHARACTERS", "PASSWORD_REQUIRED_CHARACTERS_ZH",
+                "NEW_PASSWORD_DESCRIPTION_ZH", "PASSWORD_INPUT_DESCRIPTION_ZH",
+            } for target in (node.targets if isinstance(node, ast.Assign) else (node.target,)))
+            for part in ast.walk(node.value) if isinstance(part, ast.Constant)
+        )
+
     # Redis Lua 的独立注释行用于解释代码，不是接口文案；脚本内真实字符串仍然检查。
     lua_script_names = {
         "FIXED_WINDOW_SCRIPT", "_SESSION_FUNCTIONS",
@@ -1468,6 +1485,96 @@ def _validate_authentication_schema_contract(tree: ast.Module, errors: list[str]
         fail(errors, "username OpenAPI contract must reuse the central username length and character rules")
 
 
+def _validate_password_policy_contract(rules: ast.Module, manager: ast.Module,
+                                       errors: list[str]) -> None:
+    """
+        核对密码规则只有一个维护位置，且登录和哈希升级不会套用新密码要求。
+
+    :param rules: password_rules.py 的语法树，只检查源码，不执行应用。
+    :param manager: passwords.py 的语法树，负责 Argon2 计算和排队。
+    :param errors: 收集规则缺失、重复定义或入口混用等问题。
+    :return: 无返回值；发现的问题追加到 errors。
+    """
+    # 1. 规则函数和错误类型由规则文件定义；计算文件只导入需要的校验函数。
+    for name in ("validate_login_password_input", "validate_new_password"):
+        if _function_node(rules.body, name) is None or _function_node(manager.body, name) is not None:
+            fail(errors, f"{name} must only be defined in password_rules.py")
+    if _class_node(rules, "PasswordPolicyError") is None or _class_node(manager, "PasswordPolicyError") is not None:
+        fail(errors, "PasswordPolicyError must only be defined in password_rules.py")
+    imports = {
+        item.name for node in manager.body if isinstance(node, ast.ImportFrom)
+        and node.module == "app.core.security.password_rules" for item in node.names
+    }
+    if not {"validate_login_password_input", "validate_new_password"}.issubset(imports):
+        fail(errors, "PasswordManager must import both validators from password_rules.py")
+
+    # 2. 四类字符必须全部保留；只编译源码中的字面正则，不导入或执行规则模块。
+    character_rules = next((
+        node.value for node in rules.body if isinstance(node, (ast.Assign, ast.AnnAssign))
+        and any(isinstance(target, ast.Name) and target.id == "PASSWORD_REQUIRED_CHARACTERS"
+                for target in (node.targets if isinstance(node, ast.Assign) else (node.target,)))
+    ), None)
+    character_sets: list[frozenset[str]] = []
+    if isinstance(character_rules, ast.Tuple):
+        for item in character_rules.elts:
+            if not isinstance(item, ast.Tuple) or len(item.elts) != 3:
+                continue
+            pattern = item.elts[2]
+            if (
+                not isinstance(pattern, ast.Call) or ast.unparse(pattern.func) != "re.compile"
+                or len(pattern.args) != 1 or pattern.keywords
+                or not isinstance(pattern.args[0], ast.Constant) or not isinstance(pattern.args[0].value, str)
+            ):
+                continue
+            try:
+                compiled = re.compile(pattern.args[0].value)
+            except re.error:
+                continue
+            character_sets.append(frozenset(
+                chr(number) for number in range(33, 127) if compiled.search(chr(number))
+            ))
+    expected_sets = {
+        frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ"), frozenset("abcdefghijklmnopqrstuvwxyz"),
+        frozenset("0123456789"),
+        frozenset(chr(number) for number in range(33, 127) if not chr(number).isalnum()),
+    }
+    if len(character_sets) != 4 or set(character_sets) != expected_sets:
+        fail(errors, "password rules must require uppercase, lowercase, digits and ASCII punctuation")
+    new_password = _function_node(rules.body, "validate_new_password")
+    new_password_names = {node.id for node in ast.walk(new_password) if isinstance(node, ast.Name)} \
+        if new_password is not None else set()
+    new_password_reasons = {
+        node.value for node in ast.walk(new_password) if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+    } if new_password is not None else set()
+    if (
+        "PASSWORD_REQUIRED_CHARACTERS" not in new_password_names
+        or "password_missing_character_types" not in new_password_reasons
+    ):
+        fail(errors, "validate_new_password must check the shared mandatory character types")
+
+    # 3. 新密码先检查强度；旧密码验证和已确认密码的哈希升级只检查传输边界。
+    password_manager = _class_node(manager, "PasswordManager")
+    for method_name, expected_validator in (
+        ("hash_new_password", "validate_new_password"),
+        ("hash_verified_password", "validate_login_password_input"),
+        ("verify_or_dummy", "validate_login_password_input"),
+    ):
+        method = _function_node(password_manager.body, method_name) if password_manager else None
+        validators = {
+            ast.unparse(node.func) for node in ast.walk(method) if isinstance(node, ast.Call)
+            and ast.unparse(node.func) in {"validate_login_password_input", "validate_new_password"}
+        } if method is not None else set()
+        if validators != {expected_validator}:
+            fail(errors, f"PasswordManager.{method_name} must only use {expected_validator}")
+    login_input = _function_node(rules.body, "validate_login_password_input")
+    login_names = {node.id for node in ast.walk(login_input) if isinstance(node, ast.Name)} \
+        if login_input is not None else set()
+    if login_names & {"validate_new_password", "MIN_PASSWORD_CHARACTERS", "MAX_PASSWORD_CHARACTERS",
+                      "PASSWORD_REQUIRED_CHARACTERS"}:
+        fail(errors, "login password input must not apply new-password strength or length rules")
+
+
 def validate_local_password_authentication(errors: list[str]) -> None:
     """
         核对本地账号、密码和完整登录链路的源码合同，不运行应用或访问数据库。
@@ -1486,6 +1593,7 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         "main": ASSET_ROOT / "app" / "main.py",
         "settings": ASSET_ROOT / "app" / "core" / "config.py",
         "passwords": ASSET_ROOT / "app" / "core" / "security" / "passwords.py",
+        "password rules": ASSET_ROOT / "app" / "core" / "security" / "password_rules.py",
         "audit actions": ASSET_ROOT / "app" / "core" / "audit.py",
         "models": ASSET_ROOT / "app" / "models" / "postgres" / "operation_audit.py",
         "users model": ASSET_ROOT / "app" / "models" / "postgres" / "user.py",
@@ -1535,6 +1643,7 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         "main",
         "settings",
         "passwords",
+        "password rules",
         "audit actions",
         "models",
         "users model",
@@ -1559,7 +1668,6 @@ def validate_local_password_authentication(errors: list[str]) -> None:
 
     question_markers = (
         "Is username comparison case-sensitive?",
-        "must the password contain uppercase,",
         "maximum simultaneously active login count",
         "If existing users have no password",
     )
@@ -1568,6 +1676,11 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             fail(
                 errors, f"local-password product-question batch is missing {marker!r}")
     normalized_reference = re.sub(r"\s+", " ", text["reference"])
+    if (
+        "New passwords must contain at least one uppercase letter, one lowercase letter, "
+        "one digit, and one English special character."
+    ) not in normalized_reference:
+        fail(errors, "local-password reference must document all four mandatory character types")
     for marker in (
         "Do not invent",
         "neither behavior is a generic recommendation",
@@ -1722,14 +1835,23 @@ def validate_local_password_authentication(errors: list[str]) -> None:
         "ARGON2_PARALLELISM": 4,
         "ARGON2_HASH_LENGTH": 32,
         "ARGON2_SALT_LENGTH": 16,
-        "MIN_PASSWORD_CHARACTERS": 8,
-        "MAX_PASSWORD_CHARACTERS": 32,
-        "MAX_PASSWORD_INPUT_CHARACTERS": 1024,
         "DEFAULT_MAX_CONCURRENT_OPERATIONS": 2,
     }
     for name, expected in expected_password_constants.items():
         if password_constants.get(name) != expected:
             fail(errors, f"password constant {name} must be {expected!r}")
+    password_rule_constants = _module_literals(trees["password rules"])
+    for name, expected in {
+        "MIN_PASSWORD_CHARACTERS": 8,
+        "MAX_PASSWORD_CHARACTERS": 32,
+        "MAX_PASSWORD_INPUT_CHARACTERS": 1024,
+    }.items():
+        if password_rule_constants.get(name) != expected:
+            fail(errors, f"password rules constant {name} must be {expected!r}")
+        if name in password_constants:
+            fail(errors, f"password constant {name} must only be defined in password_rules.py")
+
+    _validate_password_policy_contract(trees["password rules"], trees["passwords"], errors)
 
     hasher_configuration: dict[str, str] | None = None
     for node in ast.walk(trees["passwords"]):
@@ -2019,6 +2141,18 @@ def validate_local_password_authentication(errors: list[str]) -> None:
     if not required_user_methods.issubset(user_service_methods):
         fail(
             errors, f"user service is missing {required_user_methods - user_service_methods!r}")
+    # 所有设置新密码的入口都走同一个哈希方法，不能各自绕过或重复维护强度规则。
+    for service_owner, method_names in (
+        (service_class, ("register", "change_password")),
+        (user_service_class, ("admin_create_user", "reset_user_password")),
+        (operator_service_class, ("reset_super_admin_password",)),
+    ):
+        for method_name in method_names:
+            method = _function_node(service_owner.body, method_name) if service_owner else None
+            calls = [ast.unparse(node.func) for node in ast.walk(method) if isinstance(node, ast.Call)] \
+                if method is not None else []
+            if calls.count("self._password_manager.hash_new_password") != 1:
+                fail(errors, f"{method_name} must use the shared new-password validation and hashing entry once")
     # 动作只在核心枚举定义一次，业务直接传成员，由统一审计入口判断所属分类。
     expected_actions = {
         "REGISTER_USER": ("account_security.registration.completed", "service"),
@@ -2092,7 +2226,7 @@ def validate_local_password_authentication(errors: list[str]) -> None:
             "test_password_routes_are_post_only_and_do_not_expose_the_mechanism",
         ),
         "service tests": (
-            "test_unknown_and_wrong_passwords_use_one_public_failure",
+            "test_account_and_password_failures_use_one_public_failure",
             "test_successful_login_upgrades_a_stale_hash_after_rechecking_locks",
             "test_password_rotation_updates_user_row_and_timestamp",
             "test_service_self_change_rejects_reusing_the_current_password",
@@ -2947,6 +3081,210 @@ def validate_single_project_scope(errors: list[str]) -> None:
                     f"{relative}:{line} introduces a forbidden multi-project "
                     "authorization scope",
                 )
+
+
+def validate_system_role_catalog(errors: list[str]) -> None:
+    """
+        检查固定系统角色只有 super_admin 和 user，admin 不再是内置角色。
+
+    :param errors: 收集角色枚举、固定规格或当前模型约束不一致的问题。
+    :return: 无返回值；只解析源码，不导入应用或操作数据库。
+    """
+    # 1. 枚举只允许两个系统身份，不能保留已取消的管理员默认权限集合。
+    role_tree = _parse_python(
+        errors, ASSET_ROOT / "app/core/access/roles.py", label="system-role definitions")
+    if role_tree is None:
+        return
+    role_enum = _class_node(role_tree, "SystemRoleKey")
+    enum_members = {
+        node.targets[0].id: node.value.value
+        for node in role_enum.body
+        if isinstance(node, ast.Assign) and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Constant)
+    } if role_enum is not None else {}
+    if enum_members != {"SUPER_ADMIN": "super_admin", "USER": "user"}:
+        fail(errors, "system-role enum must contain only super_admin and user")
+    assignments = {
+        target.id: node.value
+        for node in role_tree.body if isinstance(node, (ast.Assign, ast.AnnAssign))
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        if isinstance(target, ast.Name)
+    }
+    if "ADMIN_PERMISSION_KEYS" in assignments:
+        fail(errors, "system-role definitions must not restore default admin permissions")
+
+    # 2. 固定规格也只能有两份；角色名称、等级和初始权限必须对应同一个身份。
+    specs = assignments.get("SYSTEM_ROLE_SPECS")
+    expected_specs = {
+        "SystemRoleKey.SUPER_ADMIN": (1000, "SUPER_ADMIN_PERMISSION_KEYS"),
+        "SystemRoleKey.USER": (0, "USER_PERMISSION_KEYS"),
+    }
+    if (
+        not isinstance(specs, ast.Dict) or len(specs.keys) != len(expected_specs)
+        or {ast.unparse(key) for key in specs.keys if key} != set(expected_specs)
+    ):
+        fail(errors, "system-role specs must contain exactly super_admin and user")
+    else:
+        for key_node, spec in zip(specs.keys, specs.values, strict=True):
+            key = ast.unparse(key_node) if key_node is not None else ""
+            fields = {item.arg: item.value for item in spec.keywords} if isinstance(spec, ast.Call) else {}
+            level, permissions = expected_specs[key]
+            if any(
+                field not in fields or ast.unparse(fields[field]) != expected
+                for field, expected in (("key", key), ("level", str(level)), ("permissions", permissions))
+            ):
+                fail(errors, f"system-role spec has inconsistent identity, level or permissions: {key}")
+
+    # 3. 当前模型只把这两个名称留给系统角色；历史迁移不在本检查中改写。
+    model_tree = _parse_python(
+        errors, ASSET_ROOT / "app/models/postgres/role.py", label="system-role model")
+    if model_tree is None:
+        return
+    constraints = {
+        keyword.value.value: ast.literal_eval(node.args[0])
+        for node in ast.walk(model_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "CheckConstraint" and node.args and isinstance(node.args[0], ast.Constant)
+        for keyword in node.keywords
+        if keyword.arg == "name" and isinstance(keyword.value, ast.Constant)
+    }
+    if constraints.get("system_role_key_fixed") != "NOT is_system OR key IN ('super_admin', 'user')":
+        fail(errors, "system-role model must reserve only super_admin and user as system keys")
+    if "admin_role_shape" in constraints:
+        fail(errors, "system-role model must not keep the former default admin shape")
+
+
+def validate_permission_directory(errors: list[str]) -> None:
+    """
+        检查权限展示信息集中登记，并从真实路由自动形成当前应用的接口目录。
+        只核对展示接线，原有认证顺序及权限判定仍由各自检查负责。
+
+    :param errors: 收集目录缺项、响应字段或接口收集接线的错误。
+    :return: 无返回值；只解析源码，不导入应用或连接服务。
+    """
+    # 1. 读取实际负责目录、响应、依赖及启动扫描的文件，不接受另写一份静态接口表。
+    sources = {
+        "catalog": "app/core/access/permissions.py",
+        "schema": "app/schemas/permission.py",
+        "dependency": "app/dependencies/permission.py",
+        "collector": "app/core/route_validation.py",
+        "startup": "app/api/v1/route_validation.py",
+    }
+    trees: dict[str, ast.Module] = {}
+    for label, relative in sources.items():
+        tree = _parse_python(errors, ASSET_ROOT / relative, label=f"permission directory {label}")
+        if tree is None:
+            return
+        trees[label] = tree
+    catalog_tree = trees["catalog"]
+    definitions = {
+        node.target.id: node.value for node in catalog_tree.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+    permission_enum = _class_node(catalog_tree, "PermissionKey")
+    group_enum = _class_node(catalog_tree, "PermissionGroup")
+    permission_names = {
+        node.targets[0].id for node in permission_enum.body
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+    } if permission_enum is not None else set()
+    group_members = {
+        node.targets[0].id: node.value.value for node in group_enum.body
+        if isinstance(node, ast.Assign) and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Constant)
+    } if group_enum is not None else {}
+    expected_groups = {"ACCOUNT": "account", "USERS": "users", "ROLES": "roles", "USER_ROLES": "user_roles",
+                       "PERMISSIONS": "permissions", "PROJECTS": "projects", "OTHER": "other"}
+    spec = _class_node(catalog_tree, "PermissionSpec")
+    spec_fields = {
+        node.target.id: ast.unparse(node.annotation) for node in spec.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    } if spec is not None else {}
+    if spec_fields != {"name": "MessageKey", "group_key": "PermissionGroup", "description": "MessageKey"}:
+        fail(errors, "permission directory must keep typed name, group_key and description in PermissionSpec")
+    if group_members != expected_groups:
+        fail(errors, "permission directory must keep the documented display groups and other fallback")
+
+    # 2. 每个权限都要登记完整名称、分组和说明；所有分组都要有翻译名称。
+    catalog = definitions.get("PERMISSION_CATALOG")
+    entries = {
+        ast.unparse(key): value for key, value in zip(catalog.keys, catalog.values, strict=True) if key is not None
+    } if isinstance(catalog, ast.Dict) else {}
+    if (
+        not permission_names or not isinstance(catalog, ast.Dict) or len(entries) != len(catalog.keys)
+        or set(entries) != {f"PermissionKey.{name}" for name in permission_names}
+    ):
+        fail(errors, "permission directory catalog must cover every declared permission exactly once")
+    for key, value in entries.items():
+        fields = {item.arg: item.value for item in value.keywords} if isinstance(value, ast.Call) else {}
+        message_fields = [fields.get(field) for field in ("name", "description")]
+        if (
+            not isinstance(value, ast.Call) or ast.unparse(value.func) != "PermissionSpec" or value.args
+            or set(fields) != {"name", "group_key", "description"}
+            or any(not isinstance(field, ast.Attribute) or ast.unparse(field.value) != "MessageKey"
+                   for field in message_fields)
+            or ast.unparse(fields.get("group_key", ast.Constant(None))) not in {
+                f"PermissionGroup.{name}" for name in expected_groups
+            }
+        ):
+            fail(errors, f"permission directory has incomplete or untyped metadata: {key}")
+    group_names = definitions.get("PERMISSION_GROUP_NAMES")
+    translated_groups = {
+        ast.unparse(key): ast.unparse(value) for key, value in zip(group_names.keys, group_names.values, strict=True)
+        if key is not None
+    } if isinstance(group_names, ast.Dict) else {}
+    if translated_groups != {f"PermissionGroup.{name}": f"MessageKey.PERMISSION_GROUP_{name}"
+                             for name in expected_groups}:
+        fail(errors, "permission directory must translate every display group")
+
+    # 3. 响应公开同一组字段；关联接口只暴露方法和路径，不把内部依赖或权限上下文返回出去。
+    for class_name, expected_fields in (
+        ("PermissionResponse", {"id", "key", "name", "group_key", "group_name", "description", "api_routes"}),
+        ("PermissionApiRouteResponse", {"method", "path"}),
+    ):
+        response = _class_node(trees["schema"], class_name)
+        response_fields = {
+            node.target.id for node in response.body
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        } if response else set()
+        if response_fields != expected_fields:
+            fail(errors, f"permission directory response fields are incomplete: {class_name}")
+    permission_factory = _function_node(trees["dependency"].body, "require_permission")
+    marker_calls = [
+        node for node in permission_factory.body if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and ast.unparse(node.value) == "setattr(dependency, 'permission_key', required_key)"
+    ] if permission_factory else []
+    if (
+        not marker_calls or permission_factory is None
+        or ast.unparse(permission_factory.body[-1]) != "return dependency"
+    ):
+        fail(errors, "permission directory must mark the returned real permission-check callback")
+
+    # 4. 必须收集依赖树中实际检查的权限和完整接口，再将排序结果交回，不能返回空表充数。
+    collector = _function_node(trees["collector"].body, "validate_api_routes")
+    additions = [
+        node for node in ast.walk(collector) if isinstance(node, ast.Call)
+        and ast.unparse(node) == "permission_api_routes.setdefault(permission_key, set()).add((method, path))"
+    ] if collector else []
+    expected_return = "{key: tuple(sorted(routes)) for key, routes in sorted(permission_api_routes.items())}"
+    if (
+        collector is None or not additions or not isinstance(collector.body[-1], ast.Return)
+        or collector.body[-1].value is None or ast.unparse(collector.body[-1].value) != expected_return
+    ):
+        fail(errors, "permission directory route scan must return its collected sorted method/path mapping")
+    # 5. 校验成功的返回值才写入当前 app.state；其他应用不共用目录，扫描失败也不保存半成品。
+    startup = _function_node(trees["startup"].body, "validate_v1_api_routes")
+    statements = [node for node in startup.body if not isinstance(node, ast.Expr)] if startup else []
+    if (
+        len(statements) != 2 or not isinstance(statements[0], ast.Assign)
+        or len(statements[0].targets) != 1 or ast.unparse(statements[0].targets[0]) != "permission_api_routes"
+        or not isinstance(statements[0].value, ast.Call)
+        or ast.unparse(statements[0].value.func) != "validate_api_routes"
+        or not isinstance(statements[1], ast.Assign) or len(statements[1].targets) != 1
+        or ast.unparse(statements[1].targets[0]) != "app.state.permission_api_routes"
+        or ast.unparse(statements[1].value) != "permission_api_routes"
+    ):
+        fail(errors, "permission directory startup must save the completed scan on the current application")
 
 
 def validate_user_role_limit(errors: list[str]) -> None:
@@ -5338,6 +5676,8 @@ def main(argv: list[str] | None = None) -> int:
     validate_local_password_authentication(errors)
     validate_rate_limiting_and_verification(errors)
     validate_simplified_authentication_and_administration(errors)
+    validate_system_role_catalog(errors)
+    validate_permission_directory(errors)
     validate_user_role_limit(errors)
     validate_administrative_read_visibility(errors)
     validate_super_admin_bootstrap(errors)

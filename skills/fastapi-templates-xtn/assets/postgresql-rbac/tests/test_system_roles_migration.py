@@ -12,8 +12,8 @@ def _normalize_sql(statement: object) -> str:
 
 
 def test_only_current_system_role_keys_are_reserved() -> None:
-    assert RESERVED_ROLE_KEYS == SYSTEM_ROLE_KEYS
-    assert "owner" not in RESERVED_ROLE_KEYS
+    assert RESERVED_ROLE_KEYS == SYSTEM_ROLE_KEYS == {"super_admin", "user"}
+    assert not {"admin", "owner"} & RESERVED_ROLE_KEYS
 
 
 def test_fresh_migration_chain_remains_linear() -> None:

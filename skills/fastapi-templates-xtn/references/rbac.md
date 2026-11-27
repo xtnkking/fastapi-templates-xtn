@@ -68,18 +68,19 @@ live assignment to a disabled role still occupies one of the 10 slots. A
 tombstoned historical assignment does not count. This stable definition prevents
 temporarily disabling roles and later enabling them from exceeding the cap.
 
-Document the user-owned initial immutable `super_admin`, `admin`, and `user`
-system roles at tiers `1000`,
-`500`, and `0`. Only `super_admin` supplies the protected super-administrator
-authority; `is_system` must not make every `admin` or `user` holder protected.
+Document the user-owned initial immutable `super_admin` and `user`
+system roles at tiers `1000` and `0`. Only `super_admin` supplies the protected
+super-administrator authority; `is_system` must not make every `user` holder protected.
 Every normally created user receives the mandatory `user` assignment in its
 creation transaction. Runtime
-APIs cannot change the three role definitions or grants, cannot disable or delete
+APIs cannot change either role definition or its grants, cannot disable or delete
 them, cannot grant `super_admin` outside guarded offline SQL, and cannot
 unbind `user`.
 Its explicit basic grants are `account:read` and `account:change_password`.
-Both administrator role allowlists also contain these keys; the base role
-provides no management permissions.
+The super-administrator allowlist also contains these keys; the base role
+provides no management permissions. No `admin` role is preconfigured. Create
+ordinary custom roles at tiers `1..999` and bind exact permissions as needed;
+`admin` is available as a custom key and tier `500` is not reserved.
 
 ## Identity And Deletion Lifecycle
 
@@ -294,7 +295,7 @@ route-level check cannot replace the transaction-local decision.
   held. Reject a final total above 10 as one atomic conflict. Enforce the same
   invariant in PostgreSQL so direct SQL and concurrent service writers cannot
   bypass it; an idempotent bind of an already-live pair does not consume a slot.
-- Protect the immutable `super_admin`, `admin`, and `user` role definitions, the
+- Protect the immutable `super_admin` and `user` role definitions, the
   mandatory `user` assignment, and the sole `super_admin` holder from ordinary
   rename, disablement, deletion, grant changes, or revocation.
 - Bootstrap the first `super_admin` through the explicit offline transaction in

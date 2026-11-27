@@ -25,8 +25,10 @@ The feature is implemented in the bundled asset, not only described here:
 - [`app/core/response.py`](../assets/postgresql-rbac/app/core/response.py) translates
   stable keys while building success and error envelopes.
 - [`app/core/access/permissions.py`](../assets/postgresql-rbac/app/core/access/permissions.py) maps
-  each built-in `PermissionKey` to a description `MessageKey` in `PERMISSION_CATALOG`.
-  `get_permission_description(key, stored_description=..., locale=...)` translates
+  each built-in `PermissionKey` to a `PermissionSpec` in `PERMISSION_CATALOG`.
+  Its `name` and `description` are `MessageKey` values; `group_key` is an explicit
+  `PermissionGroup`, with display text in `PERMISSION_GROUP_NAMES`.
+  `get_permission_description(key, stored_description=..., locale=...)` still translates
   built-in descriptions and preserves stored custom descriptions; its locale
   defaults to `zh-CN` for initial data preparation.
 - [`app/core/middleware/request_logging.py`](../assets/postgresql-rbac/app/core/middleware/request_logging.py)
@@ -56,7 +58,7 @@ Rendered Chinese or English literals in routes and services bypass this flow and
 are not allowed.
 
 New-password policy length messages use `{min_length}` and `{max_length}` in both catalogs.
-`translate_for_locale` fills these from the password module's shared bounds;
+`translate_for_locale` fills these from `core/security/password_rules.py`'s shared bounds;
 changing the bounds does not require editing translated numbers. Only trusted
 code constants supply these values; never format a password or raw request into
 the message.
@@ -80,10 +82,14 @@ Missing or invalid length context falls back to the generic localized text-lengt
 message; no input value or other exception context is returned.
 
 Permission list/detail endpoints pass `locale_for_request(request)` to
-`PermissionService`; its response construction calls `get_permission_description()`.
-The catalog stores message keys, so user-owned initialization obtains stored text
-with `get_permission_description(key)`. Adding a business permission requires a
-description `MessageKey` and real text in both Chinese and English catalogs.
+`PermissionService`, which translates `name`, `group_name` and built-in
+`description` values. User-owned initialization still obtains the stored description
+with `get_permission_description(key)`; it does not persist the `PermissionSpec`.
+Adding a business permission requires its name, explicit group and description in
+the one catalog, plus real Chinese/English text for all referenced message keys.
+An unknown database permission returns its key as `name`, the `other` group with
+localized `Other`/`其他` text, and its stored description unchanged. `key`,
+`group_key` and the method/path entries in `api_routes` never change with language.
 
 ## Runtime Contract
 
@@ -109,7 +115,7 @@ Only human-facing runtime text is localized:
 - domain, authentication, authorization, CAPTCHA, rate-limit, dependency, and
   unexpected-error `message` values;
 - the outer validation message and safe `data.errors[].message` values; and
-- built-in permission `data.description` values in catalog list/detail results; and
+- permission names, group names and built-in descriptions in catalog list/detail results; and
 - liveness and readiness messages, only when the adopter explicitly requests
   those probes. The default project has none; requested probes must be limited
   to an internal network or trusted probes.

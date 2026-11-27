@@ -9,16 +9,19 @@
 # 2026/10/02    XTN       V1.000        记录模型元数据边界并检查固定系统角色键约束
 # 2026/10/15    XTN       V1.001        离线验证两种绑定关系使用直观的绑定操作人和绑定时间字段
 # 2026/10/16    XTN       V1.002        移除运行时权限版本预期，保留协调锁与历史迁移契约
+# 2026/11/27    XTN       V1.003        系统角色仅限超级管理员和普通用户，admin 不再有固定模型形状
 # --------------------------------------------------------------------------------------------------
 
 """验证统一模型入口在全新进程中加载完整元数据，无外部连接或 DDL 副作用。"""
 
 import json
+import sqlite3
 import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from sqlalchemy import CheckConstraint, DateTime, Table
 
 from app.models.postgres.rbac_state import RbacState
@@ -37,7 +40,7 @@ def test_global_state_only_identifies_the_coordination_lock() -> None:
 
 def test_only_fixed_role_keys_can_be_marked_system() -> None:
     """
-        模型约束只允许三个固定角色带系统标志，不把普通自定义角色变成不可删除角色。
+        模型约束只允许两个固定角色带系统标志，不把普通自定义角色变成不可删除角色。
 
     :return: 无返回值；缺少固定系统角色键约束时断言失败。
     """
@@ -47,7 +50,32 @@ def test_only_fixed_role_keys_can_be_marked_system() -> None:
         item for item in table.constraints
         if isinstance(item, CheckConstraint) and item.name == "ck_roles_system_role_key_fixed"
     )
-    assert str(constraint.sqltext) == "NOT is_system OR key IN ('super_admin', 'admin', 'user')"
+    assert str(constraint.sqltext) == "NOT is_system OR key IN ('super_admin', 'user')"
+    assert "ck_roles_admin_role_shape" not in {item.name for item in table.constraints}
+
+
+@pytest.mark.parametrize("key,is_system,allowed", [
+    ("super_admin", True, True),
+    ("user", True, True),
+    ("admin", True, False),
+    ("admin", False, True),
+    ("custom_manager", True, False),
+    ("custom_manager", False, True),
+])
+def test_system_key_constraint_does_not_promote_custom_admin(key: str, is_system: bool, allowed: bool) -> None:
+    """只执行当前模型的简单布尔表达式，不建表；不将 SQLite 结果作为 PostgreSQL 集成证明。"""
+    table = Role.__table__
+    assert isinstance(table, Table)
+    constraint = next(
+        item for item in table.constraints
+        if isinstance(item, CheckConstraint) and item.name == "ck_roles_system_role_key_fixed"
+    )
+    with sqlite3.connect(":memory:") as database:
+        value = database.execute(
+            f"SELECT ({constraint.sqltext}) FROM (SELECT ? AS key, ? AS is_system)", (key, is_system),
+        ).fetchone()[0]
+
+    assert bool(value) is allowed
 
 
 def test_relationship_binding_fields_share_clear_names_and_preserve_constraints() -> None:

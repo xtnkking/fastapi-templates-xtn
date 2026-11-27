@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Centralize password rules in `core/security/password_rules.py`. Every new
+  password must include uppercase, lowercase, a digit and ASCII punctuation
+  within the existing 8–32 character bounds. Registration, creation, change,
+  reset and offline recovery share this check; login and old-password verification
+  keep their independent input limits. Derive field descriptions and bilingual
+  errors from the same rules.
 - Centralize username bounds, allowed characters, reserved names and validation
   in `core/security/user_name.py`. Reuse them in request/query validation, ORM
   constraints and bilingual errors, including numeric/underscore variants of

@@ -19,6 +19,7 @@
 # 2026/10/20    XTN       V1.010        登录和旧密码使用独立输入边界，新密码按当前策略检查长度
 # 2026/11/26    XTN       V1.011        用户名字段引用统一规则和说明
 # 2026/11/26    XTN       V1.012        用户名字段校验及共用入口统一用 validate 命名
+# 2026/11/26    XTN       V1.013        密码字段直接引用统一规则及四类字符要求说明
 # --------------------------------------------------------------------------------------------------
 
 
@@ -28,10 +29,12 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints,
 from pydantic_core import PydanticCustomError
 
 from app.core.ids import PERMISSION_ID_PATTERN, ROLE_ID_PATTERN, USER_ID_PATTERN
-from app.core.security.passwords import (
+from app.core.security.password_rules import (
     MAX_PASSWORD_CHARACTERS,
     MAX_PASSWORD_INPUT_CHARACTERS,
     MIN_PASSWORD_CHARACTERS,
+    NEW_PASSWORD_DESCRIPTION_ZH,
+    PASSWORD_INPUT_DESCRIPTION_ZH,
 )
 from app.core.security.user_name import (
     MAX_USER_NAME_LENGTH,
@@ -54,10 +57,7 @@ Password = Annotated[
     Field(
         min_length=1,
         max_length=MAX_PASSWORD_INPUT_CHARACTERS,
-        description=(
-            f"原有密码，按原文验证，不裁剪空白或转换大小写；不能为空，最多传输 {MAX_PASSWORD_INPUT_CHARACTERS} 个字符。"
-            "此上限用于拦截异常大输入，不会用当前新密码的长度、字符或强度规则拒绝原有密码。"
-        ),
+        description=PASSWORD_INPUT_DESCRIPTION_ZH,
     ),
 ]
 
@@ -67,12 +67,7 @@ NewPassword = Annotated[
     Field(
         min_length=MIN_PASSWORD_CHARACTERS,
         max_length=MAX_PASSWORD_CHARACTERS,
-        description=(
-            f"新密码为 {MIN_PASSWORD_CHARACTERS}～{MAX_PASSWORD_CHARACTERS} 位，保留原文，不裁剪空白或转换大小写。"
-            "设置新密码时，只允许可见的英文字母、数字及英文标点，不允许空格、中文、emoji 或不可见字符；"
-            "服务端还会检查弱密码及与用户名相同的情况。"
-            "是否额外要求大写、小写、数字或特殊符号由项目密码策略决定。"
-        ),
+        description=NEW_PASSWORD_DESCRIPTION_ZH,
     ),
 ]
 

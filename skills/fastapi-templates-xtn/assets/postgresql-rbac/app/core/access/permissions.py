@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # 说明:
-#    按业务分组定义稳定权限标识，并从中文、英文目录解析权限展示说明。
+#    集中定义权限标识、名称、分组和说明，展示文字从中英文目录读取。
 #    只读取内存中的消息目录；未知业务权限沿用调用方提供的数据库说明。
 # History:
 # Date          Author    Version       Modification
@@ -12,9 +12,11 @@
 # 2026/10/13    XTN       V1.002        说明内置权限翻译与自定义权限回退的执行步骤
 # 2026/10/24    XTN       V1.003        用户角色权限统一使用 bind 和 unbind，与接口动作对应
 # 2026/10/26    XTN       V1.004        增加查看本人信息和修改本人密码的基础权限
+# 2026/11/28    XTN       V1.005        权限目录统一维护名称和分组，保留说明及未知权限回退
 # --------------------------------------------------------------------------------------------------
 
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 from app.core.i18n.language import DEFAULT_LOCALE
@@ -59,33 +61,145 @@ class PermissionKey(StrEnum):
     PROJECTS_UPDATE = "projects:update"  # 完整参考资产中的项目修改权限。
 
 
-# 目录值是消息键而非展示文本；新增权限仍须由项目所有者在自己的初始化流程中写入数据库。
-PERMISSION_CATALOG: dict[PermissionKey, MessageKey] = {
+class PermissionGroup(StrEnum):
+    """
+        权限页面的业务分组；分组只用于展示，不授予任何权限。
+    """
+
+    ACCOUNT = "account"  # 查看本人信息和修改本人密码。
+    USERS = "users"  # 查询和管理其他用户。
+    ROLES = "roles"  # 管理角色定义以及角色的权限。
+    USER_ROLES = "user_roles"  # 给用户分配或移除角色。
+    PERMISSIONS = "permissions"  # 查看权限目录。
+    PROJECTS = "projects"  # 仅维护示例的展示分组，不授予权限。
+    OTHER = "other"  # 数据库存在但代码目录尚未登记的业务权限。
+
+
+@dataclass(frozen=True, slots=True)
+class PermissionSpec:
+    """
+        一项权限的展示定义；名称和说明保存翻译键，实际文案由请求语言决定。
+    """
+
+    name: MessageKey  # 简短权限名称，例如“查询用户”。
+    group_key: PermissionGroup  # 明确所属业务分组，不根据权限前缀猜测。
+    description: MessageKey  # 详细说明这项权限允许做什么。
+
+
+# 分组标识固定，分组名称跟随响应语言；新增分组在这里补齐展示名称。
+PERMISSION_GROUP_NAMES: dict[PermissionGroup, MessageKey] = {
+    PermissionGroup.ACCOUNT: MessageKey.PERMISSION_GROUP_ACCOUNT,
+    PermissionGroup.USERS: MessageKey.PERMISSION_GROUP_USERS,
+    PermissionGroup.ROLES: MessageKey.PERMISSION_GROUP_ROLES,
+    PermissionGroup.USER_ROLES: MessageKey.PERMISSION_GROUP_USER_ROLES,
+    PermissionGroup.PERMISSIONS: MessageKey.PERMISSION_GROUP_PERMISSIONS,
+    PermissionGroup.PROJECTS: MessageKey.PERMISSION_GROUP_PROJECTS,
+    PermissionGroup.OTHER: MessageKey.PERMISSION_GROUP_OTHER,
+}
+
+# 每项权限的展示信息只在这份目录登记；数据库中的权限记录和角色授权仍由项目所有者准备。
+PERMISSION_CATALOG: dict[PermissionKey, PermissionSpec] = {
     # 本人账号。
-    PermissionKey.ACCOUNT_READ: MessageKey.PERMISSION_ACCOUNT_READ,
-    PermissionKey.ACCOUNT_CHANGE_PASSWORD: MessageKey.PERMISSION_ACCOUNT_CHANGE_PASSWORD,
+    PermissionKey.ACCOUNT_READ: PermissionSpec(
+        name=MessageKey.PERMISSION_ACCOUNT_READ_NAME,
+        group_key=PermissionGroup.ACCOUNT,
+        description=MessageKey.PERMISSION_ACCOUNT_READ,
+    ),
+    PermissionKey.ACCOUNT_CHANGE_PASSWORD: PermissionSpec(
+        name=MessageKey.PERMISSION_ACCOUNT_CHANGE_PASSWORD_NAME,
+        group_key=PermissionGroup.ACCOUNT,
+        description=MessageKey.PERMISSION_ACCOUNT_CHANGE_PASSWORD,
+    ),
     # 权限目录。
-    PermissionKey.PERMISSIONS_READ: MessageKey.PERMISSION_PERMISSIONS_READ,
+    PermissionKey.PERMISSIONS_READ: PermissionSpec(
+        name=MessageKey.PERMISSION_PERMISSIONS_READ_NAME,
+        group_key=PermissionGroup.PERMISSIONS,
+        description=MessageKey.PERMISSION_PERMISSIONS_READ,
+    ),
     # 角色管理。
-    PermissionKey.ROLES_READ: MessageKey.PERMISSION_ROLES_READ,
-    PermissionKey.ROLES_CREATE: MessageKey.PERMISSION_ROLES_CREATE,
-    PermissionKey.ROLES_UPDATE: MessageKey.PERMISSION_ROLES_UPDATE,
-    PermissionKey.ROLES_STATUS_UPDATE: MessageKey.PERMISSION_ROLES_STATUS_UPDATE,
-    PermissionKey.ROLES_DELETE: MessageKey.PERMISSION_ROLES_DELETE,
-    PermissionKey.ROLES_PERMISSIONS_BIND: MessageKey.PERMISSION_ROLES_PERMISSIONS_BIND,
-    PermissionKey.ROLES_PERMISSIONS_UNBIND: MessageKey.PERMISSION_ROLES_PERMISSIONS_UNBIND,
+    PermissionKey.ROLES_READ: PermissionSpec(
+        name=MessageKey.PERMISSION_ROLES_READ_NAME,
+        group_key=PermissionGroup.ROLES,
+        description=MessageKey.PERMISSION_ROLES_READ,
+    ),
+    PermissionKey.ROLES_CREATE: PermissionSpec(
+        name=MessageKey.PERMISSION_ROLES_CREATE_NAME,
+        group_key=PermissionGroup.ROLES,
+        description=MessageKey.PERMISSION_ROLES_CREATE,
+    ),
+    PermissionKey.ROLES_UPDATE: PermissionSpec(
+        name=MessageKey.PERMISSION_ROLES_UPDATE_NAME,
+        group_key=PermissionGroup.ROLES,
+        description=MessageKey.PERMISSION_ROLES_UPDATE,
+    ),
+    PermissionKey.ROLES_STATUS_UPDATE: PermissionSpec(
+        name=MessageKey.PERMISSION_ROLES_STATUS_UPDATE_NAME,
+        group_key=PermissionGroup.ROLES,
+        description=MessageKey.PERMISSION_ROLES_STATUS_UPDATE,
+    ),
+    PermissionKey.ROLES_DELETE: PermissionSpec(
+        name=MessageKey.PERMISSION_ROLES_DELETE_NAME,
+        group_key=PermissionGroup.ROLES,
+        description=MessageKey.PERMISSION_ROLES_DELETE,
+    ),
+    PermissionKey.ROLES_PERMISSIONS_BIND: PermissionSpec(
+        name=MessageKey.PERMISSION_ROLES_PERMISSIONS_BIND_NAME,
+        group_key=PermissionGroup.ROLES,
+        description=MessageKey.PERMISSION_ROLES_PERMISSIONS_BIND,
+    ),
+    PermissionKey.ROLES_PERMISSIONS_UNBIND: PermissionSpec(
+        name=MessageKey.PERMISSION_ROLES_PERMISSIONS_UNBIND_NAME,
+        group_key=PermissionGroup.ROLES,
+        description=MessageKey.PERMISSION_ROLES_PERMISSIONS_UNBIND,
+    ),
     # 用户角色绑定。
-    PermissionKey.ROLES_BIND: MessageKey.PERMISSION_ROLES_BIND,
-    PermissionKey.ROLES_UNBIND: MessageKey.PERMISSION_ROLES_UNBIND,
+    PermissionKey.ROLES_BIND: PermissionSpec(
+        name=MessageKey.PERMISSION_ROLES_BIND_NAME,
+        group_key=PermissionGroup.USER_ROLES,
+        description=MessageKey.PERMISSION_ROLES_BIND,
+    ),
+    PermissionKey.ROLES_UNBIND: PermissionSpec(
+        name=MessageKey.PERMISSION_ROLES_UNBIND_NAME,
+        group_key=PermissionGroup.USER_ROLES,
+        description=MessageKey.PERMISSION_ROLES_UNBIND,
+    ),
     # 用户管理。
-    PermissionKey.USERS_READ: MessageKey.PERMISSION_USERS_READ,
-    PermissionKey.USERS_CREATE: MessageKey.PERMISSION_USERS_CREATE,
-    PermissionKey.USERS_STATUS_UPDATE: MessageKey.PERMISSION_USERS_STATUS_UPDATE,
-    PermissionKey.USERS_PASSWORD_RESET: MessageKey.PERMISSION_USERS_PASSWORD_RESET,
-    PermissionKey.USERS_SESSIONS_REVOKE: MessageKey.PERMISSION_USERS_SESSIONS_REVOKE,
+    PermissionKey.USERS_READ: PermissionSpec(
+        name=MessageKey.PERMISSION_USERS_READ_NAME,
+        group_key=PermissionGroup.USERS,
+        description=MessageKey.PERMISSION_USERS_READ,
+    ),
+    PermissionKey.USERS_CREATE: PermissionSpec(
+        name=MessageKey.PERMISSION_USERS_CREATE_NAME,
+        group_key=PermissionGroup.USERS,
+        description=MessageKey.PERMISSION_USERS_CREATE,
+    ),
+    PermissionKey.USERS_STATUS_UPDATE: PermissionSpec(
+        name=MessageKey.PERMISSION_USERS_STATUS_UPDATE_NAME,
+        group_key=PermissionGroup.USERS,
+        description=MessageKey.PERMISSION_USERS_STATUS_UPDATE,
+    ),
+    PermissionKey.USERS_PASSWORD_RESET: PermissionSpec(
+        name=MessageKey.PERMISSION_USERS_PASSWORD_RESET_NAME,
+        group_key=PermissionGroup.USERS,
+        description=MessageKey.PERMISSION_USERS_PASSWORD_RESET,
+    ),
+    PermissionKey.USERS_SESSIONS_REVOKE: PermissionSpec(
+        name=MessageKey.PERMISSION_USERS_SESSIONS_REVOKE_NAME,
+        group_key=PermissionGroup.USERS,
+        description=MessageKey.PERMISSION_USERS_SESSIONS_REVOKE,
+    ),
     # 仅维护示例。
-    PermissionKey.PROJECTS_READ: MessageKey.PERMISSION_PROJECTS_READ,
-    PermissionKey.PROJECTS_UPDATE: MessageKey.PERMISSION_PROJECTS_UPDATE,
+    PermissionKey.PROJECTS_READ: PermissionSpec(
+        name=MessageKey.PERMISSION_PROJECTS_READ_NAME,
+        group_key=PermissionGroup.PROJECTS,
+        description=MessageKey.PERMISSION_PROJECTS_READ,
+    ),
+    PermissionKey.PROJECTS_UPDATE: PermissionSpec(
+        name=MessageKey.PERMISSION_PROJECTS_UPDATE_NAME,
+        group_key=PermissionGroup.PROJECTS,
+        description=MessageKey.PERMISSION_PROJECTS_UPDATE,
+    ),
 }
 
 
@@ -108,4 +222,4 @@ def get_permission_description(permission_key: str, *,
     except ValueError:
         return stored_description
     # 内置权限按展示语言取消息，不支持的语言由翻译函数回退到中文。
-    return translate_for_locale(locale, PERMISSION_CATALOG[key])
+    return translate_for_locale(locale, PERMISSION_CATALOG[key].description)

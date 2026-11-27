@@ -35,6 +35,9 @@
 # 2026/10/26    XTN       V2.024        用户权限信息类型统一使用 UserInfo，保持原有验证行为
 # 2026/10/26    XTN       V2.025        验证角色列表六项筛选转发、默认值和输入边界
 # 2026/11/26    XTN       V2.026        空角色列表对齐仓储约定并直接替换登录记录仓储
+# 2026/11/27    XTN       V2.027        登录失败的双语提示给出操作指引并保持统一错误结构
+# 2026/11/27    XTN       V2.028        登录失败求助文案改为联系平台
+# 2026/11/27    XTN       V2.029        登录失败提示不再假设用户忘记密码
 # --------------------------------------------------------------------------------------------------
 
 import json
@@ -877,17 +880,25 @@ async def test_global_error_handlers_prevent_sensitive_response_caching(handler:
     assert response.headers["Cache-Control"] == "no-store"
 
 
-async def test_invalid_login_credentials_use_one_non_leaking_contract() -> None:
+@pytest.mark.parametrize("locale,expected_message", [
+    (None, "登录失败，请核对登录信息后重试；如仍无法登录，请联系平台。"),
+    ("zh-CN", "登录失败，请核对登录信息后重试；如仍无法登录，请联系平台。"),
+    ("en", "Unable to sign in. Check your login details and try again. "
+     "If you still cannot sign in, contact platform support."),
+])
+async def test_invalid_login_credentials_use_one_non_leaking_contract(locale: str | None,
+                                                                      expected_message: str) -> None:
     """
         验证登录失败走通用业务异常处理器，且不泄露账号存在与否。
 
-    :return: 无返回值；断言 HTTP 401、业务码和必要响应头保持不变。
+    :return: 无返回值；检查中英文指引、统一结构及必要响应头，不公开内部原因。
     """
     error = InvalidLoginCredentialsError()
     assert isinstance(error, AppError)
     assert app.exception_handlers[AppError] is handle_access_error
+    headers = [] if locale is None else [(b"accept-language", locale.encode("ascii"))]
     request = Request(
-        {"type": "http", "method": "POST", "path": "/api/v1/login", "headers": []}
+        {"type": "http", "method": "POST", "path": "/api/v1/auth/login", "headers": headers}
     )
 
     response = await handle_access_error(
@@ -897,7 +908,12 @@ async def test_invalid_login_credentials_use_one_non_leaking_contract() -> None:
 
     assert response.status_code == 401
     body = json.loads(bytes(response.body))
+    assert set(body) == {"code", "message", "data", "request_id"}
     assert body["code"] == int(BusinessCode.INVALID_AUTHENTICATION)
+    assert body["message"] == expected_message
+    assert body["data"] is None
+    assert "invalid_login_credentials" not in body["message"]
+    assert response.headers["Content-Language"] == (locale or "zh-CN")
     assert response.headers["WWW-Authenticate"] == "Bearer"
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["X-Request-ID"] == body["request_id"]

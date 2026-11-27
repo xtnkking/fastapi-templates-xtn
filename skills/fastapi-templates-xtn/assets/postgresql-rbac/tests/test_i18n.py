@@ -20,6 +20,10 @@
 # 2026/10/20    XTN       V1.011        验证密码计算队列满和等待超时通过 HTTP 返回双语 503
 # 2026/10/22    XTN       V1.012        双语异常测试对齐当前用户检查入口
 # 2026/11/26    XTN       V1.013        异常注入对齐本人权限链路并补齐类型检查
+# 2026/11/26    XTN       V1.014        密码提示读取集中规则并验证四类字符的双语错误
+# 2026/11/27    XTN       V1.015        登录失败提供重试和联系管理员指引，通用认证提示保持原样
+# 2026/11/27    XTN       V1.016        登录失败的英文求助文案指向平台
+# 2026/11/27    XTN       V1.017        登录失败仅提示核对信息和联系平台，不推测具体原因
 # --------------------------------------------------------------------------------------------------
 
 import asyncio
@@ -36,7 +40,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 from starlette.responses import Response
 
-import app.core.security.passwords as password_security
+import app.core.security.password_rules as password_rules
 from app.api.v1.endpoints import auth as auth_api
 from app.core.codes import BusinessCode
 from app.core.exception_handlers import (
@@ -49,6 +53,7 @@ from app.core.exception_handlers import (
 )
 from app.core.exceptions import (
     AppError,
+    InvalidLoginCredentialsError,
     conflict_409,
     forbidden_403,
     invalid_request_400,
@@ -62,7 +67,8 @@ from app.core.i18n.language import DEFAULT_LOCALE, SUPPORTED_LOCALES, apply_lang
 from app.core.i18n.messages import CATALOGS, MessageKey, translate_for_locale
 from app.core.i18n.validation_messages import validation_message
 from app.core.rate_limit.limiter import RateLimitExceeded, RateLimitResult
-from app.core.security.passwords import PasswordBusyError, PasswordPolicyError
+from app.core.security.password_rules import PasswordPolicyError
+from app.core.security.passwords import PasswordBusyError
 from app.dependencies.rate_limit import rate_limit_login
 from app.main import app
 
@@ -175,8 +181,8 @@ def test_password_length_messages_read_current_shared_bounds(minimum: int, maxim
     :param monkeypatch: 临时修改密码模块常量，用例结束后恢复，不改动请求模型或应用配置。
     :return: 无返回值；业务策略提示动态更新，不把新密码范围套到未知密码字段。
     """
-    monkeypatch.setattr(password_security, "MIN_PASSWORD_CHARACTERS", minimum)
-    monkeypatch.setattr(password_security, "MAX_PASSWORD_CHARACTERS", maximum)
+    monkeypatch.setattr(password_rules, "MIN_PASSWORD_CHARACTERS", minimum)
+    monkeypatch.setattr(password_rules, "MAX_PASSWORD_CHARACTERS", maximum)
     expected = (
         f"密码长度须为 {minimum}～{maximum} 位" if locale == "zh-CN"
         else f"The password must be {minimum}-{maximum} characters long"
@@ -207,6 +213,7 @@ def test_password_length_messages_read_current_shared_bounds(minimum: int, maxim
         ("password_too_short", MessageKey.ERROR_PASSWORD_LENGTH),
         ("password_invalid_unicode", MessageKey.ERROR_PASSWORD_CHARACTERS),
         ("password_invalid_character", MessageKey.ERROR_PASSWORD_CHARACTERS),
+        ("password_missing_character_types", MessageKey.ERROR_PASSWORD_COMPOSITION),
         ("unknown_password_rule", MessageKey.ERROR_BAD_REQUEST),
     ],
 )
@@ -227,6 +234,17 @@ def test_password_policy_error_uses_shared_error_contract(reason_code: str,
     )
     assert error.message_key == message_key
     assert error.reason_code == reason_code
+
+
+@pytest.mark.parametrize("locale,required_types", [
+    ("zh-CN", ("大写字母", "小写字母", "数字", "英文特殊符号")),
+    ("en", ("uppercase letter", "lowercase letter", "digit", "ASCII punctuation character")),
+])
+def test_password_composition_error_explains_all_required_types(locale: str, required_types: tuple[str, ...]) -> None:
+    message = translate_for_locale(locale, MessageKey.ERROR_PASSWORD_COMPOSITION)
+
+    assert all(character_type in message for character_type in required_types)
+    assert "{required_types}" not in message
 
 
 @pytest.mark.parametrize(
@@ -521,6 +539,13 @@ async def test_domain_rate_limit_database_and_unexpected_errors_translate() -> N
 @pytest.mark.parametrize(
     ("error", "status_code", "business_code", "english_message"),
     [
+        (
+            InvalidLoginCredentialsError(),
+            401,
+            BusinessCode.INVALID_AUTHENTICATION,
+            "Unable to sign in. Check your login details and try again. "
+            "If you still cannot sign in, contact platform support.",
+        ),
         (
             unauthenticated_401("private"),
             401,

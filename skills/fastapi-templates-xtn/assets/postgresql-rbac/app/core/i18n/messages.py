@@ -23,6 +23,9 @@
 # 2026/10/24    XTN       V1.013        用户角色权限说明键对齐 bind 和 unbind
 # 2026/10/26    XTN       V1.014        补充本人账号基础权限的双语说明键
 # 2026/11/26    XTN       V1.015        用户名格式提示读取统一长度及字符说明
+# 2026/11/26    XTN       V1.016        密码组合提示按统一规则动态填写中英文字符类型
+# 2026/11/27    XTN       V1.017        增加登录失败的统一指引，与 Token 认证失败提示分开
+# 2026/11/28    XTN       V1.018        权限目录增加简短名称和业务分组的中英文文案键
 # --------------------------------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -36,7 +39,7 @@ from types import MappingProxyType
 from fastapi import Request
 
 from app.core.i18n.language import DEFAULT_LOCALE, SUPPORTED_LOCALES, locale_for_request
-from app.core.security import passwords as password_policy
+from app.core.security import password_rules as password_policy
 from app.core.security import user_name as user_name_policy
 
 
@@ -55,6 +58,7 @@ class MessageKey(StrEnum):
     AUTH_CAPTCHA_CREATED = "auth.captcha_created"
     AUTH_REGISTER_SUCCEEDED = "auth.registration_succeeded"
     AUTH_LOGIN_SUCCEEDED = "auth.login_succeeded"
+    AUTH_LOGIN_FAILED = "auth.login_failed"  # 所有账号登录失败共用，不说明账号是否存在或停用。
     AUTH_LOGOUT_SUCCEEDED = "auth.logout_succeeded"
     AUTH_PASSWORD_CHANGED_RELOGIN = "auth.password_changed_relogin"
     AUTH_PASSWORD_RESET_SUCCEEDED = "auth.password_reset_succeeded"
@@ -63,7 +67,7 @@ class MessageKey(StrEnum):
     # 本人账号基础权限。
     PERMISSION_ACCOUNT_READ = "permission.account.read"
     PERMISSION_ACCOUNT_CHANGE_PASSWORD = "permission.account.change_password"
-    # 权限目录业务：只翻译说明文字，permissions:read 等权限码始终不变。
+    # 权限目录用途说明；permissions:read 等权限码始终不变。
     PERMISSION_PERMISSIONS_READ = "permission.permissions.read"
     # 角色管理业务的能力说明，目标等级限制仍由角色 Service 执行。
     PERMISSION_ROLES_READ = "permission.roles.read"
@@ -86,6 +90,36 @@ class MessageKey(StrEnum):
     PERMISSION_PROJECTS_READ = "permission.projects.read"
     PERMISSION_PROJECTS_UPDATE = "permission.projects.update"
 
+    # 权限简短名称；原有 PERMISSION_* 键继续提供详细用途说明。
+    PERMISSION_ACCOUNT_READ_NAME = "permission.account.read.name"
+    PERMISSION_ACCOUNT_CHANGE_PASSWORD_NAME = "permission.account.change_password.name"
+    PERMISSION_PERMISSIONS_READ_NAME = "permission.permissions.read.name"
+    PERMISSION_ROLES_READ_NAME = "permission.roles.read.name"
+    PERMISSION_ROLES_CREATE_NAME = "permission.roles.create.name"
+    PERMISSION_ROLES_UPDATE_NAME = "permission.roles.update.name"
+    PERMISSION_ROLES_STATUS_UPDATE_NAME = "permission.roles.status_update.name"
+    PERMISSION_ROLES_DELETE_NAME = "permission.roles.delete.name"
+    PERMISSION_ROLES_PERMISSIONS_BIND_NAME = "permission.roles.permissions_bind.name"
+    PERMISSION_ROLES_PERMISSIONS_UNBIND_NAME = "permission.roles.permissions_unbind.name"
+    PERMISSION_ROLES_BIND_NAME = "permission.roles.bind.name"
+    PERMISSION_ROLES_UNBIND_NAME = "permission.roles.unbind.name"
+    PERMISSION_USERS_READ_NAME = "permission.users.read.name"
+    PERMISSION_USERS_CREATE_NAME = "permission.users.create.name"
+    PERMISSION_USERS_STATUS_UPDATE_NAME = "permission.users.status_update.name"
+    PERMISSION_USERS_PASSWORD_RESET_NAME = "permission.users.password_reset.name"
+    PERMISSION_USERS_SESSIONS_REVOKE_NAME = "permission.users.sessions_revoke.name"
+    PERMISSION_PROJECTS_READ_NAME = "permission.projects.read.name"
+    PERMISSION_PROJECTS_UPDATE_NAME = "permission.projects.update.name"
+
+    # 权限分组的展示名称；account、users 等分组标识本身不翻译。
+    PERMISSION_GROUP_ACCOUNT = "permission.group.account"
+    PERMISSION_GROUP_USERS = "permission.group.users"
+    PERMISSION_GROUP_ROLES = "permission.group.roles"
+    PERMISSION_GROUP_USER_ROLES = "permission.group.user_roles"
+    PERMISSION_GROUP_PERMISSIONS = "permission.group.permissions"
+    PERMISSION_GROUP_PROJECTS = "permission.group.projects"
+    PERMISSION_GROUP_OTHER = "permission.group.other"
+
     # 对外错误提示；内部 reason_code 不直接翻译或展示，以免泄露详细拒绝原因。
     ERROR_BAD_REQUEST = "error.bad_request"
     ERROR_UNAUTHENTICATED = "error.unauthenticated"
@@ -107,6 +141,7 @@ class MessageKey(StrEnum):
     ERROR_PASSWORD_COMMON_OR_WEAK = "error.password_common_or_weak"
     ERROR_PASSWORD_LENGTH = "error.password_length"
     ERROR_PASSWORD_CHARACTERS = "error.password_characters"
+    ERROR_PASSWORD_COMPOSITION = "error.password_composition"
     ERROR_USER_NAME_TAKEN = "error.user_name_taken"
     ERROR_CAPTCHA_INVALID = "error.captcha_invalid"
 
@@ -196,7 +231,13 @@ def translate_for_locale(locale: str, key: MessageKey) -> str:
             min_length=password_policy.MIN_PASSWORD_CHARACTERS,
             max_length=password_policy.MAX_PASSWORD_CHARACTERS,
         )
-    # 3. 用户名提示同样读取规则文件；改长度或字符说明后，不必再修改两份翻译。
+    # 3. 组合提示也读取同一组规则名称，缺类时不回显用户输入的密码。
+    if key == MessageKey.ERROR_PASSWORD_COMPOSITION:
+        return message.format(
+            required_types=(password_policy.PASSWORD_REQUIRED_CHARACTERS_EN if locale == "en"
+                            else password_policy.PASSWORD_REQUIRED_CHARACTERS_ZH),
+        )
+    # 4. 用户名提示同样读取规则文件；改长度或字符说明后，不必再修改两份翻译。
     if key == MessageKey.VALIDATION_USER_NAME_FORMAT:
         return message.format(
             min_length=user_name_policy.MIN_USER_NAME_LENGTH,

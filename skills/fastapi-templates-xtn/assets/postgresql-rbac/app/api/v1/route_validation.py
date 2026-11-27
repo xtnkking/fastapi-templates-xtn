@@ -3,7 +3,7 @@
 
 # 说明:
 #    API v1 启动路由校验规则
-#    声明匿名入口、普通认证依赖及特殊认证路由，再交给通用校验器执行
+#    声明认证规则，校验通过后为当前应用保存权限关联接口目录
 # History:
 # Date          Author    Version       Modification
 # --------------------------------------------------------------------------------------------------
@@ -15,6 +15,7 @@
 # 2026/10/20    XTN       V1.005        路由校验同步本人及内部管理上下文依赖名称
 # 2026/10/22    XTN       V1.006        退出只要求有效登录，不再要求退出限流依赖
 # 2026/10/22    XTN       V1.007        对齐 Token 和用户入口，直接识别权限依赖
+# 2026/11/28    XTN       V1.008        启动校验通过后保存本应用的权限关联接口，不在请求中重复扫描
 # --------------------------------------------------------------------------------------------------
 
 
@@ -61,15 +62,18 @@ def validate_v1_api_routes(app: FastAPI) -> None:
     """
         用本版 API 的公开入口和认证依赖规则，检查应用实际装配的业务路由。
         路由方法、参数位置及重复名称仍由通用校验器检查，不连接外部服务。
+        全部通过后，把权限关联接口保存在当前应用内存，供权限列表和详情直接使用。
 
     :param app: 已装配业务路由、尚未开始接收请求的 FastAPI 应用。
-    :return: 无返回值；发现遗漏认证或错误参数位置时抛出启动配置错误。
+    :return: 无返回值；成功后更新 app.state.permission_api_routes，失败时不写入部分目录。
     :raises ValueError: 业务路由不满足公开入口、认证依赖或输入约定。
     """
-    # 将本版公开入口和认证要求交给统一检查器，发现漏保护就阻止启动，而非替代请求时认证。
-    validate_api_routes(
+    # 1. 将本版规则交给统一检查器，一次遍历完成校验和接口目录整理；漏保护就阻止启动。
+    permission_api_routes = validate_api_routes(
         app,
         public_routes=_PUBLIC_ROUTES,
         authenticated_dependencies=_AUTHENTICATED_DEPENDENCIES,
         special_routes=_SPECIAL_ROUTES,
     )
+    # 2. 只在全部通过后保存；每个 FastAPI 应用各有一份，不与其他应用共用可变全局目录。
+    app.state.permission_api_routes = permission_api_routes

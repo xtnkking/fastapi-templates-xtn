@@ -41,6 +41,7 @@
 # 2026/10/24    XTN       V2.024        验证码场景名称明确具体用户操作
 # 2026/10/26    XTN       V2.025        用户权限信息类型统一使用 UserInfo，保持原有验证行为
 # 2026/10/26    XTN       V2.026        验证普通用户基础权限及本人业务单次认证、限流和验证码顺序
+# 2026/11/26    XTN       V2.027        设置新密码的接口样例符合统一四类字符规则
 # --------------------------------------------------------------------------------------------------
 
 import uuid
@@ -77,8 +78,8 @@ from app.schemas.user import ActiveSessionsResponse
 from app.services.auth_service import LoginResult
 from app.services.captcha_service import captcha_service
 
-VALID_PASSWORD = "correct-horse-battery-staple"
-NEW_PASSWORD = "new-correct-horse-battery-staple"
+VALID_PASSWORD = "Correct-horse-battery7!"
+NEW_PASSWORD = "New-correct-horse-battery7!"
 
 
 def _context(*, password_reset: bool = False, users_read: bool = False,

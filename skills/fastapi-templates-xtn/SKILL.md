@@ -78,9 +78,11 @@ These entrypoint boundaries apply whenever their business is in scope:
   means Redis has confirmed the login. Keep GET/POST threshold selection in the
   limiter, without quota-name strings in authentication functions.
 - Role fields use `level`; a user's highest effective role level uses `role_level`.
-  System roles are `super_admin`/`admin`/`user` at levels 1000/500/0, with one
+  System roles are only `super_admin`/`user` at levels 1000/0, with one
   super administrator prepared and transferred offline; a user has at most
   10 live role assignments. Exact positive permissions govern operations.
+  Administrative roles are ordinary custom roles at levels 1..999, created and
+  granted permissions as needed; no `admin` role or level 500 is preconfigured.
   Except for the sole super administrator, manage strictly lower complete
   multi-role authority and grant only currently held permissions.
 - Check the exact capability before target visibility. Hide self, peer, higher,

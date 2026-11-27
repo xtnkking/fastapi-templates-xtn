@@ -7,8 +7,8 @@ an empty directory inside them is not permission to scaffold a replacement.
 ## Resolve Choices, Then Export
 
 Read the product-choice batch in [Local authentication](local-password-authentication.md).
-Resolve username case and active-login maximum; show
-password composition and quota defaults. Do not invent a number or choose a case
+Resolve username case and active-login maximum; explain the mandatory
+new-password rules and quota defaults. Do not invent a number or choose a case
 policy from silence. Apply already confirmed choices without asking again.
 For a synthetic verification project, explicitly label test-only choices.
 
@@ -41,10 +41,13 @@ for maintenance rules; file versions are independent of release versions.
 
 The exporter supports both username policies: insensitive canonicalizes to
 lowercase in the shared input path and adds the corresponding model constraint;
-sensitive preserves case. It exports the length-only password baseline. If the
-user selected additional composition rules, implement them in the shared new
-password validator, update bilingual errors/schema description and relevant tests
-before calling the project complete. Other project-specific changes, such as
+sensitive preserves case. It exports `password_rules.py` with the complete
+new-password baseline: 8..32 visible ASCII characters containing uppercase,
+lowercase, digits and special symbols, plus the documented weak-password checks.
+All password-setting paths share it; login and current-password checks retain
+their independent input limit. If the user requests a different policy, change
+this owner, its descriptions, bilingual errors and relevant tests together.
+Other project-specific changes, such as
 business-prefixed IDs, follow the same coherent adaptation rule. Do not pretend
 the exporter covers a choice it does not implement.
 
@@ -64,7 +67,7 @@ additional deliverables only when the user requests them.
 The default runtime exports the agreed authentication/RBAC/CAPTCHA/JTI/logging
 baseline. It does not add country, proxy, example project permissions or empty
 business directories. The `projects:*` permissions in historical maintainer
-fixtures are filtered from the project catalog and both system-role allowlists;
+fixtures are filtered from the project catalog and super-administrator allowlist;
 do not change released fixture history to make it a new-project seed.
 
 Default audit output is `models/postgres/operation_audit.py` and

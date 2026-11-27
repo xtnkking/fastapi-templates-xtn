@@ -192,8 +192,6 @@ async def test_database_seeds_fixed_system_role_shapes() -> None:
     assert roles[SystemRoleKey.SUPER_ADMIN.value].level == 1000
     assert roles[SystemRoleKey.SUPER_ADMIN.value].is_protected
     assert roles[SystemRoleKey.SUPER_ADMIN.value].is_super_admin
-    assert roles[SystemRoleKey.ADMIN.value].level == 500
-    assert not roles[SystemRoleKey.ADMIN.value].is_protected
     assert roles[SystemRoleKey.USER.value].level == 0
     assert not roles[SystemRoleKey.USER.value].is_protected
     assert all(role.is_system and role.is_active for role in roles.values())
@@ -202,10 +200,10 @@ async def test_database_seeds_fixed_system_role_shapes() -> None:
 async def test_database_rejects_system_role_definition_changes() -> None:
     async with SessionFactory() as session:
         role = await session.scalar(
-            select(Role).where(Role.key == SystemRoleKey.ADMIN.value)
+            select(Role).where(Role.key == SystemRoleKey.USER.value)
         )
         assert role is not None
-        role.name = "Renamed administrator"
+        role.name = "Renamed system user"
         with pytest.raises(IntegrityError):
             await session.commit()
 
@@ -213,7 +211,7 @@ async def test_database_rejects_system_role_definition_changes() -> None:
 async def test_database_rejects_physical_system_role_deletion() -> None:
     async with SessionFactory() as session:
         role = await session.scalar(
-            select(Role).where(Role.key == SystemRoleKey.ADMIN.value)
+            select(Role).where(Role.key == SystemRoleKey.USER.value)
         )
         assert role is not None
         with pytest.raises(IntegrityError):
@@ -224,7 +222,7 @@ async def test_database_rejects_physical_system_role_deletion() -> None:
 async def test_database_rejects_system_role_permission_changes() -> None:
     async with SessionFactory() as session:
         role = await session.scalar(
-            select(Role).where(Role.key == SystemRoleKey.ADMIN.value)
+            select(Role).where(Role.key == SystemRoleKey.USER.value)
         )
         assert role is not None
         grant = await session.scalar(

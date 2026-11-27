@@ -14,12 +14,13 @@
 # 2026/10/04    XTN       V2.003        路由限流策略改由 Service 统一构造
 # 2026/10/22    XTN       V2.004        验证权限闭包接线，拒绝仅验 Token 或未调用的权限工厂
 # 2026/10/22    XTN       V2.005        独立业务窗口测试使用简短本人查询配置
+# 2026/11/28    XTN       V2.006        验证真实依赖自动关联权限接口及重新装配、去重和应用隔离
 # --------------------------------------------------------------------------------------------------
 
 """验证业务路由在启动前接入必要的登录依赖和输入约定。"""
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Annotated, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -29,6 +30,8 @@ from httpx import ASGITransport, AsyncClient
 
 import app.main as main_module
 from app.api.v1.route_validation import validate_v1_api_routes
+from app.core.access.authorization import AuthorizationContext
+from app.core.access.permissions import PermissionKey
 from app.core.config import get_settings
 from app.dependencies.auth import (
     check_token,
@@ -84,13 +87,148 @@ def new_app(*, method: str = "GET", authenticated: bool = True,
     return application
 
 
-def test_bundled_routes_have_complete_route_configuration() -> None:
+def test_bundled_routes_have_complete_route_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     """
         验证模板内全部业务路由满足启动校验。
 
+    :param monkeypatch: 记录并恢复本次校验写入的应用目录。
     :return: 无返回值；任何接线遗漏都会使测试失败。
     """
+    monkeypatch.setattr(app.state, "permission_api_routes", {}, raising=False)
     validate_v1_api_routes(app)
+    routes = app.state.permission_api_routes
+    assert sum(len(items) for items in routes.values()) == 23
+    assert routes["account:read"] == (("GET", "/api/v1/me/user_info"),)
+    assert routes["roles:bind"] == (("POST", "/api/v1/users/roles/bind"),)
+    assert routes["roles:unbind"] == (("POST", "/api/v1/users/roles/unbind"),)
+    assert "projects:read" not in routes and "projects:update" not in routes
+    assert not any(path in {"/api/v1/auth/logout", "/api/v1/me/captcha"}
+                   for items in routes.values() for _, path in items)
+
+
+@pytest.mark.parametrize("hidden", [False, True])
+def test_permission_routes_follow_aliases_nested_dependencies_and_full_prefixes(hidden: bool) -> None:
+    """从真实 FastAPI 依赖树读取权限，别名、子路由和重复引用都不用维护第二份清单。"""
+    permission_check = require_permission(PermissionKey.ROLES_READ)
+    RoleContext = Annotated[AuthorizationContext, Depends(permission_check)]
+
+    async def nested_check(context: RoleContext) -> None:
+        """只提供嵌套接线；启动整理不允许执行这个函数。"""
+        pytest.fail("route collection must not execute dependencies")
+
+    router = APIRouter(prefix="/catalog")
+    router.add_api_route(
+        "/z/list", endpoint, name="read_last_catalog", methods=["GET"], include_in_schema=not hidden,
+        dependencies=[Depends(nested_check), Depends(permission_check)],
+    )
+    router.add_api_route(
+        "/a/detail", endpoint, name="read_first_catalog", methods=["GET"],
+        dependencies=[Depends(require_permission(PermissionKey.ROLES_READ))],
+    )
+    router.add_api_route(
+        "/create", endpoint, name="create_catalog", methods=["POST"],
+        dependencies=[Depends(permission_check)],
+    )
+    parent = APIRouter(prefix="/v1")
+    parent.include_router(router)
+    application = FastAPI()
+    application.include_router(parent, prefix="/api")
+    validate_v1_api_routes(application)
+
+    assert getattr(permission_check, "permission_key", None) == "roles:read"
+    assert application.state.permission_api_routes == {
+        "roles:read": (
+            ("GET", "/api/v1/catalog/a/detail"),
+            ("GET", "/api/v1/catalog/z/list"),
+            ("POST", "/api/v1/catalog/create"),
+        ),
+    }
+
+
+@pytest.mark.parametrize("new_path,new_permission", [
+    ("/api/v1/orders/renamed", PermissionKey.USERS_READ),
+    ("/api/v1/orders/detail", PermissionKey.ROLES_READ),
+    ("/api/v1/orders/renamed", PermissionKey.ROLES_READ),
+])
+def test_changed_route_path_or_permission_rebuilds_only_its_application(
+    new_path: str, new_permission: PermissionKey,
+) -> None:
+    """模拟下一版修改路由路径或权限声明；新应用自动采用新关系，旧应用目录保持原值。"""
+    original = FastAPI()
+    original.add_api_route(
+        "/api/v1/orders/detail", endpoint, name="read_order",
+        dependencies=[Depends(require_permission(PermissionKey.USERS_READ))],
+    )
+    validate_v1_api_routes(original)
+    updated = FastAPI()
+    updated.add_api_route(
+        new_path, endpoint, name="read_order",
+        dependencies=[Depends(require_permission(new_permission))],
+    )
+    validate_v1_api_routes(updated)
+    original_map = original.state.permission_api_routes
+    assert original_map == {"users:read": (("GET", "/api/v1/orders/detail"),)}
+    assert updated.state.permission_api_routes == {new_permission.value: (("GET", new_path),)}
+    assert original_map is not updated.state.permission_api_routes
+
+    # 新增接口后重新启动校验，读取真实的新路由；原应用不跟着增加它。
+    updated.add_api_route(
+        "/api/v1/orders/list", endpoint, name="list_updated_orders",
+        dependencies=[Depends(require_permission(new_permission))],
+    )
+    validate_v1_api_routes(updated)
+    assert updated.state.permission_api_routes == {
+        new_permission.value: tuple(sorted((("GET", new_path), ("GET", "/api/v1/orders/list")))),
+    }
+    assert original.state.permission_api_routes == original_map
+
+
+@pytest.mark.parametrize("has_real_login", [False, True])
+def test_permission_marker_on_unrelated_function_neither_authenticates_nor_associates(has_real_login: bool) -> None:
+    """普通函数伪造 permission_key，既不能冒充完整鉴权，也不能混入权限接口目录。"""
+    async def unrelated_check() -> None:
+        """模拟只有标记、没有真实权限检查的函数，启动时不得执行。"""
+        pytest.fail("route collection must not execute a fake dependency")
+
+    setattr(unrelated_check, "permission_key", "roles:read")  # noqa: B010 - 故意构造伪造的函数标记。
+    application = FastAPI()
+    dependencies = [Depends(unrelated_check)]
+    if has_real_login:
+        dependencies.append(Depends(get_current_user))
+    application.add_api_route(
+        "/api/v1/orders/list", endpoint, name="list_forged_orders", dependencies=dependencies,
+    )
+    if has_real_login:
+        validate_v1_api_routes(application)
+        assert application.state.permission_api_routes == {}
+    else:
+        with pytest.raises(ValueError, match="authenticated authorization dependency"):
+            validate_v1_api_routes(application)
+        assert not hasattr(application.state, "permission_api_routes")
+
+
+@pytest.mark.parametrize("previous_directory", [False, True])
+def test_failed_validation_never_publishes_a_partial_permission_directory(previous_directory: bool) -> None:
+    """后面的路由不合规时，不发布已扫描到的前半份关系，也不覆盖上次成功目录。"""
+    application = FastAPI()
+    application.add_api_route(
+        "/api/v1/orders/detail", endpoint, name="read_valid_order",
+        dependencies=[Depends(require_permission(PermissionKey.USERS_READ))],
+    )
+    if previous_directory:
+        validate_v1_api_routes(application)
+    previous = getattr(application.state, "permission_api_routes", None)
+    application.add_api_route(
+        "/api/v1/orders/invalid", endpoint, name="read_invalid_order",
+        dependencies=[Depends(check_token)],
+    )
+    with pytest.raises(ValueError, match="authenticated authorization dependency"):
+        validate_v1_api_routes(application)
+    if previous_directory:
+        assert application.state.permission_api_routes is previous
+        assert previous == {"users:read": (("GET", "/api/v1/orders/detail"),)}
+    else:
+        assert not hasattr(application.state, "permission_api_routes")
 
 
 @pytest.mark.parametrize("invalid_dependency", ["token_only", "unrelated_factory", "permission_factory"])
@@ -246,11 +384,12 @@ def test_eager_route_support_uses_same_validation(monkeypatch: pytest.MonkeyPatc
             "/api/v1/eager/detail",
             endpoint,
             name="read_eager",
-            dependencies=[Depends(get_current_user)],
+            dependencies=[Depends(require_permission(PermissionKey.ROLES_READ))],
         )
     )
     monkeypatch.setattr(routing, "iter_route_contexts", None)
     validate_v1_api_routes(application)
+    assert application.state.permission_api_routes == {"roles:read": (("GET", "/api/v1/eager/detail"),)}
 
 
 @pytest.mark.asyncio

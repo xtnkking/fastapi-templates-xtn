@@ -15,6 +15,7 @@
 # 2026/11/26    XTN       V1.006        入门测试覆盖客服、数据和开发技术保留名
 # 2026/11/26    XTN       V1.007        入门测试覆盖保留名数字及下划线变体
 # 2026/11/26    XTN       V1.008        入门测试使用直观的用户名校验入口名称
+# 2026/11/26    XTN       V1.009        新密码统一使用密码规则模块并拒绝缺失字符种类
 # --------------------------------------------------------------------------------------------------
 
 
@@ -23,7 +24,7 @@ import uuid
 import pytest
 from pydantic import ValidationError
 
-from app.core.security.passwords import (
+from app.core.security.password_rules import (
     MAX_PASSWORD_CHARACTERS,
     MAX_PASSWORD_INPUT_CHARACTERS,
     PasswordPolicyError,
@@ -93,3 +94,13 @@ def test_password_requests_separate_existing_input_and_new_password_policy() -> 
         registration.password.get_secret_value(), user_name=payload["user_name"],
     ) == "Secret-42"
     assert "Secret-42" not in repr(registration)
+
+
+@pytest.mark.parametrize("password", [
+    "no-uppercase7!", "NO-LOWERCASE7!", "No-digit-here!", "NoSpecialHere7",
+])
+def test_new_password_requires_uppercase_lowercase_digit_and_symbol(password: str) -> None:
+    with pytest.raises(PasswordPolicyError) as caught:
+        validate_new_password(password)
+
+    assert caught.value.reason_code == "password_missing_character_types"

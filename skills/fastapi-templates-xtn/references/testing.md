@@ -154,18 +154,19 @@ When the project uses local passwords, load and test the complete contract in
 hasher or an isolated login-flow mock is not a completed authentication system.
 
 Prove the product questions were answered once: username case comparison,
-password composition and simultaneous-login maximum,
-and existing-account
-enrollment. Then cover the bundled baseline end to end:
+simultaneous-login maximum and existing-account enrollment. Then cover the
+bundled baseline end to end:
 
 - public registration remains available with no state-read or switch-update
   endpoint, while authorized administrator creation remains available;
 - runtime settings and environment examples do not require `APP_ENVIRONMENT`;
   rate limiting remains mandatory without a disable setting or test escape hatch;
 - Argon2id parameters, off-event-loop execution, the per-worker concurrency
-  bound, creation versus login input limits, reserved username and three
-  simple password-pattern checks,
-  and corrupted stored-hash handling;
+  bound, creation versus login input limits, reserved username, three simple
+  password-pattern checks and corrupted stored-hash handling;
+- every new-password path uses `core/security/password_rules.py` and requires
+  an uppercase letter, lowercase letter, digit and special symbol. Cover
+  rejection when any one class is missing, and acceptance when all are present;
 - password admission defaults of 2 running, 4 waiting and a 0.5-second wait,
   including immediate execution with a free slot, queue-full rejection, timeout,
   zero-waiting mode and recovery after rejection/cancellation. Use controllable
@@ -185,7 +186,7 @@ enrollment. Then cover the bundled baseline end to end:
   model validation and direct Service input checks, including empty, invalid
   type, malformed UTF-8 and over-ceiling input; new-password character and
   composition rules must not reject an existing password. Keep field
-  descriptions and bilingual length messages derived from their owning
+  descriptions and bilingual length messages derived from `password_rules.py`
   constants rather than stale numeric strings;
 - nullable `users.password_hash` and `users.password_changed_at`, and unchanged
   `users.token_version`; password-state checks, cleared hash/timestamp on user
@@ -305,6 +306,22 @@ POST /api/v1/users/roles/bind
 POST /api/v1/users/roles/unbind
 ```
 
+Permission list/detail items have the same `id`, `key`, `name`, `group_key`,
+`group_name`, `description` and `api_routes` contract. Verify Chinese/English
+names, group names and descriptions, unchanged keys and routes across languages,
+and unknown permission fallback to its key, the localized `other` group and its
+stored description. Display metadata must not change permission grants.
+
+For `api_routes`, collect from actual assembled routes and their resolved
+permission dependencies at startup. Cover dependency aliases, complete router
+prefixes, one permission used by several routes, nested dependencies,
+deduplication and deterministic method/path ordering. A permission with no HTTP
+consumer returns `[]`; this does not mark it invalid or unused. Verify an
+application rebuild picks up a changed route or permission, separate application
+instances do not share mappings, and list/detail requests use the startup mapping
+without scanning routes or adding database/Redis operations. Keep those checks
+offline and separate from real authorization or PostgreSQL integration evidence.
+
 Every existing-role POST supplies `role_id` in its JSON body. User-role commands
 supply `user_id` in their JSON body; creation has no preexisting target ID.
 
@@ -359,6 +376,18 @@ errors, pagination, route metadata, and disabled documentation-route assertions,
 
 ## Authorization Matrix
 
+The maintainer regressions in `test_authorization_http_matrix.py` compare their
+request cases with the registered routes, exercise real JWT and permission
+dependencies, and isolate Redis replies, account reads and business side effects.
+`test_authorization_service_matrix.py` retains Service decisions and checks
+rejection after locked account reloads; its resource doubles do not prove real
+row locking or transaction rollback. `test_policy.py` covers complete before/after
+authority and every affected shared-role holder. `test_authorization_query_matrix.py`
+executes the Repository's actual role/permission SELECT against SQLite CTE data
+to verify unbinding, soft deletion, cross-user isolation and the distinction
+between display projection and complete authority. Report these boundaries
+separately from real PostgreSQL/Redis integration results.
+
 For every protected capability, cover the meaningful rows of this matrix:
 
 | Context | Expected result |
@@ -387,7 +416,7 @@ Also test:
   mutation, and removal of the final `super_admin`;
 - attempts to use `roles:bind` to create a role or replace its permissions, and
   attempts to assign a role outside the current user's own authority;
-- immutable `super_admin`, `admin`, and `user` role keys, tiers, flags,
+- immutable `super_admin` and `user` role keys, tiers, flags,
   lifecycle, and permission composition through every route and direct service
   entry point;
 - normal registration, administrator creation, identity synchronization, and
@@ -397,9 +426,10 @@ Also test:
   validation, selected case rule, permanent reservation of deleted names, and
   database uniqueness under concurrent registration; existing-project work
   must preserve its chosen identity contract unless a change was requested;
-- `user` denied on every management endpoint; `admin` allowed only for strictly
-  lower users and custom roles, and denied for role deletion, system-role
-  mutation, online `super_admin` handover, peers, and higher targets;
+- `user` denied on every management endpoint; a custom administrator allowed only
+  for strictly lower users and custom roles with its exact held capabilities,
+  including `roles:delete` for deletion, and denied for system-role mutation,
+  online `super_admin` handover, peers, and higher targets;
 - management writes returning `40301` before lookup when capability is absent,
   returning non-leaking `40401` for self, peer, higher, protected, unknown, or
   hidden requested-role targets after capability passes, and reserving `40301`
@@ -414,9 +444,12 @@ Also test:
 - role/user mutation responses using immutable in-transaction snapshots rather
   than post-commit request-session reloads, with nested `bound_role_ids`
   filtered to the current user's visible roles;
-- ordinary role binding unable to grant `super_admin`, `admin` assignment or
-  revocation requiring the current `super_admin`, and no online route to
-  transfer the sole `super_admin`;
+- ordinary role binding unable to grant `super_admin`, custom administrator-role
+  assignment or revocation following normal hierarchy and held-permission checks,
+  and no online route to transfer the sole `super_admin`;
+- only `super_admin` and `user` preconfigured as system roles, no fixed `admin`
+  grants or reserved level `500`, and `admin` usable as an ordinary custom-role
+  key without receiving system flags or permissions by name;
 - the user-owned offline PostgreSQL bootstrap transaction accepting only immutable
   `users.user_id`, requiring an existing live active identity with `user`, assigning
   only `super_admin`, and auditing in one
@@ -428,7 +461,7 @@ Also test:
   atomic transfer;
 - custom-role soft deletion immediately removing effective access while
   atomically tombstoning every live grant and assignment, preventing enablement
-  and key reuse, and leaving all three system roles undeletable; an ordinary
+  and key reuse, and leaving both system roles undeletable; an ordinary
   custom role may use the non-reserved key `owner` without special authority;
 - permission and role bind/unbind batches rejecting duplicate IDs and one bad
   target atomically, and treating already-bound or already-unbound relations as
@@ -451,10 +484,9 @@ Also test:
   holder set is exactly the requested user;
 - successful login upgrading an older valid Argon2id encoding only after the
   exact user and credential are rechecked under lock, while a concurrent
-  credential change cancels the upgrade without overwriting it; two logins that
-  race to upgrade the same legacy hash must both succeed only after the loser
-  verifies the winner's current-parameter hash outside locks and then re-locks
-  and compares the exact user and credential state;
+  credential change cancels the upgrade without overwriting it; when two logins
+  race to upgrade the same legacy hash, the loser rejects the changed hash
+  without verifying the password a second time or issuing a Token;
 - direct service calls, background tasks, and WebSockets that could bypass route
   dependencies;
 - the default exact `user_id`/`jti`/`iat`/`exp`/`token_type` profile, the

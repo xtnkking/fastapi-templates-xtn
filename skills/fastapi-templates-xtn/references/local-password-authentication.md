@@ -17,19 +17,19 @@ delivery provider. Before implementation, ask in one batch:
    behavior is a generic recommendation and `全部接受` / `Accept all` cannot
    choose it. Leading/trailing spaces always trim, and deleted usernames remain
    permanently reserved.
-2. Besides length 8..32 characters, must the password contain uppercase,
-   lowercase, digits, or symbols? Each composition condition defaults to no.
-3. What is the maximum simultaneously active login count for one user? The
+2. What is the maximum simultaneously active login count for one user? The
    number is the project's choice and must be a positive integer. Do not invent
    or recommend a generic number, and do not let `全部接受` / `Accept all` supply
    a missing number. When full, a successful new login atomically evicts the
    oldest. These are Redis login records and timestamps, not a physical-device
    inventory.
-4. If existing users have no password, how will an administrator verify and
+3. If existing users have no password, how will an administrator verify and
    enroll them? The administrator may set a new password after verifying their
    identity outside the API; never use a shared initial password.
 
-Show quota defaults together and allow the user to accept them or name changes.
+Explain the shared new-password rules below with the quota defaults; do not
+ask whether each required character class should be enabled. Allow the user to
+name a deliberate policy change.
 Do not ask repeatedly about already decided product facts. `iss`/`aud` require
 their own explicit consent as described in [JWT security](jwt-session-security.md).
 Tell the owner separately that Access Tokens default to 86,400 seconds (24
@@ -77,9 +77,13 @@ authentication code. See [Identity lifecycle](identity-soft-delete.md#direct-sql
   punctuation are allowed; spaces, Chinese, emoji and invisible characters are
   not. Do not trim, case-fold, or normalize the password. The limited character
   set is for predictable input, not protection against SQL injection; continue
-  storing only the Argon2id hash through structured database APIs. Composition
-  rules above are project choices, not
-  automatic requirements. Reject only a password consisting wholly of a
+  storing only the Argon2id hash through structured database APIs.
+  New passwords must contain at least one uppercase letter, one lowercase letter,
+  one digit, and one English special character. Here special characters mean
+  visible ASCII punctuation. Registration,
+  administrator creation, self-change, administrator reset and offline password
+  setting all call the same `validate_new_password` policy. Also reject a password
+  consisting wholly of a
   consecutive ascending/descending numeral or ASCII letter sequence, a
   repetition of one character, or exactly the complete username ignoring
   case. In the last case say "密码不能与用户名相同". Do not add a mandatory common
@@ -94,7 +98,7 @@ authentication code. See [Identity lifecycle](identity-soft-delete.md#direct-sql
   characters. An out-of-range HTTP input returns request-validation code `42201`.
   Do not add `AfterValidator`, a custom length-validator wrapper, a third
   `ExistingPassword` alias or a separate module for these two field types.
-  Password creation also checks the character, weak-password and chosen
+  Password creation also checks the character, weak-password and mandatory
   composition rules in the business policy. Login and current-password
   verification only check input type, nonempty value, valid UTF-8 and the
   independent input ceiling before checking the stored hash; they never apply
@@ -106,7 +110,23 @@ authentication code. See [Identity lifecycle](identity-soft-delete.md#direct-sql
   public `40110` failure. Keep the candidate password and hash out of logs,
   audit, and responses.
 
-`app/core/security/passwords.py` owns `MIN_PASSWORD_CHARACTERS` and
+Login rejection uses the separate `auth.login_failed` message key: tell every
+rejected caller to check their login details and try again; if they still cannot
+sign in, contact the platform for help. Do not assume they forgot a password or
+identify a specific failure cause. Keep HTTP `401`,
+business code `40110`, null `data` and the same message for unknown, wrong-password,
+disabled, deleted, password-less and concurrently changed accounts. Never reveal
+which check failed, the remaining attempts for an account, or a state-specific
+recovery action. Token authentication failures retain their generic message;
+they must not tell an already logged-in caller to check a submitted password.
+The baseline has no self-service password-recovery route. A login retry needs
+a fresh login CAPTCHA because the previous challenge was already consumed.
+Uniform messages reduce account-state disclosure; the existing per-IP limits
+and single-use CAPTCHA continue to defend against automated login attempts.
+
+`app/core/security/password_rules.py` owns password input rules:
+`validate_new_password`, `validate_login_password_input`, `PasswordPolicyError`,
+shared field descriptions, `MIN_PASSWORD_CHARACTERS` and
 `MAX_PASSWORD_CHARACTERS` for newly set passwords, plus
 `MAX_PASSWORD_INPUT_CHARACTERS` for login and old-password input. Change the
 first two constants to adjust the new-password policy; the `NewPassword`
@@ -123,6 +143,10 @@ For example, changing the new minimum from 8 to 10 still allows a valid existing
 later allows new passwords longer than the input ceiling, first assess resource
 cost and deliberately update that ceiling; do not silently synchronize the two
 maximums or create passwords that the login input contract cannot accept.
+Keep rule changes in this owner, just as username rules belong in `user_name.py`;
+do not copy composition checks into registration, password-change or reset
+Services. `passwords.py` imports those rules and owns Argon2 hashing, verification
+and its bounded calculation queue.
 
 Use Argon2id off the async event loop, bounded concurrency, and a benchmarked
 starting profile (memory 65536 KiB, time 3, parallelism 4, hash length 32,
@@ -184,7 +208,7 @@ toggle contract in the default project. An initial account from either creation 
 always gets exactly `user` and never accepts a requested role, tier, protection,
 or JWT claim from the request.
 The fixed `user` role grants `account:read` and `account:change_password`; both
-keys are also explicitly present in the administrator role allowlists. These
+keys are also explicitly present in the super-administrator allowlist. These
 two own-account routes use `require_permission` with ordinary user quotas,
 not management quotas. CAPTCHA issuance still requires login without an
 operation permission; receiving an image does not grant the later operation.

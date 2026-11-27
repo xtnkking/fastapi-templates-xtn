@@ -201,6 +201,7 @@ class PermissionService:
     async def list_permissions(self, session: AsyncSession, *,
                                page: int,
                                page_size: int,
+                               permission_api_routes: Mapping[str, tuple[tuple[str, str], ...]],
                                locale: str = DEFAULT_LOCALE
                                ) -> PageResponse[PermissionResponse]:
         """
@@ -210,35 +211,33 @@ class PermissionService:
         :param session: 调用方管理生命周期的 PostgreSQL 异步会话。
         :param page: 从 1 开始且已通过范围校验的页码。
         :param page_size: 已通过接口上限校验的每页条数。
+        :param permission_api_routes: 启动时已整理好的权限与接口映射，本次只读取，不重新扫描路由。
         :param locale: 接口通过 locale_for_request(request) 协商的展示语言，直接调用时默认中文。
         :return: 当前页权限列表、页码、每页条数和未删除权限总数。
         """
-        # 页码换算为跳过的记录数；列表和计数采用同一未删除范围。
+        # 1. 页码换算为跳过的记录数；列表和计数采用同一未删除范围。
         offset = (page - 1) * page_size
-        total = await permission_repository.count_live_permissions(session)
+        total_permissions = await permission_repository.count_live_permissions(session)
         permissions = await permission_repository.list_live_permissions(
             session,
             offset=offset,
             limit=page_size,
         )
-        # 只公开接口承诺的字段，新增数据库内部字段不会自动进入响应。
-        items = [
-            PermissionResponse(
-                id=item.id,
-                key=item.key,
-                description=get_permission_description(
-                    item.key,
-                    stored_description=item.description,
-                    locale=locale,
-                ),
+        # 2. 共用字段转换，把名称、分组和已收集的关联接口一起放入结果。
+        permission_responses = [
+            self._build_permission_response(
+                permission,
+                permission_api_routes=permission_api_routes,
+                locale=locale,
             )
-            for item in permissions
+            for permission in permissions
         ]
+        # 3. 带上分页信息返回，当前页没有权限时列表为空。
         return PageResponse(
-            items=items,
+            items=permission_responses,
             page=page,
             page_size=page_size,
-            total=total,
+            total=total_permissions,
         )
 ```
 

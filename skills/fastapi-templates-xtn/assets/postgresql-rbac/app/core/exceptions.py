@@ -18,13 +18,16 @@
 # 2026/10/10    XTN       V1.009        密码长度规则使用统一的中英文消息键
 # 2026/10/13    XTN       V1.010        补充错误对象构造和密码提示回退的通俗步骤
 # 2026/10/16    XTN       V1.011        异常构造器名称统一标明固定 HTTP 状态
+# 2026/11/26    XTN       V1.012        缺少密码字符类型时返回统一的双语组合提示
+# 2026/11/27    XTN       V1.013        登录失败改用统一的操作指引，不公开账号状态
+# 2026/11/27    XTN       V1.014        登录失败的求助说明统一指向平台
 # --------------------------------------------------------------------------------------------------
 
 from fastapi import status
 
 from app.core.codes import BusinessCode
 from app.core.i18n.messages import MessageKey
-from app.core.security.passwords import PasswordPolicyError
+from app.core.security.password_rules import PasswordPolicyError
 
 
 class AppError(Exception):
@@ -65,11 +68,11 @@ class InvalidLoginCredentialsError(AppError):
 
         :return: 无返回值；异常可由通用业务错误处理器返回相同的 401 响应。
         """
-        # 账号不存在、停用和密码错误共用同一对外提示，避免登录接口透露账号状态。
+        # 所有账号失败都提示检查输入、联系平台，不公开具体原因；Token 失效仍用通用认证提示。
         super().__init__(
             status_code=status.HTTP_401_UNAUTHORIZED,
             business_code=BusinessCode.INVALID_AUTHENTICATION,
-            message_key=MessageKey.ERROR_UNAUTHENTICATED,
+            message_key=MessageKey.AUTH_LOGIN_FAILED,
             reason_code="invalid_login_credentials",
         )
 
@@ -133,6 +136,7 @@ def password_policy_response_400(exc: PasswordPolicyError) -> AppError:
     message_keys = {
         "password_same_as_user_name": MessageKey.ERROR_PASSWORD_SAME_AS_USER_NAME,
         "password_common_or_weak": MessageKey.ERROR_PASSWORD_COMMON_OR_WEAK,
+        "password_missing_character_types": MessageKey.ERROR_PASSWORD_COMPOSITION,
         "password_empty": MessageKey.ERROR_PASSWORD_LENGTH,
         "password_too_short": MessageKey.ERROR_PASSWORD_LENGTH,
         "password_too_long": MessageKey.ERROR_PASSWORD_LENGTH,

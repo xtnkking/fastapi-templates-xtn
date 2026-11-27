@@ -17,6 +17,7 @@
 # 2026/10/24    XTN       V1.008        验证码场景名称明确具体用户操作
 # 2026/11/26    XTN       V1.009        新增技术及客服保留名仍返回明确的用户名错误
 # 2026/11/26    XTN       V1.010        保留名数字下划线变体保持明确的请求错误类型
+# 2026/11/26    XTN       V1.011        新密码字段统一引用密码规则说明和长度边界
 # --------------------------------------------------------------------------------------------------
 
 """验证身份接口文档、输入边界和安全本地化提示，不连接数据库或 Redis。"""
@@ -30,7 +31,7 @@ from pydantic import BaseModel, ValidationError
 
 import app.dependencies.captcha as captcha_dependencies
 from app.core.captcha import CaptchaScene
-from app.core.security.passwords import (
+from app.core.security.password_rules import (
     MAX_PASSWORD_CHARACTERS,
     MAX_PASSWORD_INPUT_CHARACTERS,
     MIN_PASSWORD_CHARACTERS,
@@ -129,7 +130,10 @@ def test_openapi_describes_trimmed_usernames_and_password_contracts() -> None:
         assert f"{MIN_PASSWORD_CHARACTERS}～{MAX_PASSWORD_CHARACTERS}" in password["description"]
         assert password["writeOnly"] is True
         assert "可见的英文字母" in password["description"]
-        assert "项目密码策略决定" in password["description"]
+        assert "大写字母" in password["description"]
+        assert "小写字母" in password["description"]
+        assert "数字" in password["description"]
+        assert "特殊符号" in password["description"]
     for model, field in (("LoginRequest", "password"), ("PasswordChangeRequest", "current_password")):
         password = schemas[model]["properties"][field]
         assert (password["minLength"], password["maxLength"]) == (1, MAX_PASSWORD_INPUT_CHARACTERS)

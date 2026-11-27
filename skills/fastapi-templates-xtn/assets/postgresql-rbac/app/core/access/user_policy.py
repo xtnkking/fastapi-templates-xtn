@@ -15,6 +15,7 @@
 # 2026/10/20    XTN       V1.005        用户管理统一比较 role_level，角色自身使用 level
 # 2026/10/24    XTN       V1.006        用户角色变更检查使用 bind 和 unbind 权限名
 # 2026/10/26    XTN       V1.007        用户角色权限信息类型统一命名为 UserInfo
+# 2026/11/27    XTN       V1.008        admin 按普通自定义角色检查，取消按名称限制其分配人
 # --------------------------------------------------------------------------------------------------
 
 
@@ -57,8 +58,8 @@ def decide_role_change(*, operation: str,
     """
         检查用户绑定或解绑角色的权限，并同时约束变更前后的目标等级和权限。
 
-        禁止管理本人、在线授予超级管理员或解绑默认 user 角色；admin 仅能由
-        超级管理员分配或撤销，任何变更均不得超过操作者的现有权限。
+        禁止管理本人、在线授予超级管理员或解绑默认 user 角色。
+        自定义角色按等级和权限检查，不因名称叫 admin 就获得特殊待遇。
 
     :param operation: 角色关系操作，bind 表示绑定，unbind 表示解绑。
     :param current_user: 当前操作者的授权快照。
@@ -93,8 +94,6 @@ def decide_role_change(*, operation: str,
             return deny("super_admin_assignment_offline_only")
         if operation == "unbind" and role.key == SystemRoleKey.USER.value:
             return deny("default_user_role_required")
-        if role.key == SystemRoleKey.ADMIN.value and not current_user.is_super_admin:
-            return deny("super_admin_required")
         if not role_within_user_authority(current_user, role):
             return deny("permission_ceiling_exceeded")
         if current_user.role_level <= role.level:

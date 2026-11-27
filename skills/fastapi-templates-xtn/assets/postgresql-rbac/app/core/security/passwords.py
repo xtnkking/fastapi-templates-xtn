@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # 说明:
-#    实现密码边界校验及有并发上限的 Argon2id 哈希和验证。
+#    执行有并发和排队上限的 Argon2id 哈希与验证；密码规则在 password_rules.py 维护。
 # History:
 # Date          Author    Version       Modification
 # --------------------------------------------------------------------------------------------------
@@ -20,6 +20,7 @@
 # 2026/10/16    XTN       V1.011        新密码沿用输入边界的最大长度检查，删除重复判断
 # 2026/10/20    XTN       V1.012        登录输入上限独立于新密码策略，收紧策略不影响旧密码验证
 # 2026/10/20    XTN       V1.013        限制本进程密码任务的排队人数和等待时间，繁忙时及时拒绝
+# 2026/11/26    XTN       V1.014        密码规则移到 password_rules，保留 Argon2 与本进程计算排队
 # --------------------------------------------------------------------------------------------------
 
 
@@ -33,19 +34,14 @@ from argon2 import PasswordHasher, extract_parameters
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from argon2.low_level import Type
 
+from app.core.security.password_rules import validate_login_password_input, validate_new_password
+
 # 单次 Argon2id 运算的内存预算，单位 KiB；65,536 KiB 约为 64 MiB，提高会增加每次登录的内存压力。
 ARGON2_MEMORY_COST_KIB: Final = 65_536
 ARGON2_TIME_COST: Final = 3  # 内存处理轮数；提高会增加破解成本，也会增加登录耗时。
 ARGON2_PARALLELISM: Final = 4  # 单次计算的并行度，不是允许同时登录的用户数。
 ARGON2_HASH_LENGTH: Final = 32  # 哈希输出长度，单位字节；编码到数据库后字符串会更长。
 ARGON2_SALT_LENGTH: Final = 16  # 每次随机盐的长度，单位字节；盐由哈希器生成，不使用固定盐。
-# 新密码长度按字符计；注册、创建用户、改密和重置的请求约束及提示自动引用。
-# 修改这两个值不改变登录和旧密码验证；修改源码后重启服务，前端设置密码的限制也要同步。
-MIN_PASSWORD_CHARACTERS: Final = 8
-MAX_PASSWORD_CHARACTERS: Final = 32
-# 所有密码输入的传输上限，单位字符，用于拦截异常大输入；不是新密码允许的长度。
-# 不随新密码策略收紧而改变，避免已有用户的原密码被拒绝；放宽新密码长度时不能超过此值。
-MAX_PASSWORD_INPUT_CHARACTERS: Final = 1_024
 # 每个应用进程最多同时运行两个密码哈希/验证任务；多进程部署的总内存消耗需乘以进程数。
 DEFAULT_MAX_CONCURRENT_OPERATIONS: Final = 2
 DEFAULT_MAX_WAITING_OPERATIONS: Final = 4  # 每进程另外最多等候四项；0 表示没有空位就立即拒绝。
@@ -60,23 +56,6 @@ DUMMY_PASSWORD_HASH: Final = (
 )
 
 _T = TypeVar("_T")
-
-
-class PasswordPolicyError(ValueError):
-    """
-        携带固定密码规则原因码，由上层翻译为用户可理解的提示，禁止附带密码原文。
-    """
-
-    def __init__(self, reason_code: str) -> None:
-        """
-            保存密码规则失败原因，供上层映射为统一业务消息。
-
-        :param reason_code: 不包含密码原文的固定失败原因代码。
-        :return: 无返回值，初始化密码校验异常。
-        """
-        # 步骤：同时保存原因码和标准异常消息，让上层用固定原因选择文案而不接触密码原文。
-        self.reason_code = reason_code
-        super().__init__(reason_code)
 
 
 class PasswordHashError(RuntimeError):
@@ -111,80 +90,6 @@ class PasswordVerification:
     verified: bool  # 输入密码是否匹配；账号状态和登录权限仍由业务层继续检查。
     needs_rehash: bool  # 旧哈希参数需要升级；不是要求用户更换密码，而是重新计算存储值。
     used_dummy: bool  # 是否用占位哈希模拟运算；账号不存在也耗时验证，减少通过耗时猜用户名。
-
-
-def validate_login_password_input(password: str) -> str:
-    """
-        仅校验登录密码的传输边界，不用新密码强度规则拒绝既有合法密码。
-
-    :param password: 用户提交的原始密码，不去除空格或改写字符。
-    :return: 通过非空、字符数及 UTF-8 编码检查的原密码。
-    :raises PasswordPolicyError: 类型、编码或长度不符合登录输入边界。
-    """
-
-    # 步骤 1：先检查字符串、非空和字符数，不按新密码规则拒绝已存在的登录密码。
-    if not isinstance(password, str):
-        raise PasswordPolicyError("password_invalid_type")
-    if not password:
-        raise PasswordPolicyError("password_empty")
-    if len(password) > MAX_PASSWORD_INPUT_CHARACTERS:
-        raise PasswordPolicyError("password_too_long")
-    # 步骤 2：确认原文可以编码为 UTF-8，成功后原样交给哈希器，不去除空白或改写字符。
-    # 传输字符数已有独立上限，无须再增加一个远大于可能输入的字节限制。
-    # 仍显式拒绝无法编码的代理字符，避免把底层 UnicodeEncodeError 交给接口。
-    try:
-        password.encode("utf-8")
-    except UnicodeEncodeError:
-        raise PasswordPolicyError("password_invalid_unicode") from None
-    return password
-
-
-def validate_new_password(password: str, *, user_name: str | None = None) -> str:
-    """
-        校验新密码长度、可见 ASCII 字符范围及简单弱密码模式。
-
-        连续序列只针对整段为纯 ASCII 字母或纯数字的升降序；
-        大小写比较不会改写实际密码，也不默认要求大小写、数字或特殊符号组合。
-        ASCII 33～126 包含英文、数字和常见英文标点，不包含空格及任何非 ASCII 字符。
-
-    :param password: 将用于哈希的原始新密码。
-    :param user_name: 当前账号用户名；默认 None 跳过用户名比较，提供时拒绝忽略大小写后完全相同的密码。
-    :return: 通过新密码规则的原字符串，不裁剪或归一化。
-    :raises PasswordPolicyError: 密码越界、含不允许的字符、过于简单或与用户名完全相同。
-    :raises TypeError: 提供的 user_name 既不是字符串，也不是 None。
-    """
-
-    # 步骤 1：先检查输入边界，再按当前新密码策略检查长度和字符范围。
-    # 登录和旧密码验证不走下面的策略，避免提高要求后把已有用户挡在外面。
-    validate_login_password_input(password)
-    if len(password) < MIN_PASSWORD_CHARACTERS:
-        raise PasswordPolicyError("password_too_short")
-    if len(password) > MAX_PASSWORD_CHARACTERS:
-        raise PasswordPolicyError("password_too_long")
-    if any(not 33 <= ord(character) <= 126 for character in password):
-        raise PasswordPolicyError("password_invalid_character")
-
-    # 步骤 2：检查整段重复字符及纯字母、纯数字的连续升降序，避免容易猜出的简单密码。
-    # 新密码已经限定为 ASCII；只转小写比较弱模式，实际哈希仍使用用户输入的原文。
-    lowercase_password = password.lower()
-    if len(set(lowercase_password)) == 1:
-        raise PasswordPolicyError("password_common_or_weak")
-    # 只拦截整段纯字母或纯数字的相邻升降序；混合或局部序列不在这条规则内。
-    if lowercase_password.isdigit() or lowercase_password.isalpha():
-        # 与去掉首字符的序列逐位比较；两边长度相差一位，因此允许 zip 提前结束。
-        steps = [
-            ord(right) - ord(left)
-            for left, right in zip(lowercase_password, lowercase_password[1:], strict=False)
-        ]
-        if len(set(steps)) == 1 and steps[0] in (-1, 1):
-            raise PasswordPolicyError("password_common_or_weak")
-    # 步骤 3：有用户名时检查其类型并作完整比较；不因密码包含用户名的一部分就拦截。
-    # 比较忽略大小写，但通过检查的密码仍保留用户输入的原文。
-    if user_name is not None and not isinstance(user_name, str):
-        raise TypeError("user_name must be a string or None")
-    if user_name is not None and lowercase_password == user_name.lower():
-        raise PasswordPolicyError("password_same_as_user_name")
-    return password
 
 
 class PasswordManager:

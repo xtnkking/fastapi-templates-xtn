@@ -27,6 +27,7 @@
 # 2026/10/15    XTN       V2.010        移除路由重复的日志动作和结果赋值，保留权限查询流程
 # 2026/10/19    XTN       V2.011        权限查询 ID 校验统一从公共模型导入
 # 2026/10/22    XTN       V2.012        权限目录业务显式选择管理额度，与权限要求分开
+# 2026/11/28    XTN       V2.013        列表和详情返回业务分组、名称及启动时收集的关联接口
 # --------------------------------------------------------------------------------------------------
 
 
@@ -65,7 +66,7 @@ async def list_permissions(request: Request,
                            page_size: Annotated[int, Query(ge=1, le=200, description="每页条数，默认 20 条。")] = 20
                            ) -> ApiResponse[PageResponse[PermissionResponse]]:
     """
-        分页读取未软删除的权限目录，按权限标识和 ID 稳定排序。
+        分页读取未删除权限，返回名称、分组、说明及实际关联接口。
         访问条件：已登录且账号可用。
         所需权限：permissions:read（查看系统权限目录）；普通 user 角色默认没有此权限。
 
@@ -76,11 +77,12 @@ async def list_permissions(request: Request,
     :param page_size: 每页条数，HTTP 接口限制在 1 至 200。
     :return: 包含权限条目、页码、每页条数和总数的统一响应。
     """
-    # 权限依赖已放行；分页、总数和响应字段由同一个业务服务组装，接口不直接拼数据库查询。
+    # 权限已通过；把本应用启动时收集的接口目录交给服务，不在请求期间扫描路由。
     data = await permission_service.list_permissions(
         db,
         page=page,
         page_size=page_size,
+        permission_api_routes=request.app.state.permission_api_routes,
         locale=locale_for_request(request),
     )
     # 2. 将权限分页结果和查询成功提示包装成统一响应。
@@ -98,7 +100,7 @@ async def get_permission_detail(request: Request,
                                 db: Annotated[AsyncSession, Depends(get_postgres_session)]
                                 ) -> ApiResponse[PermissionResponse]:
     """
-        查询未软删除的权限详情；不存在时返回统一资源不存在错误。
+        查询权限详情及其名称、分组、说明和关联接口；不存在或已删除时返回 404。
         访问条件：已登录且账号可用。
         所需权限：permissions:read（查看单个权限定义）。
         目标限制：这里只查询权限目录定义，不会读取某个用户的完整权限。
@@ -113,6 +115,7 @@ async def get_permission_detail(request: Request,
     data = await permission_service.get_permission_detail(
         db,
         permission_id=permission_id,
+        permission_api_routes=request.app.state.permission_api_routes,
         locale=locale_for_request(request),
     )
     # 2. 返回该权限的详情和查询成功提示，不改变权限分配。

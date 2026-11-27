@@ -31,8 +31,17 @@ default project registry/export.
 Role models and request/response fields use `level` for that role's level.
 User authority and user responses use `role_level` for the highest level among
 the user's active, non-deleted roles, or `0` when there are none. Larger values
-mean higher authority; the fixed system-role levels remain `1000`/`500`/`0`
-for `super_admin`/`admin`/`user`, and custom-role levels remain `1..999`.
+mean higher authority; the fixed system-role levels are `1000`/`0`
+for `super_admin`/`user`, and custom-role levels remain `1..999`.
+There is no default `admin` role or reserved level `500`. Create an ordinary
+custom role and grant its required permissions when an administrator is needed;
+the key `admin` alone grants no special authority.
+Updating the source does not remove an existing database's former system
+`admin`. Its owner must review the role, bindings, constraints and immutable-role
+protections, then choose a reviewed conversion to a normal custom role or
+unbind it before removal. No role, permission or account is automatically
+deleted, and the historical Alembic sequence is not a fresh current-baseline
+schema recipe.
 
 ## Source Layout
 
@@ -242,14 +251,18 @@ start the application. Ask the product owner for a positive
 Administrator creation and password reset set a password the user can use
 immediately. The administrator must deliver it privately; the API does not echo
 it. Neither operation requires a second password-setup step.
-New-password fields default to 8..32 characters. Change
+New-password fields default to 8..32 visible ASCII characters and require at
+least one uppercase letter, lowercase letter, digit and special symbol.
+Registration, administrator creation, self-change and administrator reset reuse
+`validate_new_password` in `app/core/security/password_rules.py`. Change
 `MIN_PASSWORD_CHARACTERS` and `MAX_PASSWORD_CHARACTERS` in
-`app/core/security/passwords.py`, then restart; request constraints, field text
+that file, then restart; request constraints, field text
 and Chinese/English policy messages use those shared bounds. Login and
 current-password input instead permit nonempty text up to the independent
 `MAX_PASSWORD_INPUT_CHARACTERS` ceiling, default 1024; changing the new-password
 policy does not invalidate existing passwords. Keep a separately developed
-frontend's input limits aligned.
+frontend's input limits aligned. `passwords.py` owns Argon2 hashing, verification
+and the bounded calculation queue, while `password_rules.py` owns input rules.
 The Access Token lasts 86,400 seconds (24 hours) by default. Shorten it for
 high-risk or administrative surfaces, and choose a lifetime appropriate for
 this product. Leave `JWT_ISSUER` and `JWT_AUDIENCE` both unset unless the

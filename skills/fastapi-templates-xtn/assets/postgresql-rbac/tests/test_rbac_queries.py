@@ -31,6 +31,8 @@
 # 2026/10/26    XTN       V1.022        空角色集合交由权限仓储直接返回，验证不执行数据库查询
 # 2026/10/26    XTN       V1.023        精简角色单值查询接线，保留绑定行锁和无序权限汇总验证
 # 2026/11/26    XTN       V1.024        测试使用字符串业务 ID，并明确查询与筛选替身类型
+# 2026/11/27    XTN       V1.025        管理员查询夹具按普通自定义角色标记，不再使用系统身份
+# 2026/11/28    XTN       V1.026        权限目录查询带上展示字段和已收集的关联接口，不改变 SQL 范围
 # --------------------------------------------------------------------------------------------------
 
 """权限查询与软解绑的隔离范围验证。"""
@@ -54,8 +56,9 @@ from sqlalchemy.sql.selectable import Subquery
 
 from app.commands.operator_password_repository import operator_password_repository
 from app.core.access.authorization import AuthorizationContext, LoginInfo, RoleGrant, UserInfo
-from app.core.access.permissions import PermissionKey
+from app.core.access.permissions import PERMISSION_CATALOG, PERMISSION_GROUP_NAMES, PermissionGroup, PermissionKey
 from app.core.exceptions import AppError
+from app.core.i18n.messages import translate_for_locale
 from app.core.ids import new_entity_id
 from app.db.redis_db import RedisClient
 from app.models.postgres.permission import Permission
@@ -973,7 +976,7 @@ _ROLE_FILTER_FIXTURE_SQL = r"""
         ('R-underscore', 'd-underscore', 'Reader 100%Xdone', 40, 1, 0, 0, 0, NULL),
         ('R-escape', 'e-escape', 'Reader path/done', 40, 1, 0, 0, 0, NULL),
         ('R-system', 'user', 'User', 0, 1, 1, 0, 0, NULL),
-        ('R-peer', 'admin', 'Administrator', 500, 1, 1, 0, 0, NULL),
+        ('R-peer', 'admin', 'Administrator', 500, 1, 0, 0, 0, NULL),
         ('R-higher', 'higher', 'Higher', 600, 1, 0, 0, 0, NULL),
         ('R-protected', 'protected', 'Protected', 400, 1, 1, 1, 0, NULL),
         ('R-super', 'super_admin', 'Super administrator', 1000, 1, 1, 1, 1, NULL),
@@ -1038,7 +1041,7 @@ async def test_role_filters_execute_with_the_same_count_and_page_scope(
         roles=(RoleGrant(
             role_id="R-current", key="super_admin" if super_admin else "admin",
             level=1000 if super_admin else 500, permissions=frozenset(),
-            is_system=True, is_protected=super_admin, is_super_admin=super_admin,
+            is_system=super_admin, is_protected=super_admin, is_super_admin=super_admin,
         ),),
     )
     scalar = AsyncMock(return_value=len(expected_ids))
@@ -1183,7 +1186,7 @@ async def test_permission_count_and_page_exclude_soft_deleted_entries() -> None:
     scalars = AsyncMock(return_value=SimpleNamespace(all=lambda: []))
     session = cast(AsyncSession, SimpleNamespace(scalar=scalar, scalars=scalars))
 
-    page = await permission_service.list_permissions(session, page=2, page_size=20)
+    page = await permission_service.list_permissions(session, page=2, page_size=20, permission_api_routes={})
 
     assert page.items == []
     assert (page.page, page.page_size, page.total) == (2, 20, 3)
@@ -1212,11 +1215,20 @@ async def test_permission_detail_returns_public_fields_or_original_not_found(fou
     session = cast(AsyncSession, SimpleNamespace(execute=execute))
 
     if found:
-        detail = await permission_service.get_permission_detail(session, permission_id=permission_id)
-        assert detail.model_dump() == {"id": permission_id, "key": "projects:read", "description": "读取项目"}
+        detail = await permission_service.get_permission_detail(
+            session, permission_id=permission_id, permission_api_routes={})
+        spec = PERMISSION_CATALOG[PermissionKey.PROJECTS_READ]
+        assert detail.model_dump() == {
+            "id": permission_id, "key": "projects:read",
+            "name": translate_for_locale("zh-CN", spec.name),
+            "group_key": "projects",
+            "group_name": translate_for_locale("zh-CN", PERMISSION_GROUP_NAMES[PermissionGroup.PROJECTS]),
+            "description": "读取项目", "api_routes": (),
+        }
     else:
         with pytest.raises(AppError) as caught:
-            await permission_service.get_permission_detail(session, permission_id=permission_id)
+            await permission_service.get_permission_detail(
+                session, permission_id=permission_id, permission_api_routes={})
         assert caught.value.status_code == 404
         assert caught.value.reason_code == "permission_not_found"
 

@@ -69,8 +69,10 @@ Sentinel、Cluster、读写分离和独立 Redis 都按需启用。本版增加�
 - 新项目只用 `user_name` 和密码，不默认提供邮箱登录或“忘记密码”自助接口。用户名
   去首尾空白，限制为 3～32 位 ASCII 英文字母、数字、下划线；12 个完整敏感名称禁止
   使用，软删除后名字也不能给别人。生成项目时询问用户名是否区分大小写；已有项目
-  的其他身份规则不能擅自改。新密码默认 8～60 字符，拦截三种明显简单模式；是否
-  强制大写、小写、数字或特殊字符，要与实际项目的使用者确认。
+  的其他身份规则不能擅自改。新密码默认 8～32 位可见 ASCII 字符，必须同时包含
+  大写字母、小写字母、数字和英文特殊符号。规则统一在
+  `app/core/security/password_rules.py` 维护；登录和验证旧密码使用独立的输入长度
+  限制，不套用新密码强度规则。
 - 自行注册不提供开关或注册状态查询接口，注册始终可用，但仍需通过图形验证码和
   按 IP 限流。有权限的管理员也可新增用户，两种创建方式都只绑定 `user` 角色。
   普通业务的查询和操作
@@ -96,7 +98,8 @@ Sentinel、Cluster、读写分离和独立 Redis 都按需启用。本版增加�
 - 首位 `super_admin` 由开发人员手工在数据库中建立角色绑定，以后更换也由
   授权人员在可信环境自行处理，不开放在线转移接口。新项目交付模型及必要说明，
   不生成或执行迁移、初始化、交接脚本。系统内始终只
-  有一位超级管理员。`admin`、`user` 固定系统角色、每人最多十个活跃角色、只能
+  有一位超级管理员。固定系统角色只保留 `super_admin`、`user`，不预置 `admin`；
+  管理员按需创建普通自定义角色并明确分配权限，500 级不保留。每人最多十个活跃角色、只能
   管理严格低于自己等级的对象、不能自行提权、软删除以及数据库写入和审计同事务
   都保留。授予者只能授予自己已拥有的权限；不另设 `can_delegate` 管理子系统。
 - JWT 默认 24 小时，只包含 `sub`、`jti`、`iat`、`exp` 和 `token_type`；其中 `sub`
@@ -160,9 +163,12 @@ FastAPI 请求不会自动选中它。维护者和下载使用者可以先看
 [`app/core/access/permissions.py`](skills/fastapi-templates-xtn/assets/postgresql-rbac/app/core/access/permissions.py)，
 系统角色、等级和授权白名单集中在
 [`app/core/access/roles.py`](skills/fastapi-templates-xtn/assets/postgresql-rbac/app/core/access/roles.py)。
-`PERMISSION_CATALOG` 的值是描述文案键；初始化文本用
-`get_permission_description(key)` 获取，默认中文。内置描述跟随请求语言，权限码和数据库
-自定义文案保持原值。新增业务权限时，按
+`PERMISSION_CATALOG` 的值是 `PermissionSpec`，集中记录名称文案键、明确的
+`PermissionGroup` 分组和描述文案键；分组名称由 `PERMISSION_GROUP_NAMES` 维护。
+名称、分组名称和内置描述跟随请求语言，权限标识和分组标识保持固定。
+初始化数据库描述仍用 `get_permission_description(key)` 获取，默认中文。
+权限列表和详情还返回 `api_routes`：启动时从实际路由的权限依赖收集一次，查询时读取应用内存。
+新增权限和分组文案时，按
 [API 多语言规范](skills/fastapi-templates-xtn/references/api-internationalization.md) 同时补齐中英文文案。
 
 新增或整理代码时，遵循[复用与抽象规范](skills/fastapi-templates-xtn/references/reuse-and-abstraction.md)：

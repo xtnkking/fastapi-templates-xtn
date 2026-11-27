@@ -13,6 +13,8 @@
 # 2026/10/26    XTN       V1.004        用户权限信息类型统一使用 UserInfo，保持原有验证行为
 # 2026/10/26    XTN       V1.005        普通用户策略用例使用实际基础权限集合
 # 2026/11/26    XTN       V1.006        管理能力用例补齐基础权限并采用业务字符串 ID
+# 2026/11/26    XTN       V1.007        补齐角色绑定权限上限、共享角色影响范围及拒绝优先级矩阵
+# 2026/11/27    XTN       V1.008        管理员改为自定义测试角色，仅保留两个系统角色的保护
 # --------------------------------------------------------------------------------------------------
 
 from collections.abc import Callable
@@ -30,7 +32,6 @@ from app.core.access.role_policy import (
     is_administrative_role_visible,
 )
 from app.core.access.roles import (
-    ADMIN_PERMISSION_KEYS,
     SUPER_ADMIN_PERMISSION_KEYS,
     USER_PERMISSION_KEYS,
     SystemRoleKey,
@@ -77,10 +78,10 @@ SUPER_ADMIN = role(
 )
 ADMIN = role(
     2,
-    key=SystemRoleKey.ADMIN.value,
+    key="admin",
     tier=500,
-    permissions=ADMIN_PERMISSION_KEYS,
-    system=True,
+    # 这里只给测试中的自定义管理员配置权限，生产默认角色不再包含 admin。
+    permissions=SUPER_ADMIN_PERMISSION_KEYS - {PermissionKey.ROLES_DELETE.value},
 )
 USER = role(3, key=SystemRoleKey.USER.value, tier=0, permissions=USER_PERMISSION_KEYS, system=True)
 VIEWER = role(
@@ -150,7 +151,7 @@ def test_admin_can_bind_a_lower_role_whose_permissions_it_holds() -> None:
     assert decision.allowed
 
 
-def test_admin_cannot_manage_a_peer_or_bind_admin() -> None:
+def test_admin_cannot_manage_a_peer_or_bind_a_same_level_role() -> None:
     current_user = authority(10, ADMIN)
     peer = authority(11, USER, ADMIN)
 
@@ -163,10 +164,7 @@ def test_admin_cannot_manage_a_peer_or_bind_admin() -> None:
     )
 
     assert not decision.allowed
-    assert decision.reason_code in {
-        "super_admin_required",
-        "target_not_strictly_lower",
-    }
+    assert decision.reason_code == "role_not_strictly_lower"
 
 
 def test_super_admin_can_bind_admin_to_a_lower_user() -> None:
@@ -182,6 +180,55 @@ def test_super_admin_can_bind_admin_to_a_lower_user() -> None:
     )
 
     assert decision.allowed
+
+
+@pytest.mark.parametrize("operation", ["bind", "unbind"])
+def test_higher_custom_manager_can_bind_or_unbind_a_custom_admin_role(operation: str) -> None:
+    """admin 已是普通角色，有权限且等级更高的自定义管理者也可绑定或解绑。"""
+    current_user = authority(10, role(68, key="manager", tier=800, permissions=SUPER_ADMIN_PERMISSION_KEYS))
+    target = authority(11, USER)
+    with_admin = target.with_role(ADMIN)
+
+    decision = decide_role_change(
+        operation=operation,
+        current_user=current_user,
+        target_before=target if operation == "bind" else with_admin,
+        target_after=with_admin if operation == "bind" else target,
+        changed_roles=(ADMIN,),
+    )
+
+    assert decision.allowed
+
+
+@pytest.mark.parametrize("operation", ["bind", "unbind"])
+@pytest.mark.parametrize(
+    ("current_user", "reason"),
+    [
+        (authority(10, USER), "missing_operation_permission"),
+        (authority(10, role(69, key="peer_manager", tier=500, permissions=SUPER_ADMIN_PERMISSION_KEYS)),
+         "role_not_strictly_lower"),
+        (authority(10, role(70, key="lower_manager", tier=400, permissions=SUPER_ADMIN_PERMISSION_KEYS)),
+         "role_not_strictly_lower"),
+    ],
+    ids=["ordinary-user", "peer-manager", "lower-manager"],
+)
+def test_custom_admin_role_still_requires_permission_and_a_higher_level(
+    operation: str, current_user: UserInfo, reason: str,
+) -> None:
+    """取消 admin 的特殊限制，不会让无权限、同级或更低级的用户越权分配它。"""
+    target = authority(11, USER)
+    with_admin = target.with_role(ADMIN)
+
+    decision = decide_role_change(
+        operation=operation,
+        current_user=current_user,
+        target_before=target if operation == "bind" else with_admin,
+        target_after=with_admin if operation == "bind" else target,
+        changed_roles=(ADMIN,),
+    )
+
+    assert not decision.allowed
+    assert decision.reason_code == reason
 
 
 def test_super_admin_role_cannot_use_the_ordinary_bind_path() -> None:
@@ -260,19 +307,46 @@ def test_role_creation_requires_a_strictly_lower_nonzero_tier() -> None:
     ).allowed
 
 
-def test_every_system_role_is_immutable_through_role_administration() -> None:
+@pytest.mark.parametrize("changed_role", [SUPER_ADMIN, USER])
+def test_every_system_role_is_immutable_through_role_administration(changed_role: RoleGrant) -> None:
     current_user = authority(10, SUPER_ADMIN)
 
     for operation in ("update", "enable", "disable", "delete"):
         decision = decide_role_administration(
             operation=operation,
             current_user=current_user,
-            changed_role=ADMIN,
+            changed_role=changed_role,
             current_user_holds_role=False,
             affected=(),
         )
         assert not decision.allowed
         assert decision.reason_code == "system_role_immutable"
+
+
+@pytest.mark.parametrize("operation", ["update", "enable", "disable", "delete"])
+def test_custom_admin_role_has_no_system_immutability(operation: str) -> None:
+    decision = decide_role_administration(
+        operation=operation,
+        current_user=authority(10, SUPER_ADMIN),
+        changed_role=ADMIN,
+        current_user_holds_role=False,
+        affected=(),
+    )
+
+    assert decision.allowed
+
+
+def test_admin_name_alone_grants_no_management_permissions() -> None:
+    named_admin = role(67, key="admin", tier=500)
+    current_user = authority(10, USER, named_admin)
+
+    assert current_user.permissions == USER_PERMISSION_KEYS
+    assert not current_user.is_super_admin
+    assert not decide_role_create(current_user=current_user, level=100).allowed
+
+
+def test_level_500_is_available_to_a_custom_role() -> None:
+    assert decide_role_create(current_user=authority(10, SUPER_ADMIN), level=500).allowed
 
 
 def test_admin_lacks_role_delete_even_for_a_lower_role() -> None:
@@ -308,13 +382,14 @@ def test_current_user_cannot_change_permissions_of_a_role_it_holds() -> None:
     assert decision.reason_code == "indirect_self_change_forbidden"
 
 
-def test_system_role_permissions_cannot_be_changed() -> None:
+@pytest.mark.parametrize("changed_role", [SUPER_ADMIN, USER])
+def test_system_role_permissions_cannot_be_changed(changed_role: RoleGrant) -> None:
     current_user = authority(10, SUPER_ADMIN)
 
     decision = decide_role_permissions_change(
         operation="unbind",
         current_user=current_user,
-        changed_role_before=ADMIN,
+        changed_role_before=changed_role,
         permission_keys_after=frozenset(),
         current_user_holds_role=False,
         affected_after=(),
@@ -352,7 +427,7 @@ def test_cannot_grant_permission_current_user_does_not_have() -> None:
 @pytest.mark.parametrize(
     ("current_user", "changed_role", "current_user_holds_role", "reason"),
     [
-        (authority(10, SUPER_ADMIN), ADMIN, False, "system_role_immutable"),
+        (authority(10, SUPER_ADMIN), USER, False, "system_role_immutable"),
         (authority(10, SUPER_ADMIN), VIEWER, True, "indirect_self_change_forbidden"),
         (authority(10, ADMIN), role(20, key="peer", tier=500), False, "role_not_strictly_lower"),
         (authority(10, ADMIN), role(21, key="outside", tier=20,
@@ -516,6 +591,215 @@ def test_user_administration_preserves_complete_target_security_boundary(policy:
                                                                          target: UserInfo,
                                                                          reason: str) -> None:
     decision = policy(current_user=current_user, target_before=target)
+
+    assert not decision.allowed
+    assert decision.reason_code == reason
+
+
+@pytest.mark.parametrize("operation", ["bind", "unbind"])
+@pytest.mark.parametrize("outside_system", [False, True], ids=["outside-current-user", "outside-system"])
+@pytest.mark.parametrize("outside_location", ["changed_role", "target_before", "target_after"])
+def test_user_role_change_checks_every_permission_ceiling(operation: str,
+                                                          outside_system: bool,
+                                                          outside_location: str) -> None:
+    """待变更角色、原用户和预测用户分别越界时，都不能借低等级绕过权限上限。"""
+    outside_permission = "private:read" if outside_system else PermissionKey.PROJECTS_UPDATE.value
+    current_user = authority(10, replace(
+        ADMIN,
+        permissions=(ADMIN.permissions - {PermissionKey.PROJECTS_UPDATE.value}) | {"private:read"},
+    ))
+    outside_role = role(60, key="outside", tier=10, permissions=frozenset({outside_permission}))
+    changed_role = VIEWER
+    target_before = authority(11, USER)
+    target_after = target_before.with_role(VIEWER)
+    if operation == "unbind":
+        target_before, target_after = target_after, target_before
+
+    # 三份输入分别单独越界，确保不能只检查本次角色，或只检查变更前后的其中一份快照。
+    if outside_location == "changed_role":
+        changed_role = outside_role
+    elif outside_location == "target_before":
+        target_before = target_before.with_role(outside_role)
+    else:
+        target_after = target_after.with_role(outside_role)
+
+    decision = decide_role_change(
+        operation=operation,
+        current_user=current_user,
+        target_before=target_before,
+        target_after=target_after,
+        changed_roles=(changed_role,),
+    )
+
+    assert not decision.allowed
+    assert decision.reason_code == "permission_ceiling_exceeded"
+
+
+@pytest.mark.parametrize("operation", ["bind", "unbind"])
+def test_user_role_change_allows_held_permissions_in_both_directions(operation: str) -> None:
+    """对应的正向操作可以成功，避免权限上限测试被一律拒绝的错误实现蒙混过去。"""
+    target = authority(11, USER)
+    with_viewer = target.with_role(VIEWER)
+    decision = decide_role_change(
+        operation=operation,
+        current_user=authority(10, ADMIN),
+        target_before=target if operation == "bind" else with_viewer,
+        target_after=with_viewer if operation == "bind" else target,
+        changed_roles=(VIEWER,),
+    )
+
+    assert decision.allowed
+    assert decision.reason_code == "allowed"
+
+
+@pytest.mark.parametrize("operation", ["bind", "unbind"])
+@pytest.mark.parametrize("level", [500, 700], ids=["peer", "higher"])
+def test_user_role_change_rechecks_complete_predicted_level(operation: str, level: int) -> None:
+    """即使待变更角色很低级，也不能忽略预测快照中的其他同级或上级角色。"""
+    before = authority(11, USER, VIEWER)
+    after = before.with_role(role(61, key="other_role", tier=level))
+    decision = decide_role_change(
+        operation=operation,
+        current_user=authority(10, ADMIN),
+        target_before=before,
+        target_after=after,
+        changed_roles=(VIEWER,),
+    )
+
+    assert not decision.allowed
+    assert decision.reason_code == "target_not_strictly_lower"
+
+
+SHARED_ROLE_OPERATIONS = ("update", "enable", "disable", "delete", "bind_permissions", "unbind_permissions")
+
+
+def shared_role_decision(operation: str, *, current_user: UserInfo,
+                         affected: tuple[UserInfo, ...], changed_role: RoleGrant = VIEWER,
+                         current_user_holds_role: bool = False) -> PolicyDecision:
+    """让同一组共享角色边界分别经过六种实际策略入口，保留各自的操作权限要求。"""
+    if operation in {"bind_permissions", "unbind_permissions"}:
+        return decide_role_permissions_change(
+            operation="bind" if operation == "bind_permissions" else "unbind",
+            current_user=current_user,
+            changed_role_before=changed_role,
+            permission_keys_after=(VIEWER.permissions | {PermissionKey.ACCOUNT_READ.value}
+                                   if operation == "bind_permissions" else frozenset()),
+            current_user_holds_role=current_user_holds_role,
+            affected_after=affected,
+        )
+    return decide_role_administration(
+        operation=operation,
+        current_user=current_user,
+        changed_role=changed_role,
+        current_user_holds_role=current_user_holds_role,
+        affected=affected,
+    )
+
+
+@pytest.mark.parametrize("operation", SHARED_ROLE_OPERATIONS)
+@pytest.mark.parametrize("blocked_first", [False, True], ids=["allowed-user-first", "blocked-user-first"])
+@pytest.mark.parametrize(("affected_user", "reason"), [
+    (authority(10, USER), "affected_subject_not_manageable"),
+    (authority(12, USER, protected=True), "affected_subject_not_manageable"),
+    (authority(12, USER, replace(VIEWER, is_protected=True)), "affected_subject_not_manageable"),
+    (authority(12, USER, role(62, key="peer", tier=500)), "affected_subject_not_strictly_lower"),
+    (authority(12, USER, role(63, key="higher", tier=700)), "affected_subject_not_strictly_lower"),
+    (authority(12, USER, role(64, key="outside", tier=10,
+                              permissions=frozenset({PermissionKey.PROJECTS_UPDATE.value}))),
+     "permission_ceiling_exceeded"),
+    (authority(12, USER, role(65, key="outside_system", tier=10,
+                              permissions=frozenset({"private:read"}))),
+     "permission_ceiling_exceeded"),
+], ids=["self", "protected-user", "protected-role", "peer", "higher", "outside-current-user", "outside-system"])
+def test_shared_role_change_rejects_any_unmanageable_holder(operation: str,
+                                                            blocked_first: bool,
+                                                            affected_user: UserInfo,
+                                                            reason: str) -> None:
+    """共享角色只要影响到一个不可管理用户就拒绝，不受用户返回顺序影响。"""
+    current_user = authority(10, role(
+        66,
+        key="manager",
+        tier=500,
+        permissions=(SUPER_ADMIN_PERMISSION_KEYS - {PermissionKey.PROJECTS_UPDATE.value}) | {"private:read"},
+    ))
+    manageable_user = authority(11, USER, VIEWER)
+    affected = ((affected_user, manageable_user) if blocked_first else (manageable_user, affected_user))
+    decision = shared_role_decision(operation, current_user=current_user, affected=affected)
+
+    assert not decision.allowed
+    assert decision.reason_code == reason
+
+
+@pytest.mark.parametrize("operation", SHARED_ROLE_OPERATIONS)
+def test_shared_role_change_allows_multiple_manageable_holders(operation: str) -> None:
+    """持有人全部为权限范围内的普通下级时，六类共享角色操作都允许继续。"""
+    current_user = authority(10, role(66, key="manager", tier=500, permissions=SUPER_ADMIN_PERMISSION_KEYS))
+    decision = shared_role_decision(
+        operation,
+        current_user=current_user,
+        affected=(authority(11, USER, VIEWER), authority(12, USER, VIEWER)),
+    )
+
+    assert decision.allowed
+    assert decision.reason_code == "allowed"
+
+
+@pytest.mark.parametrize("operation", SHARED_ROLE_OPERATIONS)
+@pytest.mark.parametrize(("has_permission", "active", "reason"), [
+    (False, True, "missing_operation_permission"),
+    (False, False, "missing_operation_permission"),
+    (True, False, "user_inactive"),
+], ids=["no-capability", "inactive-and-no-capability", "inactive"])
+def test_shared_role_change_checks_current_user_before_targets(operation: str,
+                                                               has_permission: bool,
+                                                               active: bool,
+                                                               reason: str) -> None:
+    """无权限或已停用的操作者先被拒绝，不因系统角色、自身或目标保护状态而改变错误。"""
+    required_permissions = {
+        "update": PermissionKey.ROLES_UPDATE,
+        "enable": PermissionKey.ROLES_STATUS_UPDATE,
+        "disable": PermissionKey.ROLES_STATUS_UPDATE,
+        "delete": PermissionKey.ROLES_DELETE,
+        "bind_permissions": PermissionKey.ROLES_PERMISSIONS_BIND,
+        "unbind_permissions": PermissionKey.ROLES_PERMISSIONS_UNBIND,
+    }
+    permissions = SUPER_ADMIN_PERMISSION_KEYS
+    if not has_permission:
+        permissions = permissions - {required_permissions[operation].value}
+    current_user = authority(10, role(66, key="manager", tier=500, permissions=permissions), active=active)
+    decision = shared_role_decision(
+        operation,
+        current_user=current_user,
+        changed_role=SUPER_ADMIN,
+        current_user_holds_role=True,
+        affected=(current_user, authority(11, USER, protected=True)),
+    )
+
+    assert not decision.allowed
+    assert decision.reason_code == reason
+
+
+@pytest.mark.parametrize("operation", ["bind", "unbind"])
+@pytest.mark.parametrize(("has_permission", "active", "reason"), [
+    (False, True, "missing_operation_permission"),
+    (False, False, "missing_operation_permission"),
+    (True, False, "user_inactive"),
+], ids=["no-capability", "inactive-and-no-capability", "inactive"])
+def test_user_role_change_checks_current_user_before_target_and_roles(operation: str,
+                                                                      has_permission: bool,
+                                                                      active: bool,
+                                                                      reason: str) -> None:
+    """用户角色操作同样先拒绝无权或停用操作者，再检查本人、超级管理员角色等目标信息。"""
+    required = PermissionKey.ROLES_BIND if operation == "bind" else PermissionKey.ROLES_UNBIND
+    permissions = ADMIN.permissions if has_permission else ADMIN.permissions - {required.value}
+    current_user = authority(10, replace(ADMIN, permissions=permissions), active=active)
+    decision = decide_role_change(
+        operation=operation,
+        current_user=current_user,
+        target_before=current_user,
+        target_after=current_user.with_role(SUPER_ADMIN),
+        changed_roles=(SUPER_ADMIN,),
+    )
 
     assert not decision.allowed
     assert decision.reason_code == reason

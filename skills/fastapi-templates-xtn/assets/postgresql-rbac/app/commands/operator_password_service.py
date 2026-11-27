@@ -21,6 +21,7 @@
 # 2026/10/22    XTN       V1.011        直接用已锁住的目标用户读取角色权限，取消重复账号查询
 # 2026/10/23    XTN       V1.012        单用户恢复统一使用批量权限查询入口
 # 2026/10/26    XTN       V1.013        用户权限结果字段明确区分生效信息与含停用角色的信息
+# 2026/11/26    XTN       V1.014        线下密码恢复使用统一密码规则
 # --------------------------------------------------------------------------------------------------
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -28,7 +29,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.commands.operator_password_repository import operator_password_repository
 from app.core.audit import AccountAuditAction, AuditSource
 from app.core.exceptions import conflict_409, forbidden_403, not_found_404, password_policy_response_400
-from app.core.security.passwords import PasswordManager, PasswordPolicyError, validate_new_password
+from app.core.security.password_rules import PasswordPolicyError, validate_new_password
+from app.core.security.passwords import PasswordManager
 from app.repositories.postgres.rbac_state_repository import rbac_state_repository
 from app.repositories.postgres.user_repository import user_repository
 from app.services.audit_service import AuditService

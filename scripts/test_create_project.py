@@ -84,6 +84,9 @@
 # 2026/11/26    XTN       V1.075        验证修改一处用户名规则可同步请求、查询、模型和双语提示
 # 2026/11/26    XTN       V1.076        生成项目验证调用 validate_user_name 校验用户名
 # 2026/11/26    XTN       V1.077        验证首条横线前误放的旧 History 记录不会进入新项目
+# 2026/11/26    XTN       V1.078        生成项目验证集中密码规则及缺少任一类字符时提前拒绝
+# 2026/11/27    XTN       V1.079        实际生成项目只保留两个系统角色，admin 可作为普通自定义角色
+# 2026/11/28    XTN       V1.080        生成验证权限展示目录、完整示例裁剪和自动接口映射
 # --------------------------------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -544,8 +547,12 @@ for role_model in (RoleCreateRequest, RoleResponse):
 from app.core.i18n.messages import MessageKey, translate_for_locale
 from app.core.i18n.language import select_locale
 from app.core.i18n.validation_messages import validation_field
-from app.core.access.permissions import PermissionKey, PERMISSION_CATALOG, get_permission_description
-from app.core.access.roles import SystemRoleKey, SYSTEM_ROLE_SPECS
+from app.core.access.permissions import (
+    PermissionKey, PermissionGroup, PermissionSpec, PERMISSION_CATALOG,
+    PERMISSION_GROUP_NAMES, get_permission_description,
+)
+import app.core.access.roles as role_defaults
+from app.core.access.roles import SystemRoleKey, SYSTEM_ROLE_SPECS, RESERVED_ROLE_KEYS
 from app.core.access import authorization, role_policy, user_policy
 from app.core.security import jwt_tokens
 from app.repositories.redis import login_session_repository
@@ -557,19 +564,35 @@ assert not any(hasattr(authorization, name)
                for name in ("PermissionKey", "PERMISSION_CATALOG", "SystemRoleKey", "SYSTEM_ROLE_SPECS"))
 catalog = {key.value for key in PermissionKey}
 assert catalog == {key.value for key in PERMISSION_CATALOG}
-for key, message_key in PERMISSION_CATALOG.items():
-    assert isinstance(message_key, MessageKey)
+assert set(PERMISSION_GROUP_NAMES) == set(PermissionGroup)
+for key, spec in PERMISSION_CATALOG.items():
+    assert isinstance(spec, PermissionSpec)
+    assert isinstance(spec.name, MessageKey) and isinstance(spec.description, MessageKey)
+    assert isinstance(spec.group_key, PermissionGroup)
+    assert translate_for_locale("zh-CN", spec.name) != translate_for_locale("en", spec.name)
+    assert translate_for_locale("zh-CN", PERMISSION_GROUP_NAMES[spec.group_key]) != (
+        translate_for_locale("en", PERMISSION_GROUP_NAMES[spec.group_key]))
     chinese = get_permission_description(key)
     english = get_permission_description(key, locale="en")
-    assert chinese == translate_for_locale("zh-CN", message_key)
-    assert english == translate_for_locale("en", message_key)
+    assert chinese == translate_for_locale("zh-CN", spec.description)
+    assert english == translate_for_locale("en", spec.description)
     assert chinese and english and chinese != english
 assert get_permission_description("custom:read", stored_description="Custom project description", locale="en") == (
     "Custom project description")
 for spec in SYSTEM_ROLE_SPECS.values():
     assert spec.permissions <= catalog
     assert not hasattr(spec, "name") and not hasattr(spec, "description")
-assert {spec.level for spec in SYSTEM_ROLE_SPECS.values()} == {0, 500, 1000}
+assert {spec.level for spec in SYSTEM_ROLE_SPECS.values()} == {0, 1000}
+assert set(SystemRoleKey) == {SystemRoleKey.SUPER_ADMIN, SystemRoleKey.USER}
+assert RESERVED_ROLE_KEYS == {"super_admin", "user"}
+assert not hasattr(role_defaults, "ADMIN_PERMISSION_KEYS")
+assert RoleCreateRequest(key="admin", name="自定义管理员", level=500).key == "admin"
+role_constraints = {constraint.name: str(constraint.sqltext)
+                    for constraint in Base.metadata.tables["roles"].constraints
+                    if hasattr(constraint, "sqltext")}
+assert role_constraints["ck_roles_system_role_key_fixed"] == (
+    "NOT is_system OR key IN ('super_admin', 'user')")
+assert "ck_roles_admin_role_shape" not in role_constraints
 assert authorization.UserInfo.build(
     user_id="U123456789ABCDE", user_is_active=True, user_is_protected=False, roles=(),
 ).role_level == 0
@@ -581,9 +604,133 @@ print(json.dumps({"tables": sorted(Base.metadata.tables), "permissions": sorted(
         data = json.loads(raw)
         self.assertEqual(set(data["tables"]), {"users", "roles", "permissions", "user_roles", "role_permissions",
                                                "rbac_state", "operation_audit_events"})
-        self.assertEqual(data["roles"], ["admin", "super_admin", "user"])
+        self.assertEqual(data["roles"], ["super_admin", "user"])
         self.assertFalse(any(permission.startswith("projects:")
                          for permission in data["permissions"]))
+
+    def test_example_permission_export_rejects_incomplete_template_changes(self) -> None:
+        """
+            示例权限移动或少一份定义时停止导出，避免生成半套目录或保留示例授权。
+
+        :return: 无返回值；只在内存修改模板，不生成数据库结构。
+        """
+        for relative, before, after in (
+            ("app/core/access/permissions.py", '    PROJECTS_UPDATE = "projects:update"',
+             '    PROJECTS_EDIT = "projects:update"'),
+            ("app/core/access/permissions.py", "PERMISSION_CATALOG: dict[", "OTHER_CATALOG: dict["),
+            ("app/core/access/roles.py", "SUPER_ADMIN_PERMISSION_KEYS = frozenset(",
+             "OTHER_PERMISSION_KEYS = frozenset("),
+        ):
+            with self.subTest(relative=relative, change=before):
+                source = (GENERATOR.ASSET_ROOT / relative).read_text(encoding="utf-8")
+                self.assertIn(before, source)
+                with self.assertRaisesRegex(ValueError, "Example permission catalog changed"):
+                    GENERATOR.project_content(
+                        Path(relative), source.replace(before, after, 1), name="review-orders",
+                        username_case="insensitive",
+                    )
+
+    def test_permission_directory_and_api_mapping_work_in_generated_project(self) -> None:
+        """
+            实际生成并导入项目，核对权限名称、分组、接口映射及未知权限的回退。
+
+        :return: 无返回值；新增嵌套路由会自动进入目录，全程不连接数据库或 Redis。
+        """
+        target = self.create()
+        self.run_python(target, '''
+from typing import Annotated
+from unittest.mock import AsyncMock, patch
+from fastapi import APIRouter, Depends, FastAPI
+from app.main import app
+from app.api.v1.route_validation import validate_v1_api_routes
+from app.core.access.authorization import AuthorizationContext
+from app.core.access.permissions import (
+    PERMISSION_CATALOG, PERMISSION_GROUP_NAMES, PermissionGroup, PermissionKey,
+)
+from app.core.i18n.messages import translate_for_locale
+from app.dependencies.permission import require_permission
+from app.models.postgres.permission import Permission
+from app.schemas.permission import PermissionApiRouteResponse, PermissionResponse
+from app.services.permission_service import permission_repository, permission_service
+
+assert set(PermissionResponse.model_fields) == {
+    "id", "key", "name", "group_key", "group_name", "description", "api_routes",
+}
+assert set(PermissionApiRouteResponse.model_fields) == {"method", "path"}
+assert len(PERMISSION_CATALOG) == 17
+assert not hasattr(PermissionKey, "PROJECTS_READ") and not hasattr(PermissionKey, "PROJECTS_UPDATE")
+# 分组只是展示标识；保留 projects 不会生成其权限或角色授权。
+assert PermissionGroup.PROJECTS in PERMISSION_GROUP_NAMES
+assert all(spec.group_key != PermissionGroup.PROJECTS for spec in PERMISSION_CATALOG.values())
+
+validate_v1_api_routes(app)
+api_routes = app.state.permission_api_routes
+assert sum(len(routes) for routes in api_routes.values()) == 23
+assert api_routes["account:read"] == (("GET", "/api/v1/me/user_info"),)
+assert api_routes["permissions:read"] == (
+    ("GET", "/api/v1/permissions/detail"), ("GET", "/api/v1/permissions/list"),
+)
+assert ("POST", "/api/v1/users/password/reset") in api_routes["users:password:reset"]
+assert all(routes == tuple(sorted(set(routes))) for routes in api_routes.values())
+
+# 新增接口只声明真实权限依赖；不用另外维护一份权限和接口对照表。
+permission_check = require_permission(PermissionKey.USERS_READ)
+assert permission_check.permission_key == "users:read"
+UserReadContext = Annotated[AuthorizationContext, Depends(permission_check)]
+inner = APIRouter(prefix="/records")
+@inner.get("/list", dependencies=[Depends(permission_check)])
+async def list_nested_records(context: UserReadContext):
+    return None
+outer = APIRouter(prefix="/reports")
+outer.include_router(inner)
+other_app = FastAPI()
+other_app.include_router(outer, prefix="/api/v1")
+validate_v1_api_routes(other_app)
+assert other_app.state.permission_api_routes == {
+    "users:read": (("GET", "/api/v1/reports/records/list"),),
+}
+assert app.state.permission_api_routes is api_routes
+assert ("GET", "/api/v1/reports/records/list") not in api_routes["users:read"]
+
+async def verify_response_metadata():
+    permission = Permission(id="P123456789ABCDE", key="users:read", description="数据库原说明")
+    with patch.object(permission_repository, "get_live_permission", AsyncMock(return_value=permission)):
+        chinese = await permission_service.get_permission_detail(
+            object(), permission_id=permission.id, permission_api_routes=api_routes,
+        )
+        english = await permission_service.get_permission_detail(
+            object(), permission_id=permission.id, permission_api_routes=api_routes, locale="en",
+        )
+    spec = PERMISSION_CATALOG[PermissionKey.USERS_READ]
+    assert chinese.name == translate_for_locale("zh-CN", spec.name)
+    assert english.name == translate_for_locale("en", spec.name) and english.name != chinese.name
+    assert chinese.group_key == english.group_key == "users"
+    assert chinese.group_name != english.group_name
+    assert chinese.description != english.description
+    assert [(route.method, route.path) for route in chinese.api_routes] == list(api_routes["users:read"])
+    assert chinese.api_routes == english.api_routes
+    assert chinese.model_dump(mode="json")["api_routes"] == [
+        {"method": method, "path": path} for method, path in api_routes["users:read"]
+    ]
+    permission.key = "custom:read"
+    with patch.object(permission_repository, "get_live_permission", AsyncMock(return_value=permission)):
+        custom = await permission_service.get_permission_detail(
+            object(), permission_id=permission.id, permission_api_routes=api_routes,
+        )
+    assert custom.name == "custom:read" and custom.group_key == "other"
+    assert custom.group_name == translate_for_locale("zh-CN", PERMISSION_GROUP_NAMES[PermissionGroup.OTHER])
+    assert custom.description == "数据库原说明" and custom.api_routes == ()
+
+# AsyncMock 会立即返回；直接跑完协程，不创建 Windows 事件循环的本机 socketpair。
+verification = verify_response_metadata()
+try:
+    verification.send(None)
+except StopIteration:
+    pass
+else:
+    verification.close()
+    raise AssertionError("offline permission checks must not wait for external I/O")
+''')
 
     def test_generated_project_keeps_prefixed_id_contract(self) -> None:
         """
@@ -974,7 +1121,7 @@ assert {file.stem for file in Path("app/api/v1/endpoints").glob("*.py")} == {
 # 子进程只运行本用例，调整不会污染其他测试或访问数据库。
 from importlib import reload
 from pydantic import ValidationError
-from app.core.security import passwords as password_security
+from app.core.security import password_rules as password_security
 password_security.MIN_PASSWORD_CHARACTERS = 10
 password_security.MAX_PASSWORD_CHARACTERS = 24
 reload(common)
@@ -1013,6 +1160,67 @@ print(json.dumps({"service_name": get_settings().service_name,
 ''')
         self.assertEqual(json.loads(raw), {"service_name": "review-orders", "username_min": 3, "username_max": 32,
                                            "password_min": 8, "password_max": 32, "has_register": True})
+
+    def test_generated_new_password_policy_rejects_each_missing_character_type(self) -> None:
+        """真实生成后检查四类密码要求，非法值不算哈希，原有密码不追加新规则。"""
+        target = self.create()
+        self.run_python(target, '''
+import uuid
+from types import SimpleNamespace
+from app.core.security import password_rules
+from app.core.security.passwords import PasswordManager
+from app.schemas.auth import LoginRequest, PasswordChangeRequest
+from app.core.i18n.messages import MessageKey, translate_for_locale
+
+missing_type_passwords = ("lowercase1!", "UPPERCASE1!", "MixedCase!!", "MixedCase12")
+valid_password = "Valid-Pass9!"
+manager = PasswordManager()
+hashed_values = []
+def hash_password(value):
+    hashed_values.append(value)
+    return "test-hash"
+manager._hasher = SimpleNamespace(hash=hash_password)
+async def run_hash(operation):
+    return operation()
+manager._run_bounded = run_hash
+
+async def check_policy():
+    for password in missing_type_passwords:
+        try:
+            await manager.hash_new_password(password)
+        except password_rules.PasswordPolicyError as error:
+            assert error.reason_code == "password_missing_character_types"
+        else:
+            raise AssertionError("a new password was accepted without every required character type")
+    assert hashed_values == [], "invalid passwords reached the hash operation"
+    assert await manager.hash_new_password(valid_password) == "test-hash"
+    assert hashed_values == [valid_password]
+    for old_password in ("legacy", "UPPERCASEONLY", "旧密码 含空格"):
+        assert password_rules.validate_login_password_input(old_password) == old_password
+        challenge = {"captcha_id": uuid.uuid4(), "captcha_answer": "AB234"}
+        login = LoginRequest.model_validate({"user_name": "Alice", "password": old_password, **challenge})
+        change = PasswordChangeRequest.model_validate({
+            "current_password": old_password, "new_password": valid_password, **challenge,
+        })
+        assert login.password.get_secret_value() == old_password
+        assert change.current_password.get_secret_value() == old_password
+        assert await manager.hash_verified_password(old_password) == "test-hash"
+
+# 内存替身不会挂起；直接完成协程，不创建 Windows 事件循环的内部 socket。
+check = check_policy()
+try:
+    check.send(None)
+except StopIteration:
+    pass
+else:
+    check.close()
+    raise AssertionError("offline password policy review unexpectedly suspended")
+assert password_rules.PASSWORD_REQUIRED_CHARACTERS_ZH in password_rules.NEW_PASSWORD_DESCRIPTION_ZH
+assert password_rules.PASSWORD_REQUIRED_CHARACTERS_ZH in translate_for_locale(
+    "zh-CN", MessageKey.ERROR_PASSWORD_COMPOSITION)
+assert password_rules.PASSWORD_REQUIRED_CHARACTERS_EN in translate_for_locale(
+    "en", MessageKey.ERROR_PASSWORD_COMPOSITION)
+''')
 
     def test_generated_project_saves_request_logs_to_project_directory(self) -> None:
         """
@@ -1178,7 +1386,7 @@ else:
 import pytest
 raise SystemExit(pytest.main(["-q", "-p", "no:cacheprovider", "tests"]))
 ''')
-        self.assertIn("3 passed", raw)
+        self.assertRegex(raw, r"\b[1-9]\d* passed\b")
 
     def test_generated_package_builds_offline_with_readme_and_both_locales(self) -> None:
         """

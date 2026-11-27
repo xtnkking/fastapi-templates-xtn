@@ -18,18 +18,29 @@
 # 2026/10/16    XTN       V1.009        异常构造器名称统一标明固定 HTTP 状态
 # 2026/10/19    XTN       V1.010        精简权限查询注释，保留查询条件和权限要求
 # 2026/10/24    XTN       V1.011        共用权限响应转换，简化列表变量及查询步骤说明
+# 2026/11/28    XTN       V1.012        目录统一返回名称、分组和启动时收集的关联接口
 # --------------------------------------------------------------------------------------------------
 
 
+from collections.abc import Mapping
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.access.permissions import get_permission_description
+from app.core.access.permissions import (
+    PERMISSION_CATALOG,
+    PERMISSION_GROUP_NAMES,
+    PermissionGroup,
+    PermissionKey,
+    PermissionSpec,
+    get_permission_description,
+)
 from app.core.exceptions import not_found_404
 from app.core.i18n.language import DEFAULT_LOCALE
+from app.core.i18n.messages import translate_for_locale
 from app.core.response import PageResponse
 from app.models.postgres.permission import Permission
 from app.repositories.postgres.permission_repository import permission_repository
-from app.schemas.permission import PermissionResponse
+from app.schemas.permission import PermissionApiRouteResponse, PermissionResponse
 
 
 class PermissionService:
@@ -38,28 +49,51 @@ class PermissionService:
     """
 
     @staticmethod
-    def _build_permission_response(permission: Permission, *, locale: str) -> PermissionResponse:
+    def _build_permission_response(
+        permission: Permission, *,
+        permission_api_routes: Mapping[str, tuple[tuple[str, str], ...]],
+        locale: str,
+    ) -> PermissionResponse:
         """
             把已查到的权限整理成响应，不再查数据库。
 
         :param permission: 已查询到的权限记录。
+        :param permission_api_routes: 启动时按权限整理的接口方法和完整路径；没有关联时返回空数组。
         :param locale: 接口已协商的响应语言。
-        :return: 权限 ID、权限标识和对应语言的说明。
+        :return: 权限标识、对应语言的名称与分组、用途说明和关联接口。
         """
-        # 内置权限翻译成请求语言，自定义权限保留数据库里的说明。
+        # 1. 从统一目录读取名称和分组；尚未登记的权限用原标识作名称，放入“其他”。
+        permission_spec: PermissionSpec | None
+        try:
+            permission_spec = PERMISSION_CATALOG[PermissionKey(permission.key)]
+        except ValueError:
+            permission_spec = None
+        group_key = permission_spec.group_key if permission_spec is not None else PermissionGroup.OTHER
+        name = translate_for_locale(locale, permission_spec.name) if permission_spec is not None else permission.key
+        # 2. 只读取本应用启动时整理好的接口；不用查库、扫描路由或修改共享模型。
+        api_routes = tuple(
+            PermissionApiRouteResponse(method=method, path=path)
+            for method, path in permission_api_routes.get(permission.key, ())
+        )
+        # 3. 名称和分组跟随请求语言；未知权限的说明保留数据库原文。
         return PermissionResponse(
             id=permission.id,
             key=permission.key,
+            name=name,
+            group_key=group_key.value,
+            group_name=translate_for_locale(locale, PERMISSION_GROUP_NAMES[group_key]),
             description=get_permission_description(
                 permission.key,
                 stored_description=permission.description,
                 locale=locale,
             ),
+            api_routes=api_routes,
         )
 
     async def list_permissions(self, session: AsyncSession, *,
                                page: int,
                                page_size: int,
+                               permission_api_routes: Mapping[str, tuple[tuple[str, str], ...]],
                                locale: str = DEFAULT_LOCALE
                                ) -> PageResponse[PermissionResponse]:
         """
@@ -69,6 +103,7 @@ class PermissionService:
         :param session: 调用方管理生命周期的 PostgreSQL 异步会话。
         :param page: 从 1 开始的页码，已通过接口范围校验。
         :param page_size: 每页条数，已通过接口上限校验。
+        :param permission_api_routes: 本应用启动时收集的权限与接口对应关系，不在查询期间重新扫描。
         :param locale: 接口已协商的响应语言；直接调用时默认中文。
         :return: 当前页权限列表、页码、每页条数和未删除权限总数。
         """
@@ -82,7 +117,11 @@ class PermissionService:
         )
         # 2. 每条权限按相同规则整理字段和语言。
         permission_responses = [
-            self._build_permission_response(permission, locale=locale)
+            self._build_permission_response(
+                permission,
+                permission_api_routes=permission_api_routes,
+                locale=locale,
+            )
             for permission in permissions
         ]
         # 3. 带上分页信息返回，当前页没有权限时列表为空。
@@ -95,6 +134,7 @@ class PermissionService:
 
     async def get_permission_detail(self, session: AsyncSession, *,
                                     permission_id: str,
+                                    permission_api_routes: Mapping[str, tuple[tuple[str, str], ...]],
                                     locale: str = DEFAULT_LOCALE
                                     ) -> PermissionResponse:
         """
@@ -103,8 +143,9 @@ class PermissionService:
 
         :param session: 调用方管理生命周期的 PostgreSQL 异步会话。
         :param permission_id: 要查询的权限业务 ID。
+        :param permission_api_routes: 本应用启动时收集的权限与接口对应关系，没有 HTTP 入口时对应空数组。
         :param locale: 接口已协商的响应语言；直接调用时默认中文。
-        :return: 权限 ID、权限标识和说明。
+        :return: 权限 ID、标识、名称、业务分组、说明和关联接口。
         :raises AppError: 权限不存在或已经软删除。
         """
         # 1. 按 ID 查询未删除的权限。
@@ -113,7 +154,11 @@ class PermissionService:
         if permission is None:
             raise not_found_404("permission_not_found")
         # 3. 复用列表的字段和语言规则返回详情。
-        return self._build_permission_response(permission, locale=locale)
+        return self._build_permission_response(
+            permission,
+            permission_api_routes=permission_api_routes,
+            locale=locale,
+        )
 
 
 # 共用服务对象，数据库会话由每次调用传入。

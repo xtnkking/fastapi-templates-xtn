@@ -15,6 +15,7 @@
 # 2026/10/16    XTN       V1.006        并发哈希升级只允许首个登录成功，其余直接拒绝
 # 2026/10/16    XTN       V1.007        直接登录调用传入 Redis 与配置并校验返回令牌
 # 2026/10/24    XTN       V1.008        验证码场景名称明确具体用户操作
+# 2026/11/26    XTN       V1.009        设置新密码的夹具包含大小写字母数字和英文符号
 # --------------------------------------------------------------------------------------------------
 
 import asyncio
@@ -42,9 +43,9 @@ from app.models.postgres.user import User, UserRole
 from app.services.auth_service import AuthService
 from tests.integration.conftest import World
 
-PASSWORD = "correct-horse-battery-staple-47"
-NEW_PASSWORD = "quiet-river-lantern-mountain-82"
-ADMIN_PASSWORD = "meadow-compass-stone-63"
+PASSWORD = "Correct-horse-battery-staple-47"
+NEW_PASSWORD = "Quiet-river-lantern-mountain-82"
+ADMIN_PASSWORD = "Meadow-compass-stone-63"
 pytestmark = pytest.mark.postgresql
 
 
@@ -370,7 +371,7 @@ async def test_admin_reset_sets_a_directly_usable_password(
     world: World,
     access_token: Callable[[User], Awaitable[str]],
 ) -> None:
-    manager_password = "silver-orchard-window-planet-94"
+    manager_password = "Silver-orchard-window-planet-94"
     await _enroll_existing_user(
         world.users["manager"],
         user_name="manager",

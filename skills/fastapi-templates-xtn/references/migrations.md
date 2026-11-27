@@ -31,11 +31,11 @@ The constraint, seed, and bootstrap specifications below describe what the
 user must implement and verify; they are not commands for the Skill to execute.
 Do not claim those protections are installed merely because models import.
 
-At minimum, the user must initialize the three system roles, exact permission
+At minimum, the user must initialize the two system roles, exact permission
 catalog and explicit grants, and `rbac_state(scope='global')`.
 The current `user` role grants exactly `account:read` and
-`account:change_password`; both keys also belong to the explicit `admin` and
-`super_admin` sets in `core/access/roles.py`. Updating the Skill alone does not
+`account:change_password`; both keys also belong to the explicit
+`super_admin` set in `core/access/roles.py`. Updating the Skill alone does not
 insert these permission rows or bindings into an existing database. Its owner
 must prepare a reviewed data change, including any installed system-role
 immutability protections; do not edit the historical migrations to add them.
@@ -127,8 +127,8 @@ project's agreed rollout contract; otherwise leave deployment design to the
 owner unless explicitly asked to implement it.
 
 Unmapped users and records default to only the mandatory base `user` role, which
-has no authorization-management permission. Never grant `admin` merely to make a
-migration pass.
+has no authorization-management permission. Never grant an administrative role
+merely to make a migration pass.
 
 ## Login-Identifier Schema
 
@@ -158,14 +158,22 @@ The database and domain constants agree on exactly these rows:
 | Key | Tier | Required flags | Public mutation |
 | --- | ---: | --- | --- |
 | `super_admin` | `1000` | `is_system`, `is_protected`, `is_super_admin`, `is_active`, not deleted | Assignment changes only through bootstrap or guarded offline handover |
-| `admin` | `500` | `is_system`, `is_active`, `is_protected=false`, `is_super_admin=false`, not deleted | Role definition and grants are immutable; assignment only by a strictly higher current user |
 | `user` | `0` | `is_system`, `is_active`, `is_protected=false`, `is_super_admin=false`, not deleted | Mandatory assignment cannot be unbound |
 
-Custom roles use tier `1..999`. Runtime strict hierarchy means `admin` can create,
-edit, enable, disable, grant, or assign only custom roles below tier `500` and
-using only current capabilities and strict hierarchy. Only custom roles may be soft-deleted.
-Their keys remain reserved after deletion. `owner` is not a reserved system key;
-it may be an ordinary custom-role key and has no special authority.
+Custom roles use tier `1..999`; `500` is not reserved. There is no default
+`admin` row or permission set. Create a normal custom role and explicitly bind
+its required permissions when an administrator is needed. Runtime strict
+hierarchy uses the current user's actual tier and held capabilities. Only
+custom roles may be soft-deleted, and their keys remain reserved after deletion.
+`admin` and `owner` are not reserved system keys; either may be an ordinary
+custom-role key and neither grants special authority by name.
+Updating the Skill does not delete an existing database's former fixed `admin`
+row or alter installed constraints. The database owner must review its rows,
+bindings, grants and immutable-role protections when adopting the current
+two-role model, choosing a conversion to an ordinary custom role or unbinding
+it before removal. No role, permission or account is automatically deleted,
+and no automatic cleanup or data migration runs. The historical Alembic
+sequence remains historical evidence, not a direct current-baseline schema recipe.
 
 System-role permission changes require code plus a user-owned reviewed data
 change, never a public API call. That data-change transaction must lock the global
@@ -185,7 +193,7 @@ unique index over `deleted_at IS NULL`, so only one live episode exists while
 history remains. Effective queries and constraints use only live parent and
 relation rows.
 
-The three fixed system roles and the code-owned permission catalog have no
+The two fixed system roles and the code-owned permission catalog have no
 runtime deletion path. If a product deliberately makes permission rows mutable,
 give them the same tombstone metadata and tombstone every live grant atomically.
 
@@ -316,9 +324,12 @@ catalog specification, not a runnable seed file. Initial data must not duplicate
 rows or reset custom-role composition. Assign stable unique IDs and use the
 role specifications and grant allowlists from `app/core/access/roles.py`. Read
 `PermissionKey` and `PERMISSION_CATALOG` from `app/core/access/permissions.py`; catalog
-values are description `MessageKey` values. Resolve initial stored text with
+values are `PermissionSpec` entries containing name/description message keys and
+an explicit permission group. Resolve initial stored description text with
 `get_permission_description(key)` (default `zh-CN`), rather than storing a
-message key as the description. Exclude demonstration permissions for business
+message key or the whole specification as the description. Names, group metadata
+and startup-collected API routes are code-owned response data; they do not add
+columns or require new database rows. Exclude demonstration permissions for business
 features that the generated application does not implement.
 
 User-role changes use `roles:bind` and `roles:unbind`. Existing adopters own the
@@ -327,9 +338,10 @@ installing this Skill does not update a project's database. Published historical
 migrations and historical SQL examples retain their original permission keys.
 
 - Add a new key without granting it until the role policy explicitly says so.
-- Add a description `MessageKey` and matching Chinese/English catalog entries
-  for each built-in business permission. Permission APIs localize those built-in
-  descriptions at read time; custom database descriptions remain as stored.
+- Define each built-in permission's name, explicit group and description in the
+  one catalog, with matching Chinese/English text for its message keys.
+  Permission APIs localize names, group names and built-in descriptions at read
+  time; custom database descriptions remain as stored.
 - Treat a rename as a controlled data migration, often with a compatibility
   period; do not delete the old key before all code is updated.
 - Do not automatically delete unknown database permissions because another

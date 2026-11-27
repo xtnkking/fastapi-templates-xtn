@@ -13,6 +13,7 @@
 # 2026/10/16    XTN       V1.004        移除运行时权限版本预期，保留协调锁与历史迁移契约
 # 2026/10/24    XTN       V1.005        审计失败测试对齐 user_role_transaction 模块
 # 2026/10/26    XTN       V1.006        权限结果字段明确区分有效用户信息与包含停用角色的信息
+# 2026/11/27    XTN       V1.007        系统角色拒绝优先级使用仍固定的 user 角色
 # --------------------------------------------------------------------------------------------------
 
 import uuid
@@ -551,7 +552,7 @@ async def test_role_writes_require_current_expected_version(client: AsyncClient,
 
 async def test_policy_denial_precedes_stale_role_version(client: AsyncClient, world: World,
                                                          access_token: AccessToken) -> None:
-    role = world.roles["admin"]
+    role = world.roles["user"]
     permission_id = world.permissions[PermissionKey.PROJECTS_READ.value].id
     stale_version = role_version(role) + 999
     super_admin_headers = await headers(access_token, world, "super_admin")

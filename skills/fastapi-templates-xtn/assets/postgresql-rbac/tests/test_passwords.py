@@ -11,6 +11,7 @@
 # 2026/10/14    XTN       V1.002        新密码边界使用共享常量并逐个验证全部英文标点
 # 2026/10/20    XTN       V1.003        收紧新密码策略后仍允许原密码验证，登录独立限制传输长度
 # 2026/10/20    XTN       V1.004        验证本地密码队列容量、超时、取消清理和空闲重配
+# 2026/11/26    XTN       V1.005        密码规则集中维护并验证新密码四类字符与原密码验证独立
 # --------------------------------------------------------------------------------------------------
 
 import asyncio
@@ -21,7 +22,14 @@ from typing import Any, cast
 
 import pytest
 
-import app.core.security.passwords as password_security
+import app.core.security.password_rules as password_rules
+from app.core.security.password_rules import (
+    MAX_PASSWORD_CHARACTERS,
+    MAX_PASSWORD_INPUT_CHARACTERS,
+    PasswordPolicyError,
+    validate_login_password_input,
+    validate_new_password,
+)
 from app.core.security.passwords import (
     ARGON2_HASH_LENGTH,
     ARGON2_MEMORY_COST_KIB,
@@ -29,17 +37,12 @@ from app.core.security.passwords import (
     ARGON2_SALT_LENGTH,
     ARGON2_TIME_COST,
     DUMMY_PASSWORD_HASH,
-    MAX_PASSWORD_CHARACTERS,
-    MAX_PASSWORD_INPUT_CHARACTERS,
     PasswordBusyError,
     PasswordHashError,
     PasswordManager,
-    PasswordPolicyError,
-    validate_login_password_input,
-    validate_new_password,
 )
 
-VALID_PASSWORD = "Correct-Horse-Battery-Staple"
+VALID_PASSWORD = "Correct-Horse-Battery7!"
 
 
 @pytest.mark.parametrize("punctuation", string.punctuation)
@@ -102,11 +105,26 @@ def test_new_password_cannot_equal_user_name(user_name: str, password: str) -> N
     assert caught.value.reason_code == "password_same_as_user_name"
 
 
-def test_username_substring_and_nonsequential_weak_string_are_allowed() -> None:
+def test_username_substring_is_allowed_in_an_otherwise_strong_password() -> None:
     assert validate_new_password(
-        "safe-AliceName-suffix", user_name="AliceName"
+        "Safe-AliceName-suffix7!", user_name="AliceName"
     )
-    assert validate_new_password("passwordpassword") == "passwordpassword"
+
+
+@pytest.mark.parametrize("password", ["Ab1!xyZ?", "Ab1!" + "x" * 28])
+def test_new_password_accepts_exact_length_boundaries(password: str) -> None:
+    assert validate_new_password(password) == password
+
+
+@pytest.mark.parametrize("password", [
+    "no-uppercase7!", "NO-LOWERCASE7!", "No-digit-here!", "NoSpecialHere7", "passwordpassword",
+])
+def test_new_password_requires_every_character_type(password: str) -> None:
+    with pytest.raises(PasswordPolicyError) as caught:
+        validate_new_password(password)
+
+    assert caught.value.reason_code == "password_missing_character_types"
+    assert validate_login_password_input(password) == password
 
 
 def test_login_validation_does_not_apply_the_new_password_policy() -> None:
@@ -162,8 +180,8 @@ async def test_stricter_policy_keeps_existing_password_hash_verification(minimum
     """
     manager = PasswordManager(max_concurrent_operations=1)
     encoded = await manager.hash_new_password(password)
-    monkeypatch.setattr(password_security, "MIN_PASSWORD_CHARACTERS", minimum)
-    monkeypatch.setattr(password_security, "MAX_PASSWORD_CHARACTERS", maximum)
+    monkeypatch.setattr(password_rules, "MIN_PASSWORD_CHARACTERS", minimum)
+    monkeypatch.setattr(password_rules, "MAX_PASSWORD_CHARACTERS", maximum)
 
     assert validate_login_password_input(password) == password
     assert (await manager.verify_or_dummy(password, encoded)).verified
@@ -231,12 +249,13 @@ async def test_stored_hash_cannot_request_more_argon2_resources_than_configured(
         await manager.verify_or_dummy(VALID_PASSWORD, oversized_cost_hash)
 
 
-async def test_verified_legacy_password_can_be_rehashed_without_new_policy() -> None:
+@pytest.mark.parametrize("password", ["old", "passwordpassword", " old password 中文 "])
+async def test_verified_legacy_password_can_be_rehashed_without_new_policy(password: str) -> None:
     manager = PasswordManager(max_concurrent_operations=1)
 
-    encoded = await manager.hash_verified_password("old")
+    encoded = await manager.hash_verified_password(password)
 
-    assert (await manager.verify_or_dummy("old", encoded)).verified
+    assert (await manager.verify_or_dummy(password, encoded)).verified
 
 
 async def test_hash_work_is_bounded_even_when_callers_run_concurrently() -> None:

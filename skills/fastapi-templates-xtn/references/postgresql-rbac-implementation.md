@@ -31,7 +31,7 @@ The example deliberately resolves choices that commonly produce security gaps:
 | Persistence | SQLAlchemy 2 typed mappings; user-owned migrations and schema setup |
 | Identity | Greenfield baseline requires `user_name` (trimmed, 3..32 ASCII), permanently reserved after deletion; ask only about case sensitivity |
 | Authorization | One application-wide RBAC control plane |
-| System roles | Immutable `super_admin`, `admin`, and `user` roles |
+| System roles | Immutable `super_admin` and `user` roles; administrators use custom roles |
 | Grants | Positive, exact `resource:action` permission keys |
 | Multiple roles | Permission union and maximum management tier; no more than 10 live bindings per user |
 | Granting | Current user must hold any permission it grants, while strict hierarchy and anti-self-elevation still apply; no independent delegation field/API |
@@ -110,9 +110,11 @@ and preserve every object-policy check described below.
   complete call flow and extension rules are in
   [API internationalization](api-internationalization.md).
 - [`app/core/access/permissions.py`](../assets/postgresql-rbac/app/core/access/permissions.py) defines
-  business-grouped `PermissionKey` and `PERMISSION_CATALOG`. Its values are
-  description `MessageKey` values; `get_permission_description()` resolves them
-  through the existing locale catalogs, defaulting to Chinese for initialization.
+  business-grouped `PermissionKey` and `PERMISSION_CATALOG`. Each `PermissionSpec`
+  records a name message key, explicit `PermissionGroup` and description message
+  key; `PERMISSION_GROUP_NAMES` owns group-name message keys.
+  `get_permission_description()` keeps the description lookup and defaults to
+  Chinese for initial database preparation.
 - [`app/core/access/roles.py`](../assets/postgresql-rbac/app/core/access/roles.py) defines
   system-role keys, specifications, fixed tiers, role limits and explicit grant allowlists.
 - [`app/core/access/authorization.py`](../assets/postgresql-rbac/app/core/access/authorization.py) defines
@@ -181,6 +183,10 @@ and preserve every object-policy check described below.
   from already-authorized data without querying or changing visibility. Their
   public contracts live in `schemas/role.py` and `schemas/user.py`;
   `schemas/permission.py` owns the permission catalog contract.
+  Each permission list/detail item returns `id`, `key`, `name`, `group_key`,
+  `group_name`, `description` and `api_routes`; each route entry has `method`
+  and the complete `path`. The catalog owns display metadata, without new
+  database fields or changes to role grants.
   RoleService keeps `_lock_role`, `_check_role_change`, `_check_role_version`
   and response/audit converters before its public methods. Its `_LockedRole`
   holds the current user, target role, `role_info`, `bound_users` and
@@ -233,13 +239,24 @@ and preserve every object-policy check described below.
   its Repository reuses the same live-permission filter for list and count.
   Both reads use `_build_permission_response` for the same field selection and
   locale handling; it converts an already loaded permission without a query.
+  The required `permission_api_routes` argument supplies the startup mapping to
+  both methods. Unknown permission keys keep their key as the name, use the
+  localized `other` group and preserve their stored description.
 - [`app/api/v1/router.py`](../assets/postgresql-rbac/app/api/v1/router.py) assembles
   neutral resource endpoints and adds `/api/v1` once. Business routers declare
   only their resource prefix. The endpoints
   contain no SQL and exclude privileged fields from request bodies.
 - [`app/api/v1/route_validation.py`](../assets/postgresql-rbac/app/api/v1/route_validation.py)
   owns the version-specific anonymous and special authentication route rules;
-  the router assembly above contains only business mounts.
+  after successful validation it stores `app.state.permission_api_routes`.
+  The generic validator walks actual assembled routes and resolved dependencies,
+  reads each real permission callback's `permission_key`, and deduplicates/sorts
+  complete method/path entries per permission. Dependency aliases and nested
+  router prefixes are included; no OpenAPI exposure or database/Redis lookup is
+  needed. Requests read this per-application mapping without rescanning routes.
+  An entry means that the interface explicitly requires the permission; target
+  and state checks still apply. No HTTP consumer produces an empty array, not
+  an invalid-permission marker. The router assembly above contains only business mounts.
 - [`sql/bootstrap_super_admin.sql`](../assets/postgresql-rbac/sql/bootstrap_super_admin.sql)
   is historical first-super-admin transaction reference, excluded from new projects.
 - [`sql/handover_super_admin.sql`](../assets/postgresql-rbac/sql/handover_super_admin.sql)
@@ -378,7 +395,7 @@ roles.
 The same lifecycle applies to every runtime-deletable parent, including users,
 custom roles, and business entities: tombstone the parent and its live owned
 relations atomically. Restore never revives relation tombstones. A restored user
-receives only a new mandatory `user` binding; former custom, `admin`, or
+receives only a new mandatory `user` binding; former custom-role or
 `super_admin` assignments require explicit new decisions.
 Append-only audit rows are not soft-deletable and cannot be updated, deleted, or
 truncated. Follow
@@ -391,46 +408,32 @@ The user initializes exactly these roles before users are created:
 | Key | Tier | Flags | Runtime policy |
 | --- | ---: | --- | --- |
 | `super_admin` | `1000` | system, protected, active (`is_super_admin` internal flag) | Exactly one holder after bootstrap; only guarded offline SQL changes its holder |
-| `admin` | `500` | system, active | Manages only strictly lower users and custom roles using currently held capabilities |
 | `user` | `0` | system, active | Mandatory base role; `account:read` and `account:change_password` only, without management permissions |
 
-All three keys, tiers, system flags, lifecycle state, and permission
+Both keys, tiers, system flags, lifecycle state, and permission
 composition are immutable through public APIs, including for `super_admin`.
 They cannot be disabled, soft-deleted, or recreated. Change a system-role seed
 only through a user-prepared, reviewed data change with the same impact analysis,
 role-version increments and audit expectations as any other authority
 change.
 
-The control-plane portion of the seeded `admin` permission set is deliberately
-incomplete and fixed to:
-
-```text
-permissions:read
-roles:read
-roles:create
-roles:update
-roles:status:update
-roles:bind
-roles:unbind
-roles:permissions:bind
-roles:permissions:unbind
-users:read
-users:status:update
-```
-
-It does not include `roles:delete` or an online super-admin transfer capability.
-Possessing a capability is only the first gate: an
-`admin` still cannot manage itself, another `admin`, a `super_admin`, any system
-role, a custom role at tier `500` or above, or permissions it does not hold.
+No `admin` role or administrator permission set is seeded. Administrative users
+receive ordinary custom roles at chosen levels in `1..999`, with explicit
+permissions assigned as needed. The key `admin` and level `500` are available
+for ordinary custom roles and grant no special authority. Possessing a
+capability is only the first gate: an administrator still cannot manage itself,
+a peer, a higher or protected target, a system-role definition, or permissions
+it does not hold. A custom administrator may delete a manageable custom role
+when it actually holds `roles:delete`; no online super-admin transfer exists.
 The included `USER_PERMISSION_KEYS` explicitly grants `account:read` for current-user
 information and `account:change_password` for changing one's own password.
-The `admin` and `super_admin` allowlists also include both keys. The corresponding
+The `super_admin` allowlist also includes both keys. The corresponding
 `me.py` routes enforce them through `require_permission`, using ordinary user
 quotas; possession of a basic permission grants no user-management capability.
 A generated project must not include example permissions for nonexistent businesses. For an actual new
 business, update its code catalog and hand the initial-data differences to the
 user; they prepare, review and execute that database change. It must not
-broaden the fixed control-plane set above.
+automatically broaden the super-administrator allowlist or any existing custom-role grants.
 
 Every public signup and trusted user-creation path creates or synchronizes
 the live user and binds a new live `user` episode in the same PostgreSQL
@@ -509,8 +512,8 @@ codes, server-generated request ID, and simple page data from
 [API response standard](api-response-standard.md). Missing or invalid
 authentication returns `40110`; a visible but forbidden action returns generic
 `40301`; a missing or deliberately concealed target returns generic `40401`.
-A normal `user` has none of the required capabilities. An `admin` can call only
-its seeded capability subset, and every write still applies hierarchy,
+A normal `user` has none of the required management capabilities. A custom
+administrator can call only its explicitly granted capability subset, and every write still applies hierarchy,
 granted-permission, protected-target, affected-user, and anti-self-elevation checks after
 locking.
 
@@ -603,7 +606,7 @@ Authorization and role `expected_version` checks still apply. A successful
 unbind tombstones the live episode; a later
 bind inserts a new episode with a new ID rather than clearing the tombstone.
 Ordinary binding can never grant `super_admin`; only guarded offline SQL changes
-its holder. Only `super_admin` can bind or unbind `admin`, while `user`
+its holder. Custom administrator roles follow ordinary binding checks, while `user`
 cannot be unbound from any user.
 
 The baseline also exposes these neutral companion operations for the existing
@@ -718,7 +721,7 @@ definition or arbitrary grants. The retained historical SQL and its isolated
 maintenance tests illustrate this contract; they are excluded from generated
 projects and are not executed by the ordinary Skill workflow.
 
-The user's initialization creates `super_admin`, `admin`, and `user` directly and does not
+The user's initialization creates only `super_admin` and `user` directly and does not
 rename, reserve, or interpret a custom role whose key is `owner`. A deferred
 PostgreSQL constraint must be installed by the user's database setup, run
 whenever a `super_admin` assignment changes, and
@@ -867,7 +870,7 @@ The main product-specific decisions are:
    activity dump.
 
 Do not ask the user to choose basic table topology, multi-role semantics,
-hierarchy direction, the three system roles, the 10-live-role limit,
+hierarchy direction, the two system roles, the 10-live-role limit,
 default-user assignment,
 grant bounds, default denial, public administration routes, lock order, or
 ordinary self-management behavior unless the existing application explicitly

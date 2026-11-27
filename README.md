@@ -89,8 +89,10 @@ maintained and are not affiliated with or endorsed by upstream. Preserve
   ASCII letters/digits/underscores, reject 12 reserved complete names, and
   cannot be reused after soft deletion. Ask the project owner whether casing
   matters; preserve a pre-existing project's intentional identity contract.
-  Passwords default to 8..60 characters and three simple weak-pattern checks;
-  ask whether to require upper/lowercase, digits, or symbols.
+  New passwords default to 8..32 visible ASCII characters and must contain an
+  uppercase letter, a lowercase letter, a digit and a special symbol. Shared
+  rules live in `app/core/security/password_rules.py`; login and current-password
+  verification keep their independent input limit and do not apply this policy.
 - Public registration remains available without a backend switch or registration-status
   endpoint. It still requires its own CAPTCHA and per-IP rate limit. Public registration
   and authorized administrator creation both bind only `user`.
@@ -124,7 +126,9 @@ maintained and are not affiliated with or endorsed by upstream. Preserve
   physical devices. Password changes/reset also invalidate old Tokens.
 - Exactly one `super_admin` exists after the developer's manual database binding.
   Changing that holder is another user-owned guarded, audited offline action,
-  never an HTTP transfer route. The immutable `admin` and `user` system roles,
+  never an HTTP transfer route. Only `super_admin` and `user` are fixed system
+  roles; administrators use custom roles with explicitly assigned permissions.
+  No default `admin` role or level `500` is reserved. The
   ten-live-role maximum, strict lower-only administration, anti-self-elevation,
   soft deletion, and PostgreSQL transaction/audit coupling remain enforced.
   A grantor can grant only permissions it currently holds; there is no separate
@@ -204,10 +208,14 @@ Permission definitions live in
 [`app/core/access/permissions.py`](skills/fastapi-templates-xtn/assets/postgresql-rbac/app/core/access/permissions.py),
 grouped by business; system-role specifications and grants live in
 [`app/core/access/roles.py`](skills/fastapi-templates-xtn/assets/postgresql-rbac/app/core/access/roles.py).
-`PERMISSION_CATALOG` values are description message keys. Prepare initial text
-with `get_permission_description(key)` (Chinese by default); built-in descriptions
-follow the request language, while permission codes and custom database text remain stable.
-Add both locale entries for each new permission description, following
+`PERMISSION_CATALOG` values are `PermissionSpec` entries containing a name message
+key, an explicit `PermissionGroup` and a description message key. Group names come
+from `PERMISSION_GROUP_NAMES`. Names, group names and built-in descriptions follow
+the request language; permission and group keys remain stable. Prepare initial
+database descriptions with `get_permission_description(key)` (Chinese by default).
+Permission list/detail responses also include `api_routes`, collected from actual
+route permission dependencies once at startup and then read from application memory.
+Add both locale entries for new permission and group text, following
 [API internationalization](skills/fastapi-templates-xtn/references/api-internationalization.md).
 
 For code changes, the [reuse and abstraction rules](skills/fastapi-templates-xtn/references/reuse-and-abstraction.md)

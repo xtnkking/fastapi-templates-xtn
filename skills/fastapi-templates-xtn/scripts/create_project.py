@@ -19,6 +19,8 @@
 # 2026/10/13    XTN       V1.010        导出配置不再替换已删除的限流命名空间
 # 2026/10/16    XTN       V1.011        默认仅导出统一操作审计，通用业务审计按需接入
 # 2026/11/26    XTN       V1.012        生成时整体重建 History，清除错放在首条横线前的旧记录
+# 2026/11/27    XTN       V1.013        取消默认 admin 后仅从超级管理员权限集合移除维护示例
+# 2026/11/28    XTN       V1.014        按完整语法节点移除示例权限，兼容多行展示目录
 # --------------------------------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -92,6 +94,69 @@ def replace_once(content: str, old: str, new: str) -> str:
     return content.replace(old, new, 1)
 
 
+def remove_example_permissions(relative: Path, content: str) -> str:
+    """
+        删除维护示例的权限定义、整项展示信息或角色授权，保留其他原文排版。
+        展示分组本身不授予权限，因此保留 projects 分组及其翻译。
+
+    :param relative: 权限目录或系统角色文件的相对路径。
+    :param content: 尚未调整的文件内容。
+    :return: 不含 PROJECTS_READ 和 PROJECTS_UPDATE 权限的文件内容。
+    :raises ValueError: 示例定义数量或写法改变，需要维护者检查导出边界。
+    """
+    # 1. 按 Python 结构定位，不能只删含权限名的一行，否则会留下多行 PermissionSpec 的残片。
+    tree = ast.parse(content, filename=relative.as_posix())
+    example_names = {"PROJECTS_READ", "PROJECTS_UPDATE"}
+    spans: list[tuple[int, int]] = []
+    removed_names: list[str] = []
+    for node in tree.body:
+        if relative.name == "permissions.py" and isinstance(node, ast.ClassDef) and node.name == "PermissionKey":
+            for member in node.body:
+                if (
+                    isinstance(member, ast.Assign) and len(member.targets) == 1
+                    and isinstance(member.targets[0], ast.Name) and member.targets[0].id in example_names
+                ):
+                    spans.append((member.lineno - 1, member.end_lineno or member.lineno))
+                    removed_names.append(member.targets[0].id)
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        assignment_names = {target.id for target in targets if isinstance(target, ast.Name)}
+        if relative.name == "permissions.py" and "PERMISSION_CATALOG" in assignment_names:
+            if not isinstance(node.value, ast.Dict):
+                raise ValueError("Example permission catalog changed; review project export")
+            for key, value in zip(node.value.keys, node.value.values, strict=True):
+                if (
+                    isinstance(key, ast.Attribute) and isinstance(key.value, ast.Name)
+                    and key.value.id == "PermissionKey" and key.attr in example_names
+                ):
+                    spans.append((key.lineno - 1, value.end_lineno or value.lineno))
+                    removed_names.append(key.attr)
+        elif relative.name == "roles.py" and "SUPER_ADMIN_PERMISSION_KEYS" in assignment_names:
+            for grant in ast.walk(node.value) if node.value is not None else ():
+                if (
+                    isinstance(grant, ast.Attribute) and grant.attr == "value"
+                    and isinstance(grant.value, ast.Attribute) and isinstance(grant.value.value, ast.Name)
+                    and grant.value.value.id == "PermissionKey" and grant.value.attr in example_names
+                ):
+                    spans.append((grant.lineno - 1, grant.end_lineno or grant.lineno))
+                    removed_names.append(grant.value.attr)
+
+    # 2. 权限文件各有一份枚举和目录项，角色文件各有一项授权；结构不符时停止生成。
+    expected_count = 2 if relative.name == "permissions.py" else 1
+    if any(removed_names.count(name) != expected_count for name in example_names):
+        raise ValueError("Example permission catalog changed; review project export")
+    lines = content.splitlines(keepends=True)
+    for start, end in sorted(spans, reverse=True):
+        del lines[start:end]
+    exported = "".join(lines)
+    # 3. 删除后再解析，并确认其他位置没有遗留示例授权引用，避免输出只完成一半的文件。
+    exported_tree = ast.parse(exported, filename=relative.as_posix())
+    if any(isinstance(node, ast.Attribute) and node.attr in example_names for node in ast.walk(exported_tree)):
+        raise ValueError("Example permission references remain; review project export")
+    return exported
+
+
 def project_content(relative: Path, content: str, *, name: str, username_case: str) -> str:
     """
         将维护资产的项目标识、示例权限和用户名策略调整为明确选择的新项目内容。
@@ -128,11 +193,7 @@ def project_content(relative: Path, content: str, *, name: str, username_case: s
         content = replace_once(content, 'default="unreleased"', 'default="0.1.0"')
     elif relative.as_posix() in {"app/core/access/permissions.py", "app/core/access/roles.py"}:
         # 移除维护资产中的项目演示权限，不将未实现的业务授权带入新项目。
-        lines = content.splitlines(keepends=True)
-        removed = [line for line in lines if "PROJECTS_READ" in line or "PROJECTS_UPDATE" in line]
-        if len(removed) != 4:
-            raise ValueError("Example permission catalog changed; review project export")
-        content = "".join(line for line in lines if line not in removed)
+        content = remove_example_permissions(relative, content)
     elif relative.as_posix() == "app/core/security/user_name.py" and username_case == "insensitive":
         # 大小写不敏感时先在应用层转小写，再给模型增加一致的存储约束。
         content = replace_once(content, "    return normalized\n", "    return normalized.lower()\n")

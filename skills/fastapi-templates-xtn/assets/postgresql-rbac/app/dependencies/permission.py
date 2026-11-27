@@ -18,6 +18,7 @@
 # 2026/10/20    XTN       V1.009        使用内部管理上下文入口，区分身份准备与具体权限检查
 # 2026/10/22    XTN       V1.010        直接完成管理限流和账号检查，删除中间准备依赖
 # 2026/10/22    XTN       V1.011        默认使用普通额度，管理业务由路由显式选择
+# 2026/11/28    XTN       V1.012        权限检查函数附带固定权限键，供启动时自动整理关联接口
 # --------------------------------------------------------------------------------------------------
 
 from collections.abc import Awaitable, Callable
@@ -43,7 +44,7 @@ def require_permission(required: PermissionKey, *, management: bool = False
 
     :param required: 接口要求的权限，例如 roles:read。
     :param management: 是否使用管理业务额度；默认 False 使用普通额度，True 使用管理额度，不改变权限要求。
-    :return: 请求到来时执行的权限检查函数。
+    :return: 请求到来时执行的权限检查函数；附带的 permission_key 只供启动时整理接口目录。
     """
     # 路由加载时记住所需权限和所选额度，请求到来后才检查。
     required_key = required.value
@@ -89,5 +90,8 @@ def require_permission(required: PermissionKey, *, management: bool = False
         # 4. 通过后交回用户信息，路由无需再声明一次登录检查。
         return context
 
+    # 把路由已声明的权限记在检查函数上；启动时直接读取，不另维护一份“权限对应哪些接口”。
+    # 这个标记不代替上面的权限检查，也不会在整理接口目录时执行检查函数。
+    setattr(dependency, "permission_key", required_key)  # noqa: B010 - 给函数附加目录标记，保留原有调用类型。
     # 交给 Depends 在请求到来时执行。
     return dependency

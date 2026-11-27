@@ -30,18 +30,20 @@ Python 3.12，默认连接单机 PostgreSQL 17 和 Redis 7。数据库尚未初�
 
 | 数据 | 要求 |
 | --- | --- |
-| 系统角色 | 按 `app/core/access/roles.py` 的 `SYSTEM_ROLE_SPECS` 创建 super_admin、admin、user，等级 1000/500/0，保护属性与规格一致。 |
-| 权限及授权 | 按 `app/core/access/permissions.py` 的 `PERMISSION_CATALOG` 创建权限，初始描述使用 `get_permission_description(key)` 取得中文文本，不能把目录中的 `MessageKey` 直接写入描述；严格使用 `app/core/access/roles.py` 中各系统角色显式 permissions 集合。user 只有 `account:read`（查看本人信息）、`account:change_password`（修改本人密码）两项基础权限，无管理权限；admin、super_admin 的白名单也包含这两项，不自动授予全部新权限。 |
+| 系统角色 | 按 `app/core/access/roles.py` 的 `SYSTEM_ROLE_SPECS` 只创建 super_admin、user，等级 1000/0，保护属性与规格一致。不预置 admin；需要管理员时另建 1～999 级普通自定义角色并分配权限，500 不保留。 |
+| 权限及授权 | 按 `app/core/access/permissions.py` 的 `PERMISSION_CATALOG` 创建权限；目录值为 `PermissionSpec`，名称、分组和说明供接口展示，数据库初始描述仍用 `get_permission_description(key)` 取得中文文本，不能直接存入文案键；严格使用 `app/core/access/roles.py` 中各系统角色显式 permissions 集合。user 只有 `account:read`（查看本人信息）、`account:change_password`（修改本人密码）两项基础权限，无管理权限；super_admin 的白名单也包含这两项，不自动授予全部新权限。自定义管理员的权限另行明确绑定。 |
 | 全局状态 | `rbac_state` 只有 `scope` 字段，准备唯一 `scope=global` 行，供权限写入加锁。 |
 | 第一位超级管理员 | 基础数据就绪后正常创建用户，再由开发人员在数据库手动建立唯一 super_admin 绑定，保留 user。禁止 API 自选初始角色。 |
 
-角色模型会拒绝把第四种角色键标为系统角色；这只限制角色定义，不能保证
+角色模型只允许 super_admin、user 标为系统角色；这只限制角色定义，不能保证
 `super_admin` 只绑定一名用户，也不能阻止有权限的直接 SQL 修改固定角色。
 手动绑定或更换超级管理员时，在一个受控事务中先锁定同一 `rbac_state` 行，再检查最终唯一性、
 完成绑定变更并写入审计；不能直接追加第二位超级管理员。全局状态、系统角色及授权须先于用户流量准备完成。
 普通认证不读取这条全局锁记录，也不返回全局权限版本；仍实时查询当前用户、角色和权限。
 更新已有项目时，修改权限常量不会自动补齐数据库。使用者需自行审核并准备上述权限记录和
 角色授权，按已有系统角色保护规则执行受控数据变更；应用不会在请求或启动时修复授权。
+更新源码不会自动删除旧库中的 admin。旧库如有对应系统角色、绑定、约束或不可变保护，
+库所有者需自行审核迁移，决定转为普通自定义角色，或先解除绑定再处理；不会自动删除角色、权限或账号。
 
 模型和自动生成的迁移不会自动安装自定义触发器。使用者需自行落实并验证数据库级保护：
 有效用户必须保留 user、最多 10 个有效角色、唯一超级管理员、系统角色及内置授权不可改、
@@ -51,7 +53,7 @@ Service 的校验与事务不能阻止有权限的直接 SQL；离线测试和�
 ## 已选择与可调整的参数
 
 - 用户名大小写：`{{USERNAME_CASE}}`（sensitive 区分，insensitive 统一小写）；规则见请求模型。
-- 所有接口的密码字段默认限制为 8～32 位，不符合长度时返回参数校验错误 `42201`。设置新密码时还会检查字符范围、弱密码和已选择的组合要求：只允许可见英文字母、数字和英文标点，不允许空格、中文、emoji 或不可见字符，默认不强制包含符号。登录和验证旧密码只核对密码哈希，不重新套用设置新密码的强度规则。调整长度只修改 `app/core/security/passwords.py` 中的 `MIN_PASSWORD_CHARACTERS` 和 `MAX_PASSWORD_CHARACTERS` 并重启；请求约束、字段说明及中英文长度提示自动引用。调整组合要求时仍需维护相应说明与测试。
+- 注册、管理员新增、本人改密和管理员重置设置的新密码默认 8～32 位，必须同时包含大写字母、小写字母、数字和英文特殊符号；只允许可见 ASCII 字符，不允许空格、中文、emoji 或不可见字符，并检查弱密码及与用户名相同的情况。规则统一在 `app/core/security/password_rules.py` 维护，长度修改该文件的 `MIN_PASSWORD_CHARACTERS`、`MAX_PASSWORD_CHARACTERS` 后重启；请求约束、字段说明及中英文长度提示共用这些常量。登录密码和旧密码只要求非空、有效 UTF-8 且不超过独立的 `MAX_PASSWORD_INPUT_CHARACTERS`（默认 1024 位），不套用新密码强度规则。HTTP 输入长度不符时返回参数校验错误 `42201`。
 - 每用户最多同时登录 `{{MAX_SESSIONS}}` 次，超出时退出最早的旧登录。记录的是登录会话，不识别物理设备。
 - 管理员新增用户或重置密码时直接设置可登录的密码，并通过可信渠道私下交给用户；用户无需再完成一次密码设置。
 - Token 默认 24 小时，在 `.env` 的 `JWT_ACCESS_TOKEN_TTL_SECONDS` 按业务调整。
@@ -145,8 +147,11 @@ Service 自己开启事务，并把业务变更和审计一起提交；认证读
 
 请求响应模型也按用途查找：`schemas/auth.py` 放注册、登录、本人改密请求和令牌结果；
 `schemas/captcha.py` 放验证码申请、答案和图片结果；`schemas/user.py` 放用户管理及会话统计。
-请求基类、用户名校验、公共密码字段类型 `Password` 和共用操作结果在 `schemas/common.py`。
-注册、登录、本人改密、管理员新增和重置密码都使用这个类型，以 `SecretStr` 和 `Field` 直接检查共享常量规定的长度（默认 8～32 位）；设置新密码时的额外规则由业务密码策略负责，不再分成两种密码类型。
+请求基类、用户名校验和公共密码字段类型在 `schemas/common.py`。
+登录密码和旧密码使用 `Password`；注册、新增用户和改密、重置的新密码使用 `NewPassword`。
+两者以 `SecretStr` 和 `Field` 直接检查各自长度；新密码的字符、强度和弱密码检查统一调用
+`core/security/password_rules.py` 的 `validate_new_password`。这个文件和 `user_name.py`
+一样负责输入规则；`passwords.py` 负责 Argon2 哈希、密码比对和计算排队。
 
 内置审计动作在 `core/audit.py` 按账号安全和授权管理分组，每个成员都有中文说明。
 例如管理员重置密码向 `audit_success` 传入 `AccountAuditAction.ADMIN_RESET_PASSWORD`。
@@ -178,7 +183,10 @@ API 版本前缀只在 `api/v1/router.py` 声明；权限策略和限流规则�
 刚开始学习时，先看接口函数中的“访问条件”，再沿调用进入 Service 和 Repository。
 例如 `permissions:read` 表示允许查看权限目录；它是程序检查的权限标识，不是角色名称。
 全部内置权限及其用途在 `core/access/permissions.py` 的 `PermissionKey` 中逐项说明；
-目录值是描述文案键，新增业务权限需同时补齐中英文文案。
+`PERMISSION_CATALOG` 集中记录名称、分组和说明；新增业务权限需同时补齐中英文文案。
+权限列表和详情返回 `id`、`key`、`name`、`group_key`、`group_name`、`description` 和
+`api_routes`。关联接口从实际路由的权限依赖在启动时收集，查询时读取内存，不手工维护路径。
+`api_routes` 为空只表示没有明确要求该权限的 HTTP 入口，不表示权限无效。
 拥有某项管理权限后，仍需通过目标等级和可见范围检查，不能据此操作所有用户或角色。
 模型与请求响应字段旁说明取值含义；Service 注释说明检查和修改的顺序；Repository
 注释说明查哪些数据、查不到意味着什么，以及由谁提交事务。

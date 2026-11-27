@@ -101,7 +101,7 @@ table is incomplete until its schema, ordinary queries, unique constraints,
 parent cleanup, restore policy, audit behavior, and tests all understand the
 tombstone. Naming an endpoint "delete" does not permit a physical delete.
 
-The three system roles and the fixed permission catalog expose no runtime delete
+The two system roles and the fixed permission catalog expose no runtime delete
 command. If a product later makes permission entries runtime-mutable, deleting
 one must tombstone the permission and all live grants in the same transaction;
 restoring it must not revive those grants.
@@ -183,7 +183,7 @@ new live episode, versions, and audit evidence are produced.
 
 When restoring a user, create a new mandatory base `user` episode in the restore
 transaction after validating the system-role contract; do not restore any old
-custom, `admin`, or `super_admin` episode. Do not decrement `token_version` or
+custom-role or `super_admin` episode. Do not decrement `token_version` or
 recreate an old Redis active-JTI record, so pre-deletion Tokens remain invalid.
 The current fixed custom-role delete is terminal. If a product later adds role
 restore, the restored role starts with no live permission grants or user

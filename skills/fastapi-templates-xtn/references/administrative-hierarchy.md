@@ -63,26 +63,26 @@ models and the [database handoff](migrations.md), not seed scripts or execution:
 | Role | Level | Required behavior |
 | --- | ---: | --- |
 | `super_admin` | `1000` | System, protected, active; exactly one current holder after bootstrap |
-| `admin` | `500` | System and active; manages only strictly lower custom roles and users with capabilities it holds |
 | `user` | `0` | System and active; mandatory base role with no authorization-management capability |
 
-The three roles cannot be disabled, soft-deleted, renamed, re-ranked, or have
+The two roles cannot be disabled, soft-deleted, renamed, re-ranked, or have
 their permission grants changed through a public API. This restriction
 also applies to `super_admin`; the super administrator controls assignments and
-custom roles, not the definition of the three system roles. A reviewed migration
+custom roles, not the definition of the two system roles. A reviewed migration
 is the only way to change a system-role specification.
 
 Every normal signup or trusted user-creation path binds `user` in the same
 transaction as user creation using a new live relation episode. Never accept a requested initial role at signup,
-never remove `user` through the unbind endpoint, and keep it when adding `admin`
-or `super_admin`.
+never remove `user` through the unbind endpoint, and keep it when adding custom
+roles or `super_admin`.
 
-The seeded `admin` has an intentionally incomplete capability set. It may read
-permissions and roles; create, update, enable, disable, and change permissions on
-manageable custom roles; assign and revoke manageable roles; and read or update
-manageable users. It cannot soft-delete roles, mutate system roles, or change
-the sole `super_admin` through any API. Strict level comparison also prevents
-one `admin` from managing another `admin`.
+There is no seeded `admin` role or default administrator capability set. An
+administrator uses an ordinary custom role with a chosen level in `1..999` and
+explicit permissions. The key `admin` is available for such a role and receives
+no special treatment; level `500` is also ordinary. Whether that role can read,
+create, update, delete, bind, or manage users depends on its current permissions
+and the same strict hierarchy checks as every other custom role. It cannot
+mutate system roles or change the sole `super_admin` through any API.
 
 ## Default Manageability Rule
 
@@ -198,8 +198,8 @@ endpoint's no-self-target rule.
   must dominate the target's complete current and proposed authority. The
   proposal must also leave the target with at most 10 live role bindings.
 - Ordinary role binding never grants `super_admin`; only guarded offline SQL
-  changes its holder. Only `super_admin` can
-  bind or unbind `admin`, and no current user can unbind `user`.
+  changes its holder. Custom administrator roles use the normal strict-hierarchy
+  and held-permission checks, and no current user can unbind `user`.
 - Role creation checks the proposed `level` and starts with no permissions.
   Permission binding is a separate capability and transaction.
 - Role information update changes only explicitly mutable custom-role fields.
@@ -222,7 +222,7 @@ endpoint's no-self-target rule.
 - Distinguish disable/enable from delete/restore. Enable may revalidate still-live
   assignments. User deletion tombstones the user and every live assignment in
   one transaction; restore creates only a new mandatory `user` episode and never
-  revives former custom, `admin`, or `super_admin` authority.
+  revives former custom-role or `super_admin` authority.
 - Bulk relationship endpoints reject duplicate IDs and validate every requested ID
   and indirect effect before writing. One invalid item rejects the whole
   transaction. Binding an existing live relationship and unbinding a pair with no live relation are
@@ -231,9 +231,10 @@ endpoint's no-self-target rule.
 
 ## Super Admin Boundary
 
-Reserve level `1000` for `super_admin`; reserve level `500` for `admin`; use level
-`0` for the mandatory `user`; custom roles use `1..999`. Runtime strict
-dominance means the seeded `admin` can manage only custom roles below `500`.
+Reserve level `1000` for `super_admin` and level `0` for the mandatory `user`;
+custom roles use `1..999`, including `500`. No administrator role is seeded.
+Runtime strict dominance compares the current user's actual role level with
+the target's complete authority, independently of role names.
 
 Keep super-admin grants in an explicit allowlist instead of granting every
 permission-catalog row automatically. There is no online handover permission,
@@ -335,8 +336,9 @@ Follow [API response standard](api-response-standard.md).
 | Current user and operation | Expected result |
 | --- | --- |
 | Authenticated `user` calls any administration endpoint | Deny |
-| `admin` manages a lower user or custom role with permissions it holds | Allow |
-| `admin` deletes a role, edits a system role, or attempts online super-admin transfer | Deny |
+| Custom administrator manages a lower user or custom role with permissions it holds | Allow |
+| Custom administrator deletes a manageable role with `roles:delete` | Allow |
+| Custom administrator edits a system role or attempts online super-admin transfer | Deny |
 | Lower current user modifies, suspends, resets, impersonates, or revokes a higher target | Deny |
 | Peer current user modifies an equal-level target | Deny |
 | An apparently ordinary target also holds a peer or higher role | Deny using the complete snapshot |

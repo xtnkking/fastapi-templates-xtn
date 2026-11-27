@@ -26,9 +26,12 @@
 # 2026/10/22    XTN       V1.017        密码保存方法统一命名为 update_password
 # 2026/10/26    XTN       V1.018        权限结果字段明确区分有效用户信息与包含停用角色的信息
 # 2026/10/26    XTN       V1.019        覆盖本人改密统一凭据拒绝与系统故障传播边界
+# 2026/11/26    XTN       V1.020        新密码错误统一引用密码规则模块并验证四类字符
+# 2026/11/27    XTN       V1.021        验证密码错误和正确密码但账号停用或删除都使用同一提示
 # --------------------------------------------------------------------------------------------------
 
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -43,17 +46,18 @@ from app.commands.operator_password_repository import operator_password_reposito
 from app.commands.operator_password_service import OperatorPasswordService
 from app.core.access.permissions import PermissionKey
 from app.core.audit import AccountAuditAction, AuditSource
+from app.core.codes import BusinessCode
 from app.core.config import get_settings
 from app.core.exceptions import AppError, InvalidLoginCredentialsError, forbidden_403, unavailable_503
 from app.core.i18n.messages import MessageKey
 from app.core.ids import new_entity_id
 from app.core.logging.context import bind_request_context, deactivate_request_context, reset_request_context
 from app.core.logging.details import HttpLogDetails
+from app.core.security.password_rules import PasswordPolicyError
 from app.core.security.passwords import (
     PasswordBusyError,
     PasswordHashError,
     PasswordManager,
-    PasswordPolicyError,
     PasswordVerification,
 )
 from app.models.postgres.user import User
@@ -165,6 +169,62 @@ async def test_new_password_rejection_is_actionable_before_database_work(passwor
     session_factory.assert_not_called()
 
 
+@pytest.mark.parametrize("operation", ["register", "admin_create", "change", "admin_reset", "operator_reset"])
+@pytest.mark.parametrize("password", [
+    "no-uppercase7!", "NO-LOWERCASE7!", "No-digit-here!", "NoSpecialHere7",
+])
+async def test_every_new_password_operation_applies_shared_character_rules(
+        monkeypatch: pytest.MonkeyPatch, operation: str, password: str) -> None:
+    """注册、新增和各类改密都拒绝缺少任意一类字符的新密码，不写入账号。"""
+    session = Mock(spec=AsyncSession)
+    session.begin.return_value = _AsyncContext(None)
+    session_factory = Mock(return_value=_AsyncContext(session))
+    factory = cast(async_sessionmaker[AsyncSession], session_factory)
+    manager = PasswordManager()
+    user_info = _snapshot(password_hash="$argon2id$stored")
+    context = cast(Any, SimpleNamespace(
+        login_info=SimpleNamespace(user_id=user_info.user_id, token_version=0),
+        audit_source=AuditSource.HTTP,
+    ))
+    update_password = AsyncMock()
+    monkeypatch.setattr(user_repository, "update_password", update_password)
+
+    with pytest.raises(AppError) as caught:
+        if operation == "register":
+            await AuthService(factory, manager).register(user_name="member_42", password=password)
+        elif operation == "admin_create":
+            await UserService(factory, manager).admin_create_user(
+                context=context, user_name="member_42", password=password,
+            )
+        elif operation == "change":
+            service = AuthService(factory, manager)
+            monkeypatch.setattr(service, "_verify_current_password", AsyncMock(return_value=user_info))
+            await service.change_password(context=context, current_password="old", new_password=password)
+        elif operation == "admin_reset":
+            user_service = UserService(factory, manager)
+            monkeypatch.setattr(user_service, "_lock_authorized_reset_target", AsyncMock(
+                return_value=User(user_id=user_info.user_id, user_name="member_42"),
+            ))
+            await user_service.reset_user_password(
+                context=context, target_user_id=user_info.user_id, new_password=password,
+            )
+        else:
+            await OperatorPasswordService(factory, manager).reset_super_admin_password(
+                user_id=user_info.user_id, new_password=password,
+            )
+
+    assert caught.value.status_code == 400
+    assert caught.value.reason_code == "password_missing_character_types"
+    assert caught.value.message_key == MessageKey.ERROR_PASSWORD_COMPOSITION
+    update_password.assert_not_awaited()
+    session.add.assert_not_called()
+    if operation == "admin_reset":
+        # 重置他人密码先确认目标可管理；密码规则失败后不再进入保存事务。
+        session_factory.assert_called_once_with()
+    else:
+        session_factory.assert_not_called()
+
+
 @pytest.mark.parametrize("admin_create", [False, True])
 async def test_new_accounts_pass_initial_hash_before_transaction(monkeypatch: pytest.MonkeyPatch,
                                                                  admin_create: bool,
@@ -263,21 +323,26 @@ async def test_new_accounts_pass_initial_hash_before_transaction(monkeypatch: py
 
 
 @pytest.mark.parametrize(
-    ("snapshot", "used_dummy"),
+    ("snapshot", "verified", "used_dummy"),
     [
-        (None, True),
-        (_snapshot(password_hash="$argon2id$stored"), False),
+        pytest.param(None, False, True, id="unknown-account"),
+        pytest.param(_snapshot(password_hash="$argon2id$stored"), False, False, id="wrong-password"),
+        pytest.param(replace(_snapshot(password_hash="$argon2id$stored"), is_active=False),
+                     True, False, id="disabled-account-correct-password"),
+        pytest.param(replace(_snapshot(password_hash="$argon2id$stored"), is_deleted=True),
+                     True, False, id="deleted-account-correct-password"),
     ],
 )
-async def test_unknown_and_wrong_passwords_use_one_public_failure(monkeypatch: pytest.MonkeyPatch,
-                                                                  snapshot: _UserInfo | None,
-                                                                  used_dummy: bool,
-                                                                  issue_token: AsyncMock,
-                                                                  login_log_request: Request) -> None:
+async def test_account_and_password_failures_use_one_public_failure(monkeypatch: pytest.MonkeyPatch,
+                                                                    snapshot: _UserInfo | None,
+                                                                    verified: bool,
+                                                                    used_dummy: bool,
+                                                                    issue_token: AsyncMock,
+                                                                    login_log_request: Request) -> None:
     manager = Mock()
     manager.verify_or_dummy = AsyncMock(
         return_value=PasswordVerification(
-            verified=False,
+            verified=verified,
             needs_rehash=False,
             used_dummy=used_dummy,
         )
@@ -298,6 +363,9 @@ async def test_unknown_and_wrong_passwords_use_one_public_failure(monkeypatch: p
         )
 
     assert str(caught.value) == "invalid_login_credentials"
+    assert caught.value.status_code == 401
+    assert caught.value.business_code == BusinessCode.INVALID_AUTHENTICATION
+    assert caught.value.message_key == MessageKey.AUTH_LOGIN_FAILED
     expected_hash = snapshot.password_hash if snapshot is not None else None
     manager.verify_or_dummy.assert_awaited_once_with(
         "candidate password",
@@ -1161,7 +1229,7 @@ async def test_operator_reset_requires_the_exact_super_admin_holder_set(monkeypa
     with pytest.raises(AppError) as caught:
         await service.reset_super_admin_password(
             user_id=user_id,
-            new_password="recovery-password-42",
+            new_password="Recovery-password-42",
         )
 
     assert caught.value.status_code == 409
@@ -1174,7 +1242,7 @@ async def test_operator_reset_requires_the_exact_super_admin_holder_set(monkeypa
 async def test_operator_reset_accepts_only_the_target_as_sole_super_admin(monkeypatch: pytest.MonkeyPatch,
                                                                           audit_request_context: str) -> None:
     user_id = new_entity_id("U")
-    new_password = "recovery-password-42"
+    new_password = "Recovery-password-42"
     user = User(
         user_id=user_id,
         user_name="recovery-target",
@@ -1326,7 +1394,7 @@ async def test_admin_reset_rechecks_authority_after_lock_free_hash(
     if revoked_after_hash:
         with pytest.raises(AppError) as caught:
             await service.reset_user_password(context=cast(Any, context), target_user_id=target.user_id,
-                                              new_password="new-safe-password-value")
+                                              new_password="New-safe-password-value7!")
         assert caught.value.reason_code == "missing_operation_permission"
         update_password.assert_not_awaited()
         session.add.assert_not_called()
@@ -1335,7 +1403,7 @@ async def test_admin_reset_rechecks_authority_after_lock_free_hash(
     else:
         await service.reset_user_password(
             context=cast(Any, context), target_user_id=target.user_id,
-            new_password="new-safe-password-value")
+            new_password="New-safe-password-value7!")
         assert target.token_version == 4
         assert update_password.await_args is not None
         assert update_password.await_args.kwargs["password_hash"] == "$argon2id$new"

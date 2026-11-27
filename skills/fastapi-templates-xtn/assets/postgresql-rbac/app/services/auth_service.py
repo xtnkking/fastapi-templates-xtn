@@ -46,6 +46,7 @@
 # 2026/10/22    XTN       V1.037        密码保存方法统一命名为 update_password
 # 2026/10/23    XTN       V1.038        签发流程归认证服务，Redis 登录记录通过仓储访问
 # 2026/10/26    XTN       V1.039        本人旧密码验证直接判断结果，收窄异常捕获并统一拒绝分支
+# 2026/11/26    XTN       V1.040        密码规则异常改从统一规则文件导入
 # --------------------------------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -73,10 +74,10 @@ from app.core.ids import require_entity_id
 from app.core.logging.context import set_log_user_id
 from app.core.logging.events import safe_exception_metadata, safe_log
 from app.core.security.jwt_tokens import encode_access_token
+from app.core.security.password_rules import PasswordPolicyError
 from app.core.security.passwords import (
     PasswordHashError,
     PasswordManager,
-    PasswordPolicyError,
     PasswordVerification,
     password_manager,
 )

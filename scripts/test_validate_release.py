@@ -45,6 +45,9 @@
 # 2026/10/24    XTN       V1.036        验证码维护用例使用完整的三个私有场景名称
 # 2026/11/26    XTN       V1.037        验证用户名字段不能脱离统一长度规则
 # 2026/11/26    XTN       V1.038        验证历史结构说明与跨行禁令，拒绝实际新增多项目范围
+# 2026/11/26    XTN       V1.039        验证密码四类必需字符不可遗漏且旧密码不得套用新规则
+# 2026/11/27    XTN       V1.040        验证只能定义两个系统角色，拒绝恢复默认管理员及模型约束
+# 2026/11/28    XTN       V1.041        权限展示目录及自动接口映射增加正向与变异检查
 # --------------------------------------------------------------------------------------------------
 
 """离线检查发布校验器能接受当前合同，并拒绝密码泄露及自动迁移等回归。"""
@@ -72,6 +75,10 @@ class ReleaseContractTests(unittest.TestCase):
                            "app/schemas/user.py").read_text(encoding="utf-8")
         cls.common_schema = (validate_release.ASSET_ROOT /
                              "app/schemas/common.py").read_text(encoding="utf-8")
+        cls.password_rules = (validate_release.ASSET_ROOT /
+                              "app/core/security/password_rules.py").read_text(encoding="utf-8")
+        cls.password_manager = (validate_release.ASSET_ROOT /
+                                "app/core/security/passwords.py").read_text(encoding="utf-8")
         cls.captcha_schema = (validate_release.ASSET_ROOT /
                               "app/schemas/captcha.py").read_text(encoding="utf-8")
         cls.schema = "\n".join((cls.common_schema, cls.captcha_schema,
@@ -121,6 +128,121 @@ class ReleaseContractTests(unittest.TestCase):
         validate_release.validate_local_password_authentication(errors)
         validate_release.validate_api_internationalization(errors)
         self.assertEqual(errors, [])
+
+    def test_system_role_catalog_accepts_two_defaults_and_rejects_admin_restore(self) -> None:
+        """
+            两个系统角色通过检查，恢复默认管理员的枚举、规格、权限或模型约束都要拒绝。
+
+        :return: 无返回值；只替换内存里的读取内容，不修改真实角色代码。
+        """
+        errors: list[str] = []
+        validate_release.validate_system_role_catalog(errors)
+        self.assertEqual(errors, [])
+        role_path = validate_release.ASSET_ROOT / "app/core/access/roles.py"
+        model_path = validate_release.ASSET_ROOT / "app/models/postgres/role.py"
+        read_text = Path.read_text
+        role_source = read_text(role_path, encoding="utf-8")
+        model_source = read_text(model_path, encoding="utf-8")
+        variants = (
+            (role_path, role_source.replace('    USER = "user"', '    ADMIN = "admin"\n    USER = "user"', 1)),
+            (role_path, role_source + '\nADMIN_PERMISSION_KEYS = frozenset()\n'),
+            (role_path, role_source.replace(
+                "SYSTEM_ROLE_SPECS: dict[SystemRoleKey, SystemRoleSpec] = {",
+                "SYSTEM_ROLE_SPECS: dict[SystemRoleKey, SystemRoleSpec] = {\n"
+                "    'admin': SystemRoleSpec(key='admin', level=500, is_protected=False, "
+                "is_super_admin=False, permissions=frozenset()),", 1)),
+            (model_path, model_source.replace(
+                "NOT is_system OR key IN ('super_admin', 'user')",
+                "NOT is_system OR key IN ('super_admin', 'admin', 'user')", 1)),
+            (model_path, model_source + '\nCheckConstraint("level = 500", name="admin_role_shape")\n'),
+        )
+        for target, changed_source in variants:
+            with self.subTest(target=target, variant=changed_source[-80:]):
+                self.assertNotEqual(changed_source, read_text(target, encoding="utf-8"))
+
+                def read_variant(path: Path, *args: object, target_path: Path = target,
+                                 content: str = changed_source, **kwargs: object) -> str:
+                    """
+                        返回本轮角色目录或模型变体，其他文件仍读取原文。
+
+                    :param path: 校验器正在读取的源码路径。
+                    :param args: 原读取函数的位置参数。
+                    :param target_path: 本轮固定替换的角色定义或模型路径。
+                    :param content: 本轮固定返回的源码变体。
+                    :param kwargs: 原读取函数的编码等关键字参数。
+                    :return: 目标文件的内存变体，或其他文件的原始内容。
+                    """
+                    # 不落盘，避免负向测试影响同时进行的业务测试。
+                    return content if path == target_path else read_text(path, *args, **kwargs)
+
+                errors = []
+                with patch.object(Path, "read_text", autospec=True, side_effect=read_variant):
+                    validate_release.validate_system_role_catalog(errors)
+                self.assertTrue(any("system-role" in error for error in errors), errors)
+
+    def test_permission_directory_accepts_current_source_and_rejects_missing_wiring(self) -> None:
+        """
+            当前权限目录通过检查，删掉元数据、响应字段或实际接口收集接线都会被发现。
+
+        :return: 无返回值；变体只存在内存，不修改运行时源码或既有认证检查。
+        """
+        errors: list[str] = []
+        validate_release.validate_permission_directory(errors)
+        self.assertEqual(errors, [])
+        read_text = Path.read_text
+        variants = (
+            ("metadata type", "app/core/access/permissions.py", "    group_key: PermissionGroup",
+             "    group_key: str"),
+            ("metadata entry", "app/core/access/permissions.py",
+             "        name=MessageKey.PERMISSION_ACCOUNT_READ_NAME,\n", ""),
+            ("group translation", "app/core/access/permissions.py",
+             "    PermissionGroup.OTHER: MessageKey.PERMISSION_GROUP_OTHER,\n", ""),
+            ("response name", "app/schemas/permission.py", "    name: str = Field(", "    title: str = Field("),
+            ("response routes", "app/schemas/permission.py", "    api_routes: tuple[",
+             "    endpoints: tuple["),
+            ("route path", "app/schemas/permission.py", "    path: str = Field(", "    url: str = Field("),
+            ("callback marker", "app/dependencies/permission.py",
+             'setattr(dependency, "permission_key", required_key)',
+             'setattr(dependency, "other_marker", required_key)'),
+            ("callback key", "app/dependencies/permission.py",
+             'setattr(dependency, "permission_key", required_key)',
+             'setattr(dependency, "permission_key", "users:read")'),
+            ("actual collection", "app/core/route_validation.py",
+             "permission_api_routes.setdefault(permission_key, set()).add((method, path))", "pass"),
+            ("collected return", "app/core/route_validation.py",
+             "return {key: tuple(sorted(routes)) for key, routes in sorted(permission_api_routes.items())}",
+             "return {}"),
+            ("application map", "app/api/v1/route_validation.py",
+             "app.state.permission_api_routes = permission_api_routes", "app.state.permission_api_routes = {}"),
+            ("map storage", "app/api/v1/route_validation.py",
+             "app.state.permission_api_routes = permission_api_routes",
+             "app.state.other_routes = permission_api_routes"),
+        )
+        for label, relative, before, after in variants:
+            target = validate_release.ASSET_ROOT / relative
+            source = read_text(target, encoding="utf-8")
+            self.assertIn(before, source, label)
+            changed_source = source.replace(before, after, 1)
+            with self.subTest(variant=label):
+                def read_variant(path: Path, *args: str | None, target_path: Path = target,
+                                 content: str = changed_source, **kwargs: str | None) -> str:
+                    """
+                        仅返回本轮权限目录变体，其他源码照常读取。
+
+                    :param path: 校验器读取的文件路径。
+                    :param args: 原读取操作的位置参数。
+                    :param target_path: 本轮要替换的源码文件。
+                    :param content: 本轮固定使用的变体文本。
+                    :param kwargs: 编码等原读取选项。
+                    :return: 目标变体或真实文件原文。
+                    """
+                    # 不落盘，防止负向验证干扰其他测试正在读取的源码。
+                    return content if path == target_path else read_text(path, *args, **kwargs)
+
+                errors = []
+                with patch.object(Path, "read_text", autospec=True, side_effect=read_variant):
+                    validate_release.validate_permission_directory(errors)
+                self.assertTrue(any("permission directory" in error for error in errors), errors)
 
     def test_version_metadata_accepts_historical_schema_notes(self) -> None:
         """
@@ -483,6 +605,47 @@ class ReleaseContractTests(unittest.TestCase):
         validate_release._validate_authentication_schema_contract(
             ast.parse(self.schema), errors)
         self.assertEqual(errors, [])
+
+    def test_password_composition_cannot_drop_a_required_character_type(self) -> None:
+        """删掉任一类字符要求时，维护校验必须拒绝，不能悄悄放松新密码规则。"""
+        for index in range(4):
+            with self.subTest(removed_type=index):
+                tree = ast.parse(self.password_rules)
+                character_rules = next(
+                    node.value for node in tree.body if isinstance(node, (ast.Assign, ast.AnnAssign))
+                    and any(isinstance(target, ast.Name) and target.id == "PASSWORD_REQUIRED_CHARACTERS"
+                            for target in (node.targets if isinstance(node, ast.Assign) else (node.target,)))
+                )
+                character_rules.elts.pop(index)
+                errors: list[str] = []
+                validate_release._validate_password_policy_contract(
+                    tree, ast.parse(self.password_manager), errors)
+                self.assertTrue(any("must require uppercase" in item for item in errors), errors)
+
+    def test_existing_password_verification_cannot_apply_new_password_policy(self) -> None:
+        """登录和哈希升级误用新密码规则时必须拒绝，避免旧账号因策略升级无法登录。"""
+        for method_name in ("verify_or_dummy", "hash_verified_password"):
+            with self.subTest(method=method_name):
+                tree = ast.parse(self.password_manager)
+                manager = validate_release._class_node(tree, "PasswordManager")
+                method = validate_release._function_node(manager.body, method_name)
+                call = next(node for node in ast.walk(method) if isinstance(node, ast.Call)
+                            and ast.unparse(node.func) == "validate_login_password_input")
+                call.func = ast.Name(id="validate_new_password", ctx=ast.Load())
+                errors: list[str] = []
+                validate_release._validate_password_policy_contract(
+                    ast.parse(self.password_rules), tree, errors)
+                self.assertTrue(any(f"PasswordManager.{method_name}" in item for item in errors), errors)
+
+    def test_password_rule_documentation_does_not_allow_arbitrary_runtime_chinese(self) -> None:
+        """集中规则中的中文说明可交付，额外写死的中文接口错误仍必须拒绝。"""
+        label = "skills/fastapi-templates-xtn/assets/postgresql-rbac/app/core/security/password_rules.py"
+        for extra, accepted in (("", True), ('\ndef endpoint():\n    raise ValueError("登录失败")', False)):
+            with self.subTest(accepted=accepted):
+                errors: list[str] = []
+                validate_release._validate_runtime_message_literals(
+                    ast.parse(self.password_rules + extra), errors, label=label)
+                self.assertEqual(not errors, accepted)
 
     def test_secret_alias_cannot_hide_plaintext_type(self) -> None:
         """把公共密码类型改为普通字符串时必须拒绝，避免默认展示密码原文。"""

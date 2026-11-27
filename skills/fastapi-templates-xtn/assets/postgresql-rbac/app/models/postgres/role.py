@@ -16,6 +16,7 @@
 # 2026/10/15    XTN       V1.007        用户权限版本移除后更新角色编辑版本的用途说明
 # 2026/10/15    XTN       V1.008        权限关系统一使用绑定操作人和绑定时间字段
 # 2026/10/20    XTN       V1.009        角色等级字段及对应列约束统一使用 level
+# 2026/11/27    XTN       V1.010        系统角色只保留超级管理员和普通用户，admin 可作普通角色
 # --------------------------------------------------------------------------------------------------
 
 
@@ -49,7 +50,7 @@ class Role(Base):
 
     # 角色定义表；一个用户可绑定多个角色，具体能力来自 RolePermission 中的有效绑定。
     __tablename__ = "roles"
-    # 角色键终身唯一；检查约束固定三个系统角色的等级与标志，软删除必须同时停用。
+    # 角色键终身唯一；固定两个系统角色的等级与标志，普通角色软删除必须同时停用。
     # 唯一索引只能保证一条超级管理员角色定义，不能保证只有一名用户绑定该角色。
     # 超级管理员用户绑定的最终唯一性仍需使用者在数据库自行落实保护。
     __table_args__ = (
@@ -68,7 +69,7 @@ class Role(Base):
             name="custom_role_tier_range",
         ),
         CheckConstraint(
-            "NOT is_system OR key IN ('super_admin', 'admin', 'user')",
+            "NOT is_system OR key IN ('super_admin', 'user')",
             name="system_role_key_fixed",
         ),
         CheckConstraint("version >= 0", name="version_nonnegative"),
@@ -100,11 +101,6 @@ class Role(Base):
             name="super_admin_role_shape",
         ),
         CheckConstraint(
-            "key <> 'admin' OR (is_system AND NOT is_protected AND NOT is_super_admin "
-            "AND is_active AND level = 500 AND deleted_at IS NULL)",
-            name="admin_role_shape",
-        ),
-        CheckConstraint(
             "key <> 'user' OR (is_system AND NOT is_protected AND NOT is_super_admin "
             "AND is_active AND level = 0 AND deleted_at IS NULL)",
             name="user_role_shape",
@@ -125,7 +121,7 @@ class Role(Base):
         primary_key=True,
         default=lambda: new_entity_id("R"),
     )
-    # 稳定角色编码；super_admin、admin、user 为保留值，软删除后也不能复用编码。
+    # 稳定角色编码；只有 super_admin、user 为系统保留值，任何角色软删除后都不能复用编码。
     key: Mapped[str] = mapped_column(String(80), nullable=False)
     # 后台展示名称，可管理的普通角色可以通过更新接口修改，不参与等级比较。
     name: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -134,7 +130,7 @@ class Role(Base):
         Text, nullable=False, default="", server_default=""
     )
     # 角色等级不是权限数量；数字越大等级越高。自定义角色为 1～999，
-    # 固定 user/admin/super_admin 为 0/500/1000，1000 只供超级管理员使用。
+    # 固定 user/super_admin 为 0/1000；500 与其他 1～999 数字一样，可用于普通角色。
     level: Mapped[int] = mapped_column(
         Integer,
         nullable=False,

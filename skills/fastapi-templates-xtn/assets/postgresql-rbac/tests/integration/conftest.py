@@ -11,6 +11,7 @@
 # 2026/10/13    XTN       V1.002        登录顺序清理前缀同步 sequence 命名
 # 2026/10/16    XTN       V1.003        移除运行时权限版本预期，保留协调锁与历史迁移契约
 # 2026/10/24    XTN       V1.004        角色绑定及解绑测试权限统一使用 bind 和 unbind
+# 2026/11/27    XTN       V1.005        管理员改为测试显式创建和授权的普通自定义角色
 # --------------------------------------------------------------------------------------------------
 
 import asyncio
@@ -26,7 +27,7 @@ from sqlalchemy import delete, select, text
 
 from alembic import command
 from app.core.access.permissions import PermissionKey
-from app.core.access.roles import SystemRoleKey
+from app.core.access.roles import SUPER_ADMIN_PERMISSION_KEYS, SystemRoleKey
 from app.core.config import get_settings
 from app.db.postgres_db import SessionFactory, engine
 from app.main import app
@@ -215,7 +216,11 @@ async def world() -> World:
 
             roles = {
                 "super_admin": system_roles[SystemRoleKey.SUPER_ADMIN.value],
-                "admin": system_roles[SystemRoleKey.ADMIN.value],
+                # 测试自行配置管理角色；生产默认规格不再预置 admin 或其管理权限。
+                "admin": Role(
+                    key="admin", name="Custom administrator", level=500,
+                    is_system=False, is_protected=False, is_super_admin=False,
+                ),
                 "user": system_roles[SystemRoleKey.USER.value],
                 "junior_admin": Role(
                     key="junior-admin",
@@ -242,7 +247,7 @@ async def world() -> World:
             session.add_all(
                 role
                 for key, role in roles.items()
-                if key not in {"super_admin", "admin", "user", "manager"}
+                if key not in {"super_admin", "user", "manager"}
             )
             await session.flush()
 
@@ -257,7 +262,8 @@ async def world() -> World:
                 ]
 
             session.add_all(
-                grant(
+                grant("admin", set(SUPER_ADMIN_PERMISSION_KEYS) - {PermissionKey.ROLES_DELETE.value})
+                + grant(
                     "junior_admin",
                     {
                         PermissionKey.ROLES_BIND.value,
